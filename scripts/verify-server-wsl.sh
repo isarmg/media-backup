@@ -12,19 +12,22 @@ trap 'rm -f "$cookie_file"' EXIT
 
 login_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --cookie-jar "$cookie_file" \
+  --header 'X-Forwarded-Proto: https' \
   --header 'Content-Type: application/json' \
   --data "{\"username\":\"$ADMIN_USERNAME\",\"password\":\"$ADMIN_PASSWORD\"}" \
   http://127.0.0.1:8080/admin/api/login)"
 
 overview_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  --header 'X-Forwarded-Proto: https' \
   --cookie "$cookie_file" http://127.0.0.1:8080/admin/api/overview)"
 
-page_fields="$(curl --silent http://127.0.0.1:8080/admin \
+page_fields="$(curl --silent --header 'X-Forwarded-Proto: https' http://127.0.0.1:8080/admin \
   | grep -Eo 'id="admin(Username|Password)"' \
   | wc -l)"
 
 client_rejection="$(curl --silent --output /dev/null --write-out '%{http_code}' \
   --header 'Content-Type: application/json' \
+  --header 'X-Forwarded-Proto: https' \
   --data '{"username":"missing-user","password":"incorrect-password","device_name":"verification","platform":"test"}' \
   http://127.0.0.1:8080/v1/auth/bootstrap)"
 

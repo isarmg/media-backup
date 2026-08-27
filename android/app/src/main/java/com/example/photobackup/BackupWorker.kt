@@ -63,8 +63,6 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
                 config.bearerToken = token
             }
             val nativeConfig = JSONObject()
-                .put("master_key_b64", config.masterKeyBase64)
-                .put("dedupe_key_b64", config.dedupeKeyBase64)
                 .put("part_size", 16 * 1024 * 1024)
             val handle = NativeBridge.nativeOpen(
                 applicationContext.getDatabasePath("agent.sqlite").absolutePath,
@@ -74,6 +72,12 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
             try {
                 val stagingRoot = File(applicationContext.filesDir, "backup-staging").also { it.mkdirs() }
                 publish(config, snapshot.copy(message = "正在扫描媒体库"), "扫描", 0, 0)
+                val selectedAlbumIds = if (!config.cameraOnly && !config.albumSelectionConfigured) {
+                    DeviceAlbums.list(applicationContext).mapTo(mutableSetOf()) { it.id }
+                        .also { config.selectedAlbumIds = it }
+                } else {
+                    config.selectedAlbumIds
+                }
                 val scan = MediaScanner(applicationContext).scan(
                     handle,
                     stagingRoot,
@@ -81,6 +85,7 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
                         includePhotos = config.backupPhotos,
                         includeVideos = config.backupVideos,
                         cameraOnly = config.cameraOnly,
+                        selectedAlbumIds = selectedAlbumIds,
                         maxItems = MAX_SCAN_ITEMS,
                     ),
                 )
@@ -113,6 +118,14 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
                         currentItem = "",
                     )
                     publish(config, snapshot, "上传", snapshot.completed, maxOf(scan.discovered, snapshot.completed))
+                }
+                for ((albumId, album) in scan.albums) {
+                    api.syncAlbum(
+                        albumId,
+                        album.name,
+                        album.sourceAssetIds,
+                        replaceMembers = !scan.limitReached,
+                    )
                 }
                 if (scan.limitReached || !queueDrained) {
                     snapshot = snapshot.copy(

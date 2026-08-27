@@ -1,10 +1,9 @@
 package com.example.photobackup
 
 import android.content.Context
-import android.util.Base64
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import java.security.SecureRandom
+import org.json.JSONArray
 
 data class BackupSnapshot(
     val state: String = "idle",
@@ -84,8 +83,26 @@ class SecureConfig(context: Context) {
         get() = preferences.getBoolean("camera_only", true)
         set(value) = preferences.edit().putBoolean("camera_only", value).apply()
 
-    val masterKeyBase64: String get() = getOrCreateKey("account_master_key")
-    val dedupeKeyBase64: String get() = getOrCreateKey("account_dedupe_key")
+    var selectedAlbumIds: Set<String>
+        get() = runCatching {
+            val array = JSONArray(preferences.getString("selected_album_ids", "[]"))
+            buildSet { for (index in 0 until array.length()) add(array.getString(index)) }
+        }.getOrDefault(emptySet())
+        set(value) {
+            val array = JSONArray()
+            value.sorted().forEach(array::put)
+            preferences.edit()
+                .putString("selected_album_ids", array.toString())
+                .putBoolean("album_selection_configured", true)
+                .apply()
+        }
+
+    val albumSelectionConfigured: Boolean
+        get() = preferences.getBoolean("album_selection_configured", false)
+
+    var librarySyncSequence: Long
+        get() = preferences.getLong("library_sync_sequence", 0L)
+        set(value) = preferences.edit().putLong("library_sync_sequence", value).apply()
 
     fun snapshot(): BackupSnapshot = BackupSnapshot(
         state = preferences.getString("backup_state", "idle") ?: "idle",
@@ -113,11 +130,4 @@ class SecureConfig(context: Context) {
             .apply()
     }
 
-    private fun getOrCreateKey(name: String): String {
-        preferences.getString(name, null)?.let { return it }
-        val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
-        preferences.edit().putString(name, encoded).commit()
-        return encoded
-    }
 }

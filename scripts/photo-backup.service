@@ -1,5 +1,5 @@
 [Unit]
-Description=Encrypted photo backup server
+Description=Photo backup server
 After=network.target postgresql.service
 Requires=postgresql.service
 

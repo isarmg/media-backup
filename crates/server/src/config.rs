@@ -10,6 +10,8 @@ pub struct Config {
     pub admin_username: String,
     pub admin_password: String,
     pub max_part_bytes: usize,
+    pub metrics_token: Option<String>,
+    pub require_https: bool,
 }
 
 impl Config {
@@ -32,6 +34,13 @@ impl Config {
             .unwrap_or_else(|_| (64 * 1024 * 1024).to_string())
             .parse()
             .context("MAX_PART_BYTES must be an integer")?;
+        let metrics_token = env::var("METRICS_TOKEN")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let require_https = env::var("REQUIRE_HTTPS")
+            .unwrap_or_else(|_| "true".to_owned())
+            .parse()
+            .context("REQUIRE_HTTPS must be true or false")?;
         Ok(Self {
             database_url,
             data_dir,
@@ -39,6 +48,8 @@ impl Config {
             admin_username,
             admin_password,
             max_part_bytes,
+            metrics_token,
+            require_https,
         })
     }
 }

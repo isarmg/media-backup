@@ -21,11 +21,11 @@ use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::{
-    admin,
-    auth::{require_auth, AuthContext},
+    admin, api_access, audit,
+    auth::{require_auth, require_secure_transport, AuthContext},
     config::Config,
     error::AppError,
-    password,
+    library, metrics, password,
     storage::LocalStorage,
 };
 
@@ -45,6 +45,39 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/resources", get(list_resources))
         .route("/v1/resources/{id}", get(resource_manifest))
         .route("/v1/resources/{id}/content", get(resource_content))
+        .route("/v1/timeline", get(library::timeline))
+        .route("/v1/sync", get(library::sync_changes))
+        .route(
+            "/v1/assets/{id}",
+            get(library::get_asset)
+                .patch(library::update_asset)
+                .delete(library::delete_asset_permanently),
+        )
+        .route("/v1/assets/{id}/trash", post(library::trash_asset))
+        .route("/v1/assets/{id}/restore", post(library::restore_asset))
+        .route(
+            "/v1/albums",
+            get(library::list_albums).post(library::sync_album),
+        )
+        .route(
+            "/v1/tags",
+            get(library::list_tags).post(library::create_tag),
+        )
+        .route("/v1/tags/{id}/assets", put(library::set_tag_assets))
+        .route(
+            "/v1/tags/{tag_id}/assets/{asset_id}",
+            post(library::add_tag_asset).delete(library::remove_tag_asset),
+        )
+        .route("/v1/duplicates", get(library::duplicate_groups))
+        .route(
+            "/v1/api-keys",
+            get(api_access::list_api_keys).post(api_access::create_api_key),
+        )
+        .route(
+            "/v1/api-keys/{id}",
+            axum::routing::delete(api_access::revoke_api_key),
+        )
+        .route("/v1/audit-events", get(api_access::audit_events))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let admin_protected = Router::new()
@@ -61,10 +94,8 @@ pub fn router(state: AppState) -> Router {
             admin::require_admin,
         ));
 
-    Router::new()
-        .route("/health", get(health))
-        .route("/health/live", get(live))
-        .route("/health/ready", get(ready))
+    let sensitive = Router::new()
+        .route("/metrics", get(metrics::prometheus))
         .route("/v1/auth/bootstrap", post(bootstrap))
         .route("/admin", get(admin::page))
         .route("/admin/", get(admin::page))
@@ -73,6 +104,16 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/api/login", post(admin::login))
         .merge(admin_protected)
         .merge(protected)
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_secure_transport,
+        ));
+
+    Router::new()
+        .route("/health", get(health))
+        .route("/health/live", get(live))
+        .route("/health/ready", get(ready))
+        .merge(sensitive)
         .layer(DefaultBodyLimit::max(state.config.max_part_bytes))
         .with_state(state)
 }
@@ -147,6 +188,16 @@ async fn bootstrap(
     .bind(token_hash)
     .fetch_one(&mut *transaction)
     .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO audit_events(account_id, actor_kind, actor_id, action, entity_kind, entity_id)
+        VALUES ($1, 'device', $2, 'device.bootstrap', 'device', $2)
+        "#,
+    )
+    .bind(account_id)
+    .bind(device_id)
+    .execute(&mut *transaction)
+    .await?;
     transaction.commit().await?;
     Ok(Json(BootstrapResponse {
         account_id,
@@ -165,8 +216,8 @@ async fn create_upload(
     let policy = account_policy_for_update(&mut transaction, auth.account_id).await?;
     let asset_id: Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO assets(account_id, device_id, source_asset_id, media_kind, source_created_at_ms)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO assets(account_id, device_id, source_asset_id, media_kind, source_created_at_ms, favorite)
+        VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT(account_id, device_id, source_asset_id) DO UPDATE SET
             media_kind = excluded.media_kind,
             source_created_at_ms = excluded.source_created_at_ms,
@@ -180,18 +231,42 @@ async fn create_upload(
     .bind(&request.source_asset_id)
     .bind(request.media_kind.as_str())
     .bind(request.source_created_at_ms)
+    .bind(
+        request
+            .metadata
+            .as_ref()
+            .and_then(|value| value.get("favorite"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    )
     .fetch_one(&mut *transaction)
     .await?;
 
     let existing_blob: Option<Uuid> =
-        sqlx::query_scalar("SELECT id FROM blobs WHERE account_id = $1 AND dedup_token = $2")
+        sqlx::query_scalar("SELECT id FROM blobs WHERE account_id = $1 AND content_blake3 = $2 AND storage_encoding = 'plain-v1'")
             .bind(auth.account_id)
-            .bind(&request.dedup_token)
+            .bind(&request.content_blake3)
             .fetch_optional(&mut *transaction)
             .await?;
     if let Some(blob_id) = existing_blob {
         let resource_id = upsert_resource(&mut transaction, asset_id, blob_id, &request).await?;
+        audit::record_change(
+            &mut transaction,
+            auth.account_id,
+            "asset",
+            asset_id,
+            "upsert",
+        )
+        .await?;
         transaction.commit().await?;
+        audit::record(
+            &state.pool,
+            &auth,
+            "resource.deduplicate",
+            Some("resource"),
+            Some(resource_id),
+        )
+        .await?;
         return Ok(Json(CreateUploadResponse {
             disposition: UploadDisposition::Complete,
             upload_id: None,
@@ -211,7 +286,7 @@ async fn create_upload(
     .bind(auth.account_id)
     .bind(auth.device_id)
     .bind(&request.source_resource_id)
-    .bind(&request.dedup_token)
+    .bind(&request.content_blake3)
     .fetch_optional(&mut *transaction)
     .await?;
     if let Some(upload_id) = existing_upload {
@@ -229,7 +304,7 @@ async fn create_upload(
         &mut transaction,
         auth.account_id,
         policy.quota_bytes,
-        request_ciphertext_size(&request)?,
+        request_storage_size(&request)?,
     )
     .await?;
 
@@ -245,7 +320,7 @@ async fn create_upload(
     .bind(auth.device_id)
     .bind(asset_id)
     .bind(&request.source_resource_id)
-    .bind(&request.dedup_token)
+    .bind(&request.content_blake3)
     .bind(request_json)
     .fetch_one(&mut *transaction)
     .await?;
@@ -255,8 +330,8 @@ async fn create_upload(
         )
         .bind(upload_id)
         .bind(part.index as i32)
-        .bind(part.ciphertext_size as i64)
-        .bind(&part.ciphertext_blake3)
+        .bind(part.size as i64)
+        .bind(&part.blake3)
         .execute(&mut *transaction)
         .await?;
     }
@@ -293,8 +368,8 @@ async fn put_part(
     }
     let spec = UploadPartSpec {
         index,
-        ciphertext_size: row.get::<i64, _>("expected_size") as u64,
-        ciphertext_blake3: row.get("expected_blake3"),
+        size: row.get::<i64, _>("expected_size") as u64,
+        blake3: row.get("expected_blake3"),
     };
     let bytes = to_bytes(body, state.config.max_part_bytes)
         .await
@@ -350,18 +425,18 @@ async fn complete_upload(
     let mut transaction = state.pool.begin().await?;
     let policy = account_policy_for_update(&mut transaction, auth.account_id).await?;
     let existing_blob: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM blobs WHERE account_id = $1 AND dedup_token = $2 FOR UPDATE",
+        "SELECT id FROM blobs WHERE account_id = $1 AND content_blake3 = $2 AND storage_encoding = 'plain-v1' FOR UPDATE",
     )
     .bind(auth.account_id)
-    .bind(&request.dedup_token)
+    .bind(&request.content_blake3)
     .fetch_optional(&mut *transaction)
     .await?;
     let (blob_id, deduplicated) = if let Some(id) = existing_blob {
         (id, true)
     } else {
-        let expected_size = request_ciphertext_size(&request)?;
+        let expected_size = request_storage_size(&request)?;
         let used_bytes: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(ciphertext_size), 0)::BIGINT FROM blobs WHERE account_id = $1",
+            "SELECT COALESCE(SUM(stored_size), 0)::BIGINT FROM blobs WHERE account_id = $1",
         )
         .bind(auth.account_id)
         .fetch_one(&mut *transaction)
@@ -374,38 +449,46 @@ async fn complete_upload(
                 "account storage quota exceeded",
             ));
         }
-        let (storage_path, ciphertext_size) = state
+        let (storage_path, stored_size) = state
             .storage
             .finalize(
                 auth.account_id,
                 &policy.storage_path,
                 upload_id,
                 &request.parts,
+                &request.filename,
+                request.content_size,
+                &request.content_blake3,
             )
             .await?;
         let id = sqlx::query_scalar(
             r#"
             INSERT INTO blobs(
-                account_id, dedup_token, plaintext_size, ciphertext_size, storage_path,
-                wrapped_key, key_nonce, nonce_prefix, part_manifest
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                account_id, dedup_token, content_blake3, plaintext_size, stored_size,
+                storage_path, wrapped_key, key_nonce, nonce_prefix, part_manifest, storage_encoding
+            ) VALUES ($1, $2, $2, $3, $4, $5, NULL, NULL, NULL, $6, 'plain-v1')
             RETURNING id
             "#,
         )
         .bind(auth.account_id)
-        .bind(&request.dedup_token)
-        .bind(request.plaintext_size as i64)
-        .bind(ciphertext_size as i64)
+        .bind(&request.content_blake3)
+        .bind(request.content_size as i64)
+        .bind(stored_size as i64)
         .bind(storage_path)
-        .bind(&request.wrapped_key)
-        .bind(&request.key_nonce)
-        .bind(&request.nonce_prefix)
         .bind(serde_json::to_value(&request.parts)?)
         .fetch_one(&mut *transaction)
         .await?;
         (id, false)
     };
     let resource_id = upsert_resource(&mut transaction, asset_id, blob_id, &request).await?;
+    audit::record_change(
+        &mut transaction,
+        auth.account_id,
+        "asset",
+        asset_id,
+        "upsert",
+    )
+    .await?;
     sqlx::query(
         "UPDATE uploads SET state = 'complete', completed_at = now(), updated_at = now() WHERE id = $1",
     )
@@ -413,8 +496,17 @@ async fn complete_upload(
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
+    audit::record(
+        &state.pool,
+        &auth,
+        "upload.complete",
+        Some("resource"),
+        Some(resource_id),
+    )
+    .await?;
     Ok(Json(CompleteUploadResponse {
         resource_id,
+        asset_id,
         deduplicated,
     }))
 }
@@ -459,7 +551,7 @@ async fn resource_content(
 ) -> Result<Response, AppError> {
     let row = sqlx::query(
         r#"
-        SELECT b.storage_path, b.ciphertext_size
+        SELECT b.storage_path, b.stored_size, b.storage_encoding, r.mime_type
         FROM resources r
         JOIN assets a ON a.id = r.asset_id
         JOIN blobs b ON b.id = r.blob_id
@@ -476,12 +568,18 @@ async fn resource_content(
     let mut response = Body::from_stream(stream).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static("application/octet-stream"),
+        HeaderValue::from_str(&row.get::<String, _>("mime_type"))
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
     );
     response.headers_mut().insert(
         header::CONTENT_LENGTH,
-        HeaderValue::from_str(&row.get::<i64, _>("ciphertext_size").to_string())
+        HeaderValue::from_str(&row.get::<i64, _>("stored_size").to_string())
             .map_err(|_| AppError::bad_request("invalid content length"))?,
+    );
+    response.headers_mut().insert(
+        "x-photo-backup-storage-encoding",
+        HeaderValue::from_str(&row.get::<String, _>("storage_encoding"))
+            .map_err(|_| AppError::bad_request("invalid storage encoding"))?,
     );
     Ok(response)
 }
@@ -494,21 +592,40 @@ fn validate_upload_request(
         || request.source_resource_id.is_empty()
         || request.filename.is_empty()
         || request.mime_type.is_empty()
-        || request.dedup_token.len() != 64
+        || !is_blake3(&request.content_blake3)
         || request.parts.is_empty()
+        || request.filename.len() > 1024
+        || request.mime_type.len() > 255
+        || request.metadata.as_ref().is_some_and(|value| {
+            serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() > 64 * 1024)
+        })
     {
         return Err(AppError::bad_request("upload manifest is incomplete"));
     }
     for (position, part) in request.parts.iter().enumerate() {
         if part.index as usize != position
-            || part.ciphertext_size == 0
-            || part.ciphertext_size > max_part_bytes as u64
-            || part.ciphertext_blake3.len() != 64
+            || (part.size == 0 && request.content_size != 0)
+            || part.size > max_part_bytes as u64
+            || !is_blake3(&part.blake3)
         {
             return Err(AppError::bad_request("invalid part manifest"));
         }
     }
+    let total = request
+        .parts
+        .iter()
+        .try_fold(0_u64, |sum, part| sum.checked_add(part.size))
+        .ok_or_else(|| AppError::bad_request("upload size overflow"))?;
+    if total != request.content_size {
+        return Err(AppError::bad_request(
+            "part sizes do not match content_size",
+        ));
+    }
     Ok(())
+}
+
+fn is_blake3(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 async fn missing_parts(pool: &PgPool, upload_id: Uuid) -> Result<Vec<u32>, AppError> {
@@ -531,15 +648,14 @@ async fn upsert_resource(
         r#"
         INSERT INTO resources(
             asset_id, blob_id, source_resource_id, role, filename, mime_type,
-            metadata_nonce, metadata_ciphertext
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            metadata
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT(asset_id, source_resource_id) DO UPDATE SET
             blob_id = excluded.blob_id,
             role = excluded.role,
             filename = excluded.filename,
             mime_type = excluded.mime_type,
-            metadata_nonce = excluded.metadata_nonce,
-            metadata_ciphertext = excluded.metadata_ciphertext
+            metadata = excluded.metadata
         RETURNING id
         "#,
     )
@@ -549,8 +665,7 @@ async fn upsert_resource(
     .bind(&request.role)
     .bind(&request.filename)
     .bind(&request.mime_type)
-    .bind(&request.metadata_nonce)
-    .bind(&request.metadata_ciphertext)
+    .bind(&request.metadata)
     .fetch_one(&mut **transaction)
     .await?)
 }
@@ -563,10 +678,9 @@ async fn load_manifest(
     let row = sqlx::query(
         r#"
         SELECT r.id AS resource_id, r.asset_id, r.source_resource_id, r.role, r.filename,
-               r.mime_type, r.metadata_nonce, r.metadata_ciphertext,
+               r.mime_type, r.metadata,
                a.source_asset_id, a.media_kind, a.source_created_at_ms,
-               b.plaintext_size, b.ciphertext_size, b.wrapped_key, b.key_nonce,
-               b.nonce_prefix, b.part_manifest
+               b.plaintext_size, b.content_blake3, b.storage_encoding, b.part_manifest
         FROM resources r
         JOIN assets a ON a.id = r.asset_id
         JOIN blobs b ON b.id = r.blob_id
@@ -593,13 +707,12 @@ async fn load_manifest(
         filename: row.get("filename"),
         mime_type: row.get("mime_type"),
         source_created_at_ms: row.get("source_created_at_ms"),
-        plaintext_size: row.get::<i64, _>("plaintext_size") as u64,
-        ciphertext_size: row.get::<i64, _>("ciphertext_size") as u64,
-        wrapped_key: row.get("wrapped_key"),
-        key_nonce: row.get("key_nonce"),
-        nonce_prefix: row.get("nonce_prefix"),
-        metadata_nonce: row.get("metadata_nonce"),
-        metadata_ciphertext: row.get("metadata_ciphertext"),
+        content_size: row.get::<i64, _>("plaintext_size") as u64,
+        content_blake3: row
+            .get::<Option<String>, _>("content_blake3")
+            .unwrap_or_default(),
+        storage_encoding: row.get("storage_encoding"),
+        metadata: row.get("metadata"),
         parts: serde_json::from_value(row.get::<Value, _>("part_manifest"))?,
         content_path: format!("/v1/resources/{resource_id}/content"),
     })
@@ -640,7 +753,7 @@ async fn ensure_quota(
         return Ok(());
     }
     let used_bytes: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(ciphertext_size), 0)::BIGINT FROM blobs WHERE account_id = $1",
+        "SELECT COALESCE(SUM(stored_size), 0)::BIGINT FROM blobs WHERE account_id = $1",
     )
     .bind(account_id)
     .fetch_one(&mut **transaction)
@@ -669,11 +782,11 @@ async fn ensure_quota(
     Ok(())
 }
 
-fn request_ciphertext_size(request: &CreateUploadRequest) -> Result<i64, AppError> {
+fn request_storage_size(request: &CreateUploadRequest) -> Result<i64, AppError> {
     let total = request
         .parts
         .iter()
-        .try_fold(0_u64, |sum, part| sum.checked_add(part.ciphertext_size));
+        .try_fold(0_u64, |sum, part| sum.checked_add(part.size));
     let total = total.ok_or_else(|| AppError::bad_request("upload size overflow"))?;
     i64::try_from(total).map_err(|_| AppError::bad_request("upload is too large"))
 }

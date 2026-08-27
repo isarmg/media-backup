@@ -290,7 +290,7 @@ async fn load_users(state: &AppState) -> Result<Vec<AdminUser>, AppError> {
         r#"
         SELECT a.id, a.username, a.display_name, a.storage_path, a.quota_bytes, a.enabled,
                to_char(a.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at,
-               COALESCE((SELECT SUM(b.ciphertext_size) FROM blobs b WHERE b.account_id = a.id), 0)::BIGINT AS used_bytes,
+               COALESCE((SELECT SUM(b.stored_size) FROM blobs b WHERE b.account_id = a.id), 0)::BIGINT AS used_bytes,
                COALESCE((
                    SELECT SUM(p.expected_size)
                    FROM upload_parts p JOIN uploads u ON u.id = p.upload_id

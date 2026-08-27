@@ -18,8 +18,8 @@ pub enum AgentError {
     Database(#[from] rusqlite::Error),
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
-    #[error("crypto error: {0}")]
-    Crypto(#[from] photo_backup_crypto::CryptoError),
+    #[error("content preparation error: {0}")]
+    Content(#[from] photo_backup_crypto::ContentError),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("job not found")]
@@ -30,8 +30,6 @@ pub enum AgentError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
-    pub master_key_b64: String,
-    pub dedupe_key_b64: String,
     #[serde(default = "default_part_size")]
     pub part_size: usize,
 }
@@ -123,6 +121,22 @@ impl Agent {
             );
             "#,
         )?;
+        connection.execute_batch(
+            r#"
+            DELETE FROM job_parts
+            WHERE job_id IN (
+                SELECT id FROM jobs
+                WHERE prepared_json IS NOT NULL
+                  AND prepared_json NOT LIKE '%"content_blake3"%'
+            );
+            UPDATE jobs SET
+                state = 'discovered', prepared_json = NULL, upload_id = NULL,
+                retry_count = 0, next_retry_ms = 0,
+                error = 'legacy encrypted job must be prepared from the original file'
+            WHERE prepared_json IS NOT NULL
+              AND prepared_json NOT LIKE '%"content_blake3"%';
+            "#,
+        )?;
         connection.execute(
             "UPDATE jobs SET state = 'ready', upload_id = NULL WHERE state IN ('preparing', 'uploading') AND prepared_json IS NOT NULL",
             [],
@@ -165,11 +179,11 @@ impl Agent {
             .connection
             .lock()
             .expect("agent database mutex poisoned");
-        let existing: Option<(String, i64, u64)> = connection
+        let existing: Option<(String, i64, u64, String)> = connection
             .query_row(
-                "SELECT id, modified_ms, source_size FROM jobs WHERE source_asset_id = ?1 AND source_resource_id = ?2",
+                "SELECT id, modified_ms, source_size, state FROM jobs WHERE source_asset_id = ?1 AND source_resource_id = ?2",
                 params![input.source_asset_id, input.source_resource_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
         let id = existing
@@ -177,7 +191,9 @@ impl Agent {
             .map(|value| value.0.clone())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
         let changed = existing
-            .map(|(_, modified, size)| modified != input.modified_ms || size != input.source_size)
+            .map(|(_, modified, size, state)| {
+                modified != input.modified_ms || size != input.source_size || state != "complete"
+            })
             .unwrap_or(true);
         if changed {
             connection.execute(
@@ -320,14 +336,11 @@ impl Agent {
             "other" => MediaKind::Other,
             value => return Err(AgentError::InvalidMediaKind(value.to_owned())),
         };
-        let output_dir = staging_root.join("encrypted").join(job_id);
-        let crypto = prepare_file(
+        let output_dir = staging_root.join("prepared").join(job_id);
+        let content = prepare_file(
             Path::new(&input.file_path),
             &output_dir,
-            &self.config.master_key_b64,
-            &self.config.dedupe_key_b64,
             self.config.part_size,
-            input.metadata_json.as_deref(),
         )?;
         let request = CreateUploadRequest {
             source_asset_id: input.source_asset_id.clone(),
@@ -337,19 +350,19 @@ impl Agent {
             filename: input.filename.clone(),
             mime_type: input.mime_type.clone(),
             source_created_at_ms: input.source_created_at_ms,
-            plaintext_size: crypto.plaintext_size,
-            dedup_token: crypto.dedup_token,
-            wrapped_key: crypto.wrapped_key,
-            key_nonce: crypto.key_nonce,
-            nonce_prefix: crypto.nonce_prefix,
-            metadata_nonce: crypto.metadata_nonce,
-            metadata_ciphertext: crypto.metadata_ciphertext,
-            parts: crypto.parts.iter().map(|part| part.spec.clone()).collect(),
+            content_size: content.content_size,
+            content_blake3: content.content_blake3,
+            metadata: input
+                .metadata_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()?,
+            parts: content.parts.iter().map(|part| part.spec.clone()).collect(),
         };
         let prepared = PreparedJob {
             job_id: job_id.to_owned(),
             request,
-            local_parts: crypto
+            local_parts: content
                 .parts
                 .iter()
                 .map(|part| LocalPart {
@@ -497,4 +510,111 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepared_job_contains_original_plaintext_parts() {
+        let root = std::env::temp_dir().join(format!("photo-backup-agent-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("photo.jpg");
+        let original = b"server storage must contain these exact original bytes";
+        fs::write(&source, original).unwrap();
+        let agent = Agent::open(root.join("agent.sqlite"), AgentConfig { part_size: 11 }).unwrap();
+        agent
+            .enqueue(EnqueueResource {
+                source_asset_id: "asset-1".to_owned(),
+                source_resource_id: "resource-1".to_owned(),
+                media_kind: "photo".to_owned(),
+                role: "primary".to_owned(),
+                file_path: source.to_string_lossy().into_owned(),
+                filename: "photo.jpg".to_owned(),
+                mime_type: "image/jpeg".to_owned(),
+                source_created_at_ms: 123,
+                modified_ms: 456,
+                source_size: original.len() as u64,
+                metadata_json: Some(r#"{"favorite":true}"#.to_owned()),
+                remove_source_after_prepare: true,
+            })
+            .unwrap();
+        let prepared = agent.next_prepared(&root).unwrap().unwrap();
+        assert_eq!(prepared.request.content_size, original.len() as u64);
+        assert_eq!(
+            prepared.request.content_blake3,
+            blake3::hash(original).to_hex().to_string()
+        );
+        let assembled = prepared
+            .local_parts
+            .iter()
+            .flat_map(|part| fs::read(&part.path).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(assembled, original);
+        assert!(!source.exists());
+        drop(agent);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_encrypted_jobs_are_requeued_from_the_original_library() {
+        let root = std::env::temp_dir().join(format!("photo-backup-legacy-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let database = root.join("agent.sqlite");
+        let agent = Agent::open(&database, AgentConfig { part_size: 16 }).unwrap();
+        agent
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                r#"
+                INSERT INTO jobs(
+                    id, source_asset_id, source_resource_id, media_kind, role, file_path,
+                    filename, mime_type, source_created_at_ms, modified_ms, source_size,
+                    remove_source_after_prepare, state, prepared_json, updated_at_ms
+                ) VALUES (?1, ?2, ?3, 'photo', 'primary', ?4, 'old.jpg', 'image/jpeg',
+                          1, 7, 3, 1, 'complete', ?5, 1)
+                "#,
+                params![
+                    "legacy-job",
+                    "legacy-asset",
+                    "legacy-resource",
+                    root.join("removed-source").to_string_lossy(),
+                    r#"{"request":{"wrapped_key":"legacy"}}"#,
+                ],
+            )
+            .unwrap();
+        drop(agent);
+
+        let agent = Agent::open(&database, AgentConfig { part_size: 16 }).unwrap();
+        assert!(agent
+            .needs_resource("legacy-asset", "legacy-resource", 7)
+            .unwrap());
+        let source = root.join("fresh-export.jpg");
+        fs::write(&source, b"new").unwrap();
+        agent
+            .enqueue(EnqueueResource {
+                source_asset_id: "legacy-asset".to_owned(),
+                source_resource_id: "legacy-resource".to_owned(),
+                media_kind: "photo".to_owned(),
+                role: "primary".to_owned(),
+                file_path: source.to_string_lossy().into_owned(),
+                filename: "new.jpg".to_owned(),
+                mime_type: "image/jpeg".to_owned(),
+                source_created_at_ms: 1,
+                modified_ms: 7,
+                source_size: 3,
+                metadata_json: None,
+                remove_source_after_prepare: true,
+            })
+            .unwrap();
+        let prepared = agent.next_prepared(&root).unwrap().unwrap();
+        assert_eq!(
+            prepared.request.content_blake3,
+            blake3::hash(b"new").to_hex().to_string()
+        );
+        drop(agent);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

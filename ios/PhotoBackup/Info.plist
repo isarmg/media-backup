@@ -13,7 +13,9 @@
     <key>UILaunchScreen</key>
     <dict/>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>用于将您选择的照片和视频加密备份到自己的服务器。</string>
+    <string>用于读取您选择的照片和视频，并通过 HTTPS 备份到自己的服务器。</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>用于将您从服务器恢复的原始照片和视频写回系统照片库。</string>
     <key>UIBackgroundModes</key>
     <array>
         <string>fetch</string>

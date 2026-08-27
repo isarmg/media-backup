@@ -1,7 +1,11 @@
 mod admin;
+mod api_access;
+mod audit;
 mod auth;
 mod config;
 mod error;
+mod library;
+mod metrics;
 mod password;
 mod routes;
 mod storage;

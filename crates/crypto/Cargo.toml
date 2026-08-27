@@ -6,12 +6,6 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-base64.workspace = true
 blake3.workspace = true
-chacha20poly1305.workspace = true
-hmac.workspace = true
-hex.workspace = true
 photo-backup-protocol = { path = "../protocol" }
-rand.workspace = true
-sha2.workspace = true
 thiserror.workspace = true

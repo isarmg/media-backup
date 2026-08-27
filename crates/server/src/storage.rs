@@ -33,10 +33,10 @@ impl LocalStorage {
         spec: &UploadPartSpec,
         bytes: Bytes,
     ) -> Result<(), AppError> {
-        if bytes.len() as u64 != spec.ciphertext_size {
+        if bytes.len() as u64 != spec.size {
             return Err(AppError::bad_request("part size does not match manifest"));
         }
-        if blake3::hash(&bytes).to_hex().as_str() != spec.ciphertext_blake3 {
+        if blake3::hash(&bytes).to_hex().as_str() != spec.blake3 {
             return Err(AppError::bad_request("part hash does not match manifest"));
         }
         let directory = self.upload_dir(upload_id);
@@ -44,8 +44,8 @@ impl LocalStorage {
         let final_path = self.part_path(upload_id, spec.index);
         if fs::try_exists(&final_path).await? {
             let existing = fs::read(&final_path).await?;
-            if existing.len() as u64 == spec.ciphertext_size
-                && blake3::hash(&existing).to_hex().as_str() == spec.ciphertext_blake3
+            if existing.len() as u64 == spec.size
+                && blake3::hash(&existing).to_hex().as_str() == spec.blake3
             {
                 return Ok(());
             }
@@ -68,6 +68,9 @@ impl LocalStorage {
         configured_path: &str,
         upload_id: Uuid,
         parts: &[UploadPartSpec],
+        filename: &str,
+        expected_size: u64,
+        expected_blake3: &str,
     ) -> Result<(String, u64), AppError> {
         let account_dir = if configured_path.trim().is_empty() {
             self.root.join("blobs").join(account_id.to_string())
@@ -75,7 +78,18 @@ impl LocalStorage {
             self.resolve_account_root(configured_path)?
         };
         fs::create_dir_all(&account_dir).await?;
-        let final_path = account_dir.join(format!("{upload_id}.blob"));
+        let extension = Path::new(filename)
+            .extension()
+            .and_then(|value| value.to_str())
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= 16
+                    && value
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric())
+            })
+            .unwrap_or("media");
+        let final_path = account_dir.join(format!("{upload_id}.{extension}"));
         if fs::try_exists(&final_path).await? {
             let size = fs::metadata(&final_path).await?.len();
             return Ok((storage_reference(&self.root, &final_path), size));
@@ -92,6 +106,19 @@ impl LocalStorage {
         }
         output.sync_all().await?;
         drop(output);
+        if total != expected_size {
+            let _ = fs::remove_file(&temporary).await;
+            return Err(AppError::conflict(
+                "assembled content size does not match manifest",
+            ));
+        }
+        let actual_hash = hash_file(&temporary).await?;
+        if actual_hash != expected_blake3 {
+            let _ = fs::remove_file(&temporary).await;
+            return Err(AppError::conflict(
+                "assembled content hash does not match manifest",
+            ));
+        }
         fs::rename(&temporary, &final_path).await?;
         Ok((storage_reference(&self.root, &final_path), total))
     }
@@ -105,6 +132,31 @@ impl LocalStorage {
             self.root.join(path)
         };
         Ok(fs::File::open(resolved).await?)
+    }
+
+    pub async fn remove_blob(
+        &self,
+        configured_account_path: &str,
+        storage_path: &str,
+    ) -> Result<(), AppError> {
+        let account_root = self.resolve_account_root(configured_account_path)?;
+        let stored = PathBuf::from(storage_path);
+        let resolved = if stored.is_absolute() {
+            stored
+        } else {
+            validate_relative(&stored)?;
+            self.root.join(stored)
+        };
+        if !resolved.starts_with(&account_root) {
+            return Err(AppError::bad_request(
+                "blob path escapes the account storage root",
+            ));
+        }
+        match fs::remove_file(resolved).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub async fn validate_account_path(&self, configured_path: &str) -> Result<(), AppError> {
@@ -158,6 +210,22 @@ impl LocalStorage {
         validate_relative(&path)?;
         Ok(self.root.join(path))
     }
+}
+
+async fn hash_file(path: &Path) -> Result<String, AppError> {
+    use tokio::io::AsyncReadExt;
+
+    let mut file = fs::File::open(path).await?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 fn validate_relative(path: &Path) -> Result<(), AppError> {

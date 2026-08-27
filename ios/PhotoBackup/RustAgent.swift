@@ -15,8 +15,34 @@ import Foundation
 
 struct UploadPart: Codable {
     let index: UInt32
-    let ciphertextSize: UInt64
-    let ciphertextBlake3: String
+    let size: UInt64
+    let blake3: String
+}
+
+enum JSONValue: Codable {
+    case string(String), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { self = .null }
+        else if let value = try? container.decode(Bool.self) { self = .bool(value) }
+        else if let value = try? container.decode(Double.self) { self = .number(value) }
+        else if let value = try? container.decode(String.self) { self = .string(value) }
+        else if let value = try? container.decode([String: JSONValue].self) { self = .object(value) }
+        else { self = .array(try container.decode([JSONValue].self)) }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .bool(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .null: try container.encodeNil()
+        }
+    }
 }
 
 struct CreateUpload: Codable {
@@ -27,13 +53,9 @@ struct CreateUpload: Codable {
     let filename: String
     let mimeType: String
     let sourceCreatedAtMs: Int64
-    let plaintextSize: UInt64
-    let dedupToken: String
-    let wrappedKey: String
-    let keyNonce: String
-    let noncePrefix: String
-    let metadataNonce: String?
-    let metadataCiphertext: String?
+    let contentSize: UInt64
+    let contentBlake3: String
+    let metadata: JSONValue?
     let parts: [UploadPart]
 }
 
@@ -84,10 +106,8 @@ final class RustAgent {
         return value
     }()
 
-    init(databasePath: String, masterKey: String, dedupeKey: String) throws {
+    init(databasePath: String) throws {
         let config: [String: Any] = [
-            "master_key_b64": masterKey,
-            "dedupe_key_b64": dedupeKey,
             "part_size": 16 * 1024 * 1024,
         ]
         let data = try JSONSerialization.data(withJSONObject: config)

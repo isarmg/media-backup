@@ -48,14 +48,4 @@ enum KeychainStore {
         SecItemDelete(query as CFDictionary)
     }
 
-    static func randomKey(named name: String) throws -> String {
-        if let existing = load(name) { return existing }
-        var bytes = [UInt8](repeating: 0, count: 32)
-        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(errSecAllocate))
-        }
-        let encoded = Data(bytes).base64EncodedString()
-        try save(encoded, for: name)
-        return encoded
-    }
 }

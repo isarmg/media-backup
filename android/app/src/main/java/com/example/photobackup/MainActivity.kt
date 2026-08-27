@@ -3,6 +3,8 @@ package com.example.photobackup
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -10,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +28,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -53,9 +57,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -140,14 +147,27 @@ private fun BackupScreen(context: Context) {
     var backupPhotos by remember { mutableStateOf(config.backupPhotos) }
     var backupVideos by remember { mutableStateOf(config.backupVideos) }
     var cameraOnly by remember { mutableStateOf(config.cameraOnly) }
+    var deviceAlbums by remember { mutableStateOf<List<DeviceAlbum>>(emptyList()) }
+    var selectedAlbumIds by remember { mutableStateOf(config.selectedAlbumIds) }
     var snapshot by remember { mutableStateOf(config.snapshot()) }
     var workInfo by remember { mutableStateOf<WorkInfo?>(null) }
     var notice by remember { mutableStateOf("") }
     var connectionState by remember { mutableStateOf("尚未检测") }
     var checkingConnection by remember { mutableStateOf(false) }
+    var remoteAssets by remember { mutableStateOf<List<RemoteAsset>>(emptyList()) }
+    var libraryLoading by remember { mutableStateOf(false) }
+    var showingTrash by remember { mutableStateOf(false) }
+    var duplicateGroupCount by remember { mutableStateOf(0) }
+    var tagName by remember { mutableStateOf("") }
+    var remoteThumbnails by remember { mutableStateOf<Map<String, Bitmap>>(emptyMap()) }
     var pendingAction by remember { mutableStateOf<PermissionAction?>(null) }
 
     LaunchedEffect(Unit) {
+        deviceAlbums = withContext(Dispatchers.IO) { runCatching { DeviceAlbums.list(context) }.getOrDefault(emptyList()) }
+        if (!config.albumSelectionConfigured) {
+            selectedAlbumIds = deviceAlbums.mapTo(mutableSetOf()) { it.id }
+            config.selectedAlbumIds = selectedAlbumIds
+        }
         while (isActive) {
             snapshot = config.snapshot()
             workInfo = withContext(Dispatchers.IO) {
@@ -192,8 +212,8 @@ private fun BackupScreen(context: Context) {
 
     fun persistSettings(): Boolean {
         val normalizedUrl = serverUrl.trim().trimEnd('/')
-        if (!normalizedUrl.startsWith("http://") && !normalizedUrl.startsWith("https://")) {
-            notice = "服务器地址必须以 http:// 或 https:// 开头"
+        if (!normalizedUrl.startsWith("https://")) {
+            notice = "服务器地址必须使用 https://，媒体传输不允许明文 HTTP"
             return false
         }
         if (username.isBlank() || password.isBlank()) {
@@ -213,6 +233,7 @@ private fun BackupScreen(context: Context) {
         config.backupPhotos = backupPhotos
         config.backupVideos = backupVideos
         config.cameraOnly = cameraOnly
+        config.selectedAlbumIds = selectedAlbumIds
         return true
     }
 
@@ -246,6 +267,37 @@ private fun BackupScreen(context: Context) {
         }
     }
 
+    fun refreshLibrary(trashed: Boolean = showingTrash) {
+        if (!persistSettings()) return
+        libraryLoading = true
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val api = BackupApi(config.serverUrl, config.bearerToken)
+                    if (config.bearerToken.isBlank()) {
+                        config.bearerToken = api.bootstrap(config.username, config.password, Build.MODEL)
+                    }
+                    val assets = RemoteLibrary.timeline(api, trashed)
+                    config.librarySyncSequence = RemoteLibrary.advanceSync(api, config.librarySyncSequence)
+                    val thumbnails = buildMap {
+                        assets.take(12).forEach { asset ->
+                            runCatching { RemoteLibrary.thumbnail(api, asset) }.getOrNull()?.let { bytes ->
+                                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { put(asset.id, it) }
+                            }
+                        }
+                    }
+                    Triple(assets, api.duplicateGroups().length(), thumbnails)
+                }
+            }.onSuccess {
+                remoteAssets = it.first
+                duplicateGroupCount = it.second
+                remoteThumbnails = it.third
+                notice = if (trashed) "回收站已刷新" else "服务器时间线已刷新"
+            }.onFailure { notice = "加载图库失败：${it.message}" }
+            libraryLoading = false
+        }
+    }
+
     val active = workInfo?.state == WorkInfo.State.RUNNING ||
         workInfo?.state == WorkInfo.State.ENQUEUED || workInfo?.state == WorkInfo.State.BLOCKED
     val progress = workInfo?.progress
@@ -276,7 +328,7 @@ private fun BackupScreen(context: Context) {
         item {
             Text("BACKUP / PRIVATE", color = Coral, style = MaterialTheme.typography.labelLarge, letterSpacing = 1.8.sp)
             Text("备份仓", style = MaterialTheme.typography.displaySmall, color = Ink)
-            Text("原始画质保存，端到端加密，删除本地文件不会删除服务端副本。", color = Muted)
+            Text("HTTPS 加密传输，服务器保存可直接读取的原始文件；删除本地文件不会删除服务端副本。", color = Muted)
         }
         item {
             StatusCard(
@@ -296,6 +348,152 @@ private fun BackupScreen(context: Context) {
             )
         }
         item { MetricsRow(snapshot) }
+        item {
+            SectionCard(
+                if (showingTrash) "服务器回收站" else "服务器时间线",
+                "HTTPS 传输，服务器保存可直接恢复的原始媒体",
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(enabled = !libraryLoading, onClick = { refreshLibrary() }) {
+                        Text(if (libraryLoading) "加载中" else "刷新")
+                    }
+                    OutlinedButton(onClick = {
+                        showingTrash = !showingTrash
+                        refreshLibrary(showingTrash)
+                    }) { Text(if (showingTrash) "返回时间线" else "查看回收站") }
+                    if (!showingTrash && remoteAssets.isNotEmpty()) {
+                        OutlinedButton(onClick = {
+                            scope.launch {
+                                runCatching {
+                                    withContext(Dispatchers.IO) {
+                                        val api = BackupApi(config.serverUrl, config.bearerToken)
+                                        remoteAssets.forEach { RemoteLibrary.restore(context, api, it) }
+                                        remoteAssets.size
+                                    }
+                                }.onSuccess { notice = "已恢复 $it 个媒体项目" }
+                                    .onFailure { notice = "批量恢复失败：${it.message}" }
+                            }
+                        }) { Text("全部恢复") }
+                    }
+                }
+                Text(
+                    if (duplicateGroupCount == 0) "未发现重复组" else "发现 $duplicateGroupCount 组重复内容，可将多余副本移入回收站",
+                    color = Muted,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                OutlinedTextField(
+                    value = tagName,
+                    onValueChange = { tagName = it },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    label = { Text("要添加的标签") },
+                    singleLine = true,
+                )
+                if (remoteAssets.isEmpty()) {
+                    Text("尚未加载或没有媒体", color = Muted, modifier = Modifier.padding(top = 12.dp))
+                }
+                remoteAssets.take(12).forEach { asset ->
+                    val primary = asset.resources.firstOrNull { it.role == "primary" }
+                        ?: asset.resources.firstOrNull { it.role != "thumbnail" }
+                    HorizontalDivider(color = Border, modifier = Modifier.padding(vertical = 8.dp))
+                    remoteThumbnails[asset.id]?.let { thumbnail ->
+                        Image(
+                            bitmap = thumbnail.asImageBitmap(),
+                            contentDescription = primary?.filename,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.size(width = 96.dp, height = 72.dp).clip(RoundedCornerShape(10.dp)),
+                        )
+                    }
+                    Text(primary?.filename ?: "媒体资源", color = Ink, fontWeight = FontWeight.SemiBold)
+                    Text(formatTime(asset.createdAtMs), color = Muted, style = MaterialTheme.typography.bodyMedium)
+                    if (asset.tagNames.isNotEmpty()) {
+                        Text(asset.tagNames.joinToString(" · "), color = Pine, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (!asset.trashed) {
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        withContext(Dispatchers.IO) {
+                                            val api = BackupApi(config.serverUrl, config.bearerToken)
+                                            RemoteLibrary.restore(context, api, asset)
+                                        }
+                                    }.onSuccess { notice = "已恢复 $it" }
+                                        .onFailure { notice = "恢复失败：${it.message}" }
+                                }
+                            }) { Text("恢复到手机") }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        withContext(Dispatchers.IO) {
+                                            BackupApi(config.serverUrl, config.bearerToken)
+                                                .updateAsset(asset.id, favorite = !asset.favorite)
+                                        }
+                                    }.onSuccess { refreshLibrary(false) }
+                                        .onFailure { notice = "更新失败：${it.message}" }
+                                }
+                            }) { Text(if (asset.favorite) "取消收藏" else "收藏") }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        withContext(Dispatchers.IO) {
+                                            BackupApi(config.serverUrl, config.bearerToken)
+                                                .updateAsset(asset.id, archived = !asset.archived)
+                                        }
+                                    }.onSuccess { refreshLibrary(false) }
+                                        .onFailure { notice = "更新归档失败：${it.message}" }
+                                }
+                            }) { Text(if (asset.archived) "取消归档" else "归档") }
+                            if (tagName.isNotBlank()) {
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        runCatching {
+                                            withContext(Dispatchers.IO) {
+                                                val api = BackupApi(config.serverUrl, config.bearerToken)
+                                                val normalized = tagName.trim()
+                                                val tags = api.listTags()
+                                                var tagId: String? = null
+                                                for (position in 0 until tags.length()) {
+                                                    val tag = tags.getJSONObject(position)
+                                                    if (tag.getString("name").equals(normalized, ignoreCase = true)) {
+                                                        tagId = tag.getString("tag_id")
+                                                        break
+                                                    }
+                                                }
+                                                if (tagId == null) tagId = api.createTag(normalized).getString("tag_id")
+                                                api.addTagAsset(requireNotNull(tagId), asset.id)
+                                            }
+                                        }.onSuccess { refreshLibrary(false) }
+                                            .onFailure { notice = "添加标签失败：${it.message}" }
+                                    }
+                                }) { Text("加标签") }
+                            }
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        withContext(Dispatchers.IO) {
+                                            BackupApi(config.serverUrl, config.bearerToken).trashAsset(asset.id)
+                                        }
+                                    }.onSuccess { refreshLibrary(false) }
+                                        .onFailure { notice = "移入回收站失败：${it.message}" }
+                                }
+                            }) { Text("回收站", color = Coral) }
+                        } else {
+                            TextButton(onClick = {
+                                scope.launch {
+                                    runCatching {
+                                        withContext(Dispatchers.IO) {
+                                            BackupApi(config.serverUrl, config.bearerToken).restoreAsset(asset.id)
+                                        }
+                                    }.onSuccess { refreshLibrary(true) }
+                                        .onFailure { notice = "撤销删除失败：${it.message}" }
+                                }
+                            }) { Text("撤销删除") }
+                        }
+                    }
+                }
+            }
+        }
         item {
             SectionCard("自动备份", "由 Android 在满足条件时持续检查新增内容") {
                 SettingSwitch(
@@ -328,9 +526,22 @@ private fun BackupScreen(context: Context) {
                 HorizontalDivider(color = Border)
                 SettingSwitch(
                     "仅相机文件夹",
-                    if (cameraOnly) "备份 DCIM 相机内容" else "包含截图、下载和应用保存的媒体",
+                    if (cameraOnly) "只备份 DCIM；下方相册选择暂不生效" else "按下方选择备份设备相册",
                     cameraOnly,
                 ) { cameraOnly = it }
+                if (!cameraOnly && deviceAlbums.isNotEmpty()) {
+                    HorizontalDivider(color = Border)
+                    Text("设备相册", color = Ink, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 10.dp))
+                    deviceAlbums.take(24).forEach { album ->
+                        SettingSwitch(
+                            album.name,
+                            "${album.count} 项；关闭即排除",
+                            album.id in selectedAlbumIds,
+                        ) { enabled ->
+                            selectedAlbumIds = if (enabled) selectedAlbumIds + album.id else selectedAlbumIds - album.id
+                        }
+                    }
+                }
             }
         }
         item {
@@ -340,7 +551,7 @@ private fun BackupScreen(context: Context) {
                     onValueChange = { serverUrl = it },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("服务器地址") },
-                    placeholder = { Text("http://192.168.31.244:18080") },
+                    placeholder = { Text("https://photos.example.com") },
                     singleLine = true,
                 )
                 Spacer(Modifier.height(10.dp))
@@ -360,10 +571,6 @@ private fun BackupScreen(context: Context) {
                     visualTransformation = PasswordVisualTransformation(),
                     singleLine = true,
                 )
-                if (serverUrl.trim().startsWith("http://")) {
-                    Spacer(Modifier.height(8.dp))
-                    Text("当前为明文 HTTP，仅建议在可信局域网内使用。", color = Coral, style = MaterialTheme.typography.bodyMedium)
-                }
                 Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(onClick = { requestAction(PermissionAction.SAVE) }) { Text("保存并应用") }
