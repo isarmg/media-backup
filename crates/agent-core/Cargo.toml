@@ -1,0 +1,14 @@
+[package]
+name = "photo-backup-agent-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+photo-backup-crypto = { path = "../crypto" }
+photo-backup-protocol = { path = "../protocol" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

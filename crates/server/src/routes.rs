@@ -1,0 +1,649 @@
+use axum::{
+    body::{to_bytes, Body},
+    extract::{DefaultBodyLimit, Extension, Path, State},
+    http::{header, HeaderValue, StatusCode},
+    middleware,
+    response::{IntoResponse, Response},
+    routing::{get, post, put},
+    Json, Router,
+};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use photo_backup_protocol::{
+    BootstrapRequest, BootstrapResponse, CompleteUploadResponse, CreateUploadRequest,
+    CreateUploadResponse, MediaKind, ResourceManifest, UploadDisposition, UploadPartSpec,
+    UploadStatusResponse,
+};
+use rand::{rngs::OsRng, RngCore};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use sqlx::{PgPool, Row};
+use tokio_util::io::ReaderStream;
+use uuid::Uuid;
+
+use crate::{
+    admin,
+    auth::{require_auth, AuthContext},
+    config::Config,
+    error::AppError,
+    password,
+    storage::LocalStorage,
+};
+
+#[derive(Clone)]
+pub struct AppState {
+    pub pool: PgPool,
+    pub storage: LocalStorage,
+    pub config: Config,
+}
+
+pub fn router(state: AppState) -> Router {
+    let protected = Router::new()
+        .route("/v1/uploads", post(create_upload))
+        .route("/v1/uploads/{id}", get(upload_status))
+        .route("/v1/uploads/{id}/parts/{index}", put(put_part))
+        .route("/v1/uploads/{id}/complete", post(complete_upload))
+        .route("/v1/resources", get(list_resources))
+        .route("/v1/resources/{id}", get(resource_manifest))
+        .route("/v1/resources/{id}/content", get(resource_content))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
+
+    let admin_protected = Router::new()
+        .route("/admin/api/overview", get(admin::overview))
+        .route("/admin/api/users", post(admin::create_user))
+        .route("/admin/api/users/{id}", put(admin::update_user))
+        .route(
+            "/admin/api/users/{id}/reset-password",
+            post(admin::reset_user_password),
+        )
+        .route("/admin/api/logout", post(admin::logout))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            admin::require_admin,
+        ));
+
+    Router::new()
+        .route("/health", get(health))
+        .route("/v1/auth/bootstrap", post(bootstrap))
+        .route("/admin", get(admin::page))
+        .route("/admin/", get(admin::page))
+        .route("/admin/api/login", post(admin::login))
+        .merge(admin_protected)
+        .merge(protected)
+        .layer(DefaultBodyLimit::max(state.config.max_part_bytes))
+        .with_state(state)
+}
+
+async fn health() -> &'static str {
+    "ok"
+}
+
+async fn bootstrap(
+    State(state): State<AppState>,
+    Json(request): Json<BootstrapRequest>,
+) -> Result<Json<BootstrapResponse>, AppError> {
+    let username = request.username.trim();
+    if username.is_empty()
+        || request.password.is_empty()
+        || request.device_name.trim().is_empty()
+        || request.platform.trim().is_empty()
+    {
+        return Err(AppError::bad_request(
+            "username, password, device_name and platform are required",
+        ));
+    }
+    let account: Option<(Uuid, Option<String>)> = sqlx::query_as(
+        "SELECT id, password_hash FROM accounts WHERE lower(username) = lower($1) AND enabled = TRUE",
+    )
+    .bind(username)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some((account_id, Some(password_hash))) = account else {
+        return Err(AppError::unauthorized());
+    };
+    if !password::verify_password(request.password, password_hash).await {
+        return Err(AppError::unauthorized());
+    }
+    let mut transaction = state.pool.begin().await?;
+    let mut token_bytes = [0_u8; 32];
+    OsRng.fill_bytes(&mut token_bytes);
+    let bearer_token = URL_SAFE_NO_PAD.encode(token_bytes);
+    let token_hash = Sha256::digest(bearer_token.as_bytes()).to_vec();
+    let device_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO devices(account_id, name, platform, token_hash) VALUES ($1, $2, $3, $4) RETURNING id",
+    )
+    .bind(account_id)
+    .bind(request.device_name.trim())
+    .bind(request.platform.trim())
+    .bind(token_hash)
+    .fetch_one(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Json(BootstrapResponse {
+        account_id,
+        device_id,
+        bearer_token,
+    }))
+}
+
+async fn create_upload(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Json(request): Json<CreateUploadRequest>,
+) -> Result<Json<CreateUploadResponse>, AppError> {
+    validate_upload_request(&request, state.config.max_part_bytes)?;
+    let mut transaction = state.pool.begin().await?;
+    let policy = account_policy_for_update(&mut transaction, auth.account_id).await?;
+    let asset_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO assets(account_id, device_id, source_asset_id, media_kind, source_created_at_ms)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT(account_id, device_id, source_asset_id) DO UPDATE SET
+            media_kind = excluded.media_kind,
+            source_created_at_ms = excluded.source_created_at_ms,
+            updated_at = now(),
+            deleted_at = NULL
+        RETURNING id
+        "#,
+    )
+    .bind(auth.account_id)
+    .bind(auth.device_id)
+    .bind(&request.source_asset_id)
+    .bind(request.media_kind.as_str())
+    .bind(request.source_created_at_ms)
+    .fetch_one(&mut *transaction)
+    .await?;
+
+    let existing_blob: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM blobs WHERE account_id = $1 AND dedup_token = $2")
+            .bind(auth.account_id)
+            .bind(&request.dedup_token)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    if let Some(blob_id) = existing_blob {
+        let resource_id = upsert_resource(&mut transaction, asset_id, blob_id, &request).await?;
+        transaction.commit().await?;
+        return Ok(Json(CreateUploadResponse {
+            disposition: UploadDisposition::Complete,
+            upload_id: None,
+            resource_id: Some(resource_id),
+            missing_parts: Vec::new(),
+        }));
+    }
+
+    let existing_upload: Option<Uuid> = sqlx::query_scalar(
+        r#"
+        SELECT id FROM uploads
+        WHERE account_id = $1 AND device_id = $2 AND source_resource_id = $3
+          AND dedup_token = $4 AND state = 'uploading'
+        ORDER BY created_at DESC LIMIT 1
+        "#,
+    )
+    .bind(auth.account_id)
+    .bind(auth.device_id)
+    .bind(&request.source_resource_id)
+    .bind(&request.dedup_token)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if let Some(upload_id) = existing_upload {
+        transaction.commit().await?;
+        let missing_parts = missing_parts(&state.pool, upload_id).await?;
+        return Ok(Json(CreateUploadResponse {
+            disposition: UploadDisposition::Upload,
+            upload_id: Some(upload_id),
+            resource_id: None,
+            missing_parts,
+        }));
+    }
+
+    ensure_quota(
+        &mut transaction,
+        auth.account_id,
+        policy.quota_bytes,
+        request_ciphertext_size(&request)?,
+    )
+    .await?;
+
+    let request_json = serde_json::to_value(&request)?;
+    let upload_id: Uuid = sqlx::query_scalar(
+        r#"
+        INSERT INTO uploads(account_id, device_id, asset_id, source_resource_id, dedup_token, request)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id
+        "#,
+    )
+    .bind(auth.account_id)
+    .bind(auth.device_id)
+    .bind(asset_id)
+    .bind(&request.source_resource_id)
+    .bind(&request.dedup_token)
+    .bind(request_json)
+    .fetch_one(&mut *transaction)
+    .await?;
+    for part in &request.parts {
+        sqlx::query(
+            "INSERT INTO upload_parts(upload_id, part_index, expected_size, expected_blake3) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(upload_id)
+        .bind(part.index as i32)
+        .bind(part.ciphertext_size as i64)
+        .bind(&part.ciphertext_blake3)
+        .execute(&mut *transaction)
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(Json(CreateUploadResponse {
+        disposition: UploadDisposition::Upload,
+        upload_id: Some(upload_id),
+        resource_id: None,
+        missing_parts: request.parts.iter().map(|part| part.index).collect(),
+    }))
+}
+
+async fn put_part(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path((upload_id, index)): Path<(Uuid, u32)>,
+    body: Body,
+) -> Result<StatusCode, AppError> {
+    let row = sqlx::query(
+        r#"
+        SELECT p.expected_size, p.expected_blake3, u.state
+        FROM upload_parts p JOIN uploads u ON u.id = p.upload_id
+        WHERE p.upload_id = $1 AND p.part_index = $2 AND u.account_id = $3
+        "#,
+    )
+    .bind(upload_id)
+    .bind(index as i32)
+    .bind(auth.account_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("upload part not found"))?;
+    if row.get::<String, _>("state") == "complete" {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    let spec = UploadPartSpec {
+        index,
+        ciphertext_size: row.get::<i64, _>("expected_size") as u64,
+        ciphertext_blake3: row.get("expected_blake3"),
+    };
+    let bytes = to_bytes(body, state.config.max_part_bytes)
+        .await
+        .map_err(|_| AppError::new(StatusCode::PAYLOAD_TOO_LARGE, "part exceeds server limit"))?;
+    state.storage.put_part(upload_id, &spec, bytes).await?;
+    sqlx::query(
+        "UPDATE upload_parts SET received_size = expected_size, received_at = now() WHERE upload_id = $1 AND part_index = $2",
+    )
+    .bind(upload_id)
+    .bind(index as i32)
+    .execute(&state.pool)
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn upload_status(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(upload_id): Path<Uuid>,
+) -> Result<Json<UploadStatusResponse>, AppError> {
+    let state_value: String =
+        sqlx::query_scalar("SELECT state FROM uploads WHERE id = $1 AND account_id = $2")
+            .bind(upload_id)
+            .bind(auth.account_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| AppError::not_found("upload not found"))?;
+    Ok(Json(UploadStatusResponse {
+        upload_id,
+        state: state_value,
+        missing_parts: missing_parts(&state.pool, upload_id).await?,
+    }))
+}
+
+async fn complete_upload(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(upload_id): Path<Uuid>,
+) -> Result<Json<CompleteUploadResponse>, AppError> {
+    let row = sqlx::query(
+        "SELECT asset_id, request, state FROM uploads WHERE id = $1 AND account_id = $2",
+    )
+    .bind(upload_id)
+    .bind(auth.account_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("upload not found"))?;
+    let asset_id: Uuid = row.get("asset_id");
+    let request: CreateUploadRequest = serde_json::from_value(row.get::<Value, _>("request"))?;
+    if !missing_parts(&state.pool, upload_id).await?.is_empty() {
+        return Err(AppError::conflict("upload still has missing parts"));
+    }
+    let mut transaction = state.pool.begin().await?;
+    let policy = account_policy_for_update(&mut transaction, auth.account_id).await?;
+    let existing_blob: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM blobs WHERE account_id = $1 AND dedup_token = $2 FOR UPDATE",
+    )
+    .bind(auth.account_id)
+    .bind(&request.dedup_token)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let (blob_id, deduplicated) = if let Some(id) = existing_blob {
+        (id, true)
+    } else {
+        let expected_size = request_ciphertext_size(&request)?;
+        let used_bytes: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(ciphertext_size), 0)::BIGINT FROM blobs WHERE account_id = $1",
+        )
+        .bind(auth.account_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if policy.quota_bytes > 0
+            && used_bytes.checked_add(expected_size).unwrap_or(i64::MAX) > policy.quota_bytes
+        {
+            return Err(AppError::new(
+                StatusCode::INSUFFICIENT_STORAGE,
+                "account storage quota exceeded",
+            ));
+        }
+        let (storage_path, ciphertext_size) = state
+            .storage
+            .finalize(
+                auth.account_id,
+                &policy.storage_path,
+                upload_id,
+                &request.parts,
+            )
+            .await?;
+        let id = sqlx::query_scalar(
+            r#"
+            INSERT INTO blobs(
+                account_id, dedup_token, plaintext_size, ciphertext_size, storage_path,
+                wrapped_key, key_nonce, nonce_prefix, part_manifest
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
+            "#,
+        )
+        .bind(auth.account_id)
+        .bind(&request.dedup_token)
+        .bind(request.plaintext_size as i64)
+        .bind(ciphertext_size as i64)
+        .bind(storage_path)
+        .bind(&request.wrapped_key)
+        .bind(&request.key_nonce)
+        .bind(&request.nonce_prefix)
+        .bind(serde_json::to_value(&request.parts)?)
+        .fetch_one(&mut *transaction)
+        .await?;
+        (id, false)
+    };
+    let resource_id = upsert_resource(&mut transaction, asset_id, blob_id, &request).await?;
+    sqlx::query(
+        "UPDATE uploads SET state = 'complete', completed_at = now(), updated_at = now() WHERE id = $1",
+    )
+    .bind(upload_id)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Json(CompleteUploadResponse {
+        resource_id,
+        deduplicated,
+    }))
+}
+
+async fn list_resources(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+) -> Result<Json<Vec<ResourceManifest>>, AppError> {
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        r#"
+        SELECT r.id FROM resources r
+        JOIN assets a ON a.id = r.asset_id
+        WHERE a.account_id = $1 AND a.deleted_at IS NULL
+        ORDER BY a.source_created_at_ms DESC, r.created_at DESC
+        LIMIT 1000
+        "#,
+    )
+    .bind(auth.account_id)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut resources = Vec::with_capacity(ids.len());
+    for id in ids {
+        resources.push(load_manifest(&state.pool, auth.account_id, id).await?);
+    }
+    Ok(Json(resources))
+}
+
+async fn resource_manifest(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(resource_id): Path<Uuid>,
+) -> Result<Json<ResourceManifest>, AppError> {
+    Ok(Json(
+        load_manifest(&state.pool, auth.account_id, resource_id).await?,
+    ))
+}
+
+async fn resource_content(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthContext>,
+    Path(resource_id): Path<Uuid>,
+) -> Result<Response, AppError> {
+    let row = sqlx::query(
+        r#"
+        SELECT b.storage_path, b.ciphertext_size
+        FROM resources r
+        JOIN assets a ON a.id = r.asset_id
+        JOIN blobs b ON b.id = r.blob_id
+        WHERE r.id = $1 AND a.account_id = $2
+        "#,
+    )
+    .bind(resource_id)
+    .bind(auth.account_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("resource not found"))?;
+    let file = state.storage.open_blob(row.get("storage_path")).await?;
+    let stream = ReaderStream::new(file);
+    let mut response = Body::from_stream(stream).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&row.get::<i64, _>("ciphertext_size").to_string())
+            .map_err(|_| AppError::bad_request("invalid content length"))?,
+    );
+    Ok(response)
+}
+
+fn validate_upload_request(
+    request: &CreateUploadRequest,
+    max_part_bytes: usize,
+) -> Result<(), AppError> {
+    if request.source_asset_id.is_empty()
+        || request.source_resource_id.is_empty()
+        || request.filename.is_empty()
+        || request.mime_type.is_empty()
+        || request.dedup_token.len() != 64
+        || request.parts.is_empty()
+    {
+        return Err(AppError::bad_request("upload manifest is incomplete"));
+    }
+    for (position, part) in request.parts.iter().enumerate() {
+        if part.index as usize != position
+            || part.ciphertext_size == 0
+            || part.ciphertext_size > max_part_bytes as u64
+            || part.ciphertext_blake3.len() != 64
+        {
+            return Err(AppError::bad_request("invalid part manifest"));
+        }
+    }
+    Ok(())
+}
+
+async fn missing_parts(pool: &PgPool, upload_id: Uuid) -> Result<Vec<u32>, AppError> {
+    let values: Vec<i32> = sqlx::query_scalar(
+        "SELECT part_index FROM upload_parts WHERE upload_id = $1 AND received_at IS NULL ORDER BY part_index",
+    )
+    .bind(upload_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(values.into_iter().map(|value| value as u32).collect())
+}
+
+async fn upsert_resource(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    asset_id: Uuid,
+    blob_id: Uuid,
+    request: &CreateUploadRequest,
+) -> Result<Uuid, AppError> {
+    Ok(sqlx::query_scalar(
+        r#"
+        INSERT INTO resources(
+            asset_id, blob_id, source_resource_id, role, filename, mime_type,
+            metadata_nonce, metadata_ciphertext
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT(asset_id, source_resource_id) DO UPDATE SET
+            blob_id = excluded.blob_id,
+            role = excluded.role,
+            filename = excluded.filename,
+            mime_type = excluded.mime_type,
+            metadata_nonce = excluded.metadata_nonce,
+            metadata_ciphertext = excluded.metadata_ciphertext
+        RETURNING id
+        "#,
+    )
+    .bind(asset_id)
+    .bind(blob_id)
+    .bind(&request.source_resource_id)
+    .bind(&request.role)
+    .bind(&request.filename)
+    .bind(&request.mime_type)
+    .bind(&request.metadata_nonce)
+    .bind(&request.metadata_ciphertext)
+    .fetch_one(&mut **transaction)
+    .await?)
+}
+
+async fn load_manifest(
+    pool: &PgPool,
+    account_id: Uuid,
+    resource_id: Uuid,
+) -> Result<ResourceManifest, AppError> {
+    let row = sqlx::query(
+        r#"
+        SELECT r.id AS resource_id, r.asset_id, r.source_resource_id, r.role, r.filename,
+               r.mime_type, r.metadata_nonce, r.metadata_ciphertext,
+               a.source_asset_id, a.media_kind, a.source_created_at_ms,
+               b.plaintext_size, b.ciphertext_size, b.wrapped_key, b.key_nonce,
+               b.nonce_prefix, b.part_manifest
+        FROM resources r
+        JOIN assets a ON a.id = r.asset_id
+        JOIN blobs b ON b.id = r.blob_id
+        WHERE r.id = $1 AND a.account_id = $2
+        "#,
+    )
+    .bind(resource_id)
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("resource not found"))?;
+    let media_kind = match row.get::<String, _>("media_kind").as_str() {
+        "photo" => MediaKind::Photo,
+        "video" => MediaKind::Video,
+        _ => MediaKind::Other,
+    };
+    Ok(ResourceManifest {
+        resource_id: row.get("resource_id"),
+        asset_id: row.get("asset_id"),
+        source_asset_id: row.get("source_asset_id"),
+        source_resource_id: row.get("source_resource_id"),
+        media_kind,
+        role: row.get("role"),
+        filename: row.get("filename"),
+        mime_type: row.get("mime_type"),
+        source_created_at_ms: row.get("source_created_at_ms"),
+        plaintext_size: row.get::<i64, _>("plaintext_size") as u64,
+        ciphertext_size: row.get::<i64, _>("ciphertext_size") as u64,
+        wrapped_key: row.get("wrapped_key"),
+        key_nonce: row.get("key_nonce"),
+        nonce_prefix: row.get("nonce_prefix"),
+        metadata_nonce: row.get("metadata_nonce"),
+        metadata_ciphertext: row.get("metadata_ciphertext"),
+        parts: serde_json::from_value(row.get::<Value, _>("part_manifest"))?,
+        content_path: format!("/v1/resources/{resource_id}/content"),
+    })
+}
+
+struct AccountPolicy {
+    storage_path: String,
+    quota_bytes: i64,
+}
+
+async fn account_policy_for_update(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    account_id: Uuid,
+) -> Result<AccountPolicy, AppError> {
+    let row = sqlx::query(
+        "SELECT storage_path, quota_bytes, enabled FROM accounts WHERE id = $1 FOR UPDATE",
+    )
+    .bind(account_id)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .ok_or_else(AppError::unauthorized)?;
+    if !row.get::<bool, _>("enabled") {
+        return Err(AppError::new(StatusCode::FORBIDDEN, "account is disabled"));
+    }
+    Ok(AccountPolicy {
+        storage_path: row.get("storage_path"),
+        quota_bytes: row.get("quota_bytes"),
+    })
+}
+
+async fn ensure_quota(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    account_id: Uuid,
+    quota_bytes: i64,
+    requested_bytes: i64,
+) -> Result<(), AppError> {
+    if quota_bytes == 0 {
+        return Ok(());
+    }
+    let used_bytes: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(ciphertext_size), 0)::BIGINT FROM blobs WHERE account_id = $1",
+    )
+    .bind(account_id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    let reserved_bytes: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COALESCE(SUM(p.expected_size), 0)::BIGINT
+        FROM upload_parts p
+        JOIN uploads u ON u.id = p.upload_id
+        WHERE u.account_id = $1 AND u.state = 'uploading'
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&mut **transaction)
+    .await?;
+    let projected = used_bytes
+        .checked_add(reserved_bytes)
+        .and_then(|value| value.checked_add(requested_bytes))
+        .unwrap_or(i64::MAX);
+    if projected > quota_bytes {
+        return Err(AppError::new(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "account storage quota exceeded",
+        ));
+    }
+    Ok(())
+}
+
+fn request_ciphertext_size(request: &CreateUploadRequest) -> Result<i64, AppError> {
+    let total = request
+        .parts
+        .iter()
+        .try_fold(0_u64, |sum, part| sum.checked_add(part.ciphertext_size));
+    let total = total.ok_or_else(|| AppError::bad_request("upload size overflow"))?;
+    i64::try_from(total).map_err(|_| AppError::bad_request("upload is too large"))
+}

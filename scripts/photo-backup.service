@@ -1,0 +1,15 @@
+[Unit]
+Description=Encrypted photo backup server
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/photo-backup
+EnvironmentFile=/mnt/photo-backup/.env
+ExecStart=/mnt/photo-backup/target/release/photo-backup-server
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
