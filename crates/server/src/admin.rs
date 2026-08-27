@@ -89,6 +89,27 @@ pub(crate) async fn page() -> Response {
     response
 }
 
+pub(crate) async fn design_styles() -> Response {
+    stylesheet_response(ADMIN_DESIGN_CSS, "public, max-age=3600")
+}
+
+pub(crate) async fn product_styles() -> Response {
+    stylesheet_response(ADMIN_CSS, "no-cache")
+}
+
+fn stylesheet_response(contents: &'static str, cache_control: &'static str) -> Response {
+    let mut response = contents.into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/css; charset=utf-8"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_control),
+    );
+    response
+}
+
 pub(crate) async fn login(
     State(state): State<AppState>,
     Json(request): Json<LoginRequest>,
@@ -395,3 +416,5 @@ fn session_value(state: &AppState) -> String {
 }
 
 const ADMIN_HTML: &str = include_str!("admin.html");
+const ADMIN_CSS: &str = include_str!("admin.css");
+const ADMIN_DESIGN_CSS: &str = include_str!("../../../vendor/sarmg-design/bundle.css");

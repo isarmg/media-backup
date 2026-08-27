@@ -9,7 +9,7 @@ mod storage;
 use anyhow::Result;
 use config::Config;
 use routes::AppState;
-use sqlx::postgres::PgPoolOptions;
+use sarmg_platform_postgres::{connect, run_migrations, PostgresConfig};
 use storage::LocalStorage;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -21,11 +21,8 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
     let config = Config::from_env()?;
-    let pool = PgPoolOptions::new()
-        .max_connections(20)
-        .connect(&config.database_url)
-        .await?;
-    sqlx::migrate!("../../migrations").run(&pool).await?;
+    let pool = connect(&PostgresConfig::new(&config.database_url)).await?;
+    run_migrations(&pool, &sqlx::migrate!("../../migrations")).await?;
     let storage = LocalStorage::new(config.data_dir.clone()).await?;
     let app = routes::router(AppState {
         pool,

@@ -63,9 +63,13 @@ pub fn router(state: AppState) -> Router {
 
     Router::new()
         .route("/health", get(health))
+        .route("/health/live", get(live))
+        .route("/health/ready", get(ready))
         .route("/v1/auth/bootstrap", post(bootstrap))
         .route("/admin", get(admin::page))
         .route("/admin/", get(admin::page))
+        .route("/admin/sarmg-design.css", get(admin::design_styles))
+        .route("/admin/admin.css", get(admin::product_styles))
         .route("/admin/api/login", post(admin::login))
         .merge(admin_protected)
         .merge(protected)
@@ -75,6 +79,32 @@ pub fn router(state: AppState) -> Router {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+async fn live() -> Json<Value> {
+    Json(serde_json::json!({ "status": "ok" }))
+}
+
+async fn ready(State(state): State<AppState>) -> Response {
+    let (database, storage) = tokio::join!(
+        sarmg_platform_postgres::ready(&state.pool),
+        state.storage.probe_readiness()
+    );
+    let storage = storage.is_ok();
+    let ready = database && storage;
+    (
+        if ready {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(serde_json::json!({
+            "status": if ready { "ready" } else { "not-ready" },
+            "database": database,
+            "storage": storage
+        })),
+    )
+        .into_response()
 }
 
 async fn bootstrap(

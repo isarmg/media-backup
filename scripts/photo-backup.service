@@ -5,9 +5,9 @@ Requires=postgresql.service
 
 [Service]
 Type=simple
-WorkingDirectory=/mnt/photo-backup
-EnvironmentFile=/mnt/photo-backup/.env
-ExecStart=/mnt/photo-backup/target/release/photo-backup-server
+WorkingDirectory=/mnt/sarmg.org/photo-backup
+EnvironmentFile=/mnt/sarmg.org/photo-backup/.env
+ExecStart=/mnt/sarmg.org/photo-backup/target/release/photo-backup-server
 Restart=on-failure
 RestartSec=3
 

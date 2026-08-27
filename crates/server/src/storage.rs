@@ -122,6 +122,30 @@ impl LocalStorage {
         Ok(())
     }
 
+    /// Exercise the same local create/write/fsync/remove path required by uploads.
+    pub async fn probe_readiness(&self) -> Result<(), AppError> {
+        let probe = self
+            .root
+            .join(format!(".photo-backup-readiness-{}", Uuid::new_v4()));
+        let operation = async {
+            let mut file = fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&probe)
+                .await?;
+            file.write_all(b"photo-backup-readiness-v1").await?;
+            file.sync_all().await?;
+            drop(file);
+            Ok::<(), AppError>(())
+        }
+        .await;
+        let cleanup = fs::remove_file(&probe).await;
+        operation?;
+        cleanup?;
+        fs::File::open(&self.root).await?.sync_all().await?;
+        Ok(())
+    }
+
     fn resolve_account_root(&self, configured_path: &str) -> Result<PathBuf, AppError> {
         let value = configured_path.trim();
         if value.is_empty() {
