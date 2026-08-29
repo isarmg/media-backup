@@ -811,6 +811,7 @@ dependencies = [
 [[package]]
 name = "isarmg-postgres"
 version = "0.1.0"
+source = "git+https://github.com/isarmg/isarmg-foundation.git?rev=a9a38c8f40ec6d17e482ffda25b455465ce2daf7#a9a38c8f40ec6d17e482ffda25b455465ce2daf7"
 dependencies = [
  "sqlx",
  "thiserror 2.0.20",
