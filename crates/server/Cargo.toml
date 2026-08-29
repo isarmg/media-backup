@@ -14,7 +14,7 @@ blake3.workspace = true
 bytes.workspace = true
 photo-backup-protocol = { path = "../protocol" }
 rand.workspace = true
-sarmg-platform-postgres.workspace = true
+isarmg-postgres.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

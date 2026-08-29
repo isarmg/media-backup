@@ -809,6 +809,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "isarmg-postgres"
+version = "0.1.0"
+dependencies = [
+ "sqlx",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1148,9 +1156,9 @@ dependencies = [
  "base64",
  "blake3",
  "bytes",
+ "isarmg-postgres",
  "photo-backup-protocol",
  "rand",
- "sarmg-platform-postgres",
  "serde",
  "serde_json",
  "sha2",
@@ -1411,15 +1419,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
-]
-
-[[package]]
-name = "sarmg-platform-postgres"
-version = "0.1.0"
-source = "git+https://github.com/isarmg/sarmg-platform.git?rev=8803327231df35e907960f8fbb50ef1f19ac4397#8803327231df35e907960f8fbb50ef1f19ac4397"
-dependencies = [
- "sqlx",
- "thiserror 2.0.20",
 ]
 
 [[package]]

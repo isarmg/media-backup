@@ -128,7 +128,7 @@ async fn live() -> Json<Value> {
 
 async fn ready(State(state): State<AppState>) -> Response {
     let (database, storage) = tokio::join!(
-        sarmg_platform_postgres::ready(&state.pool),
+        isarmg_postgres::ready(&state.pool),
         state.storage.probe_readiness()
     );
     let storage = storage.is_ok();

@@ -13,7 +13,7 @@ mod storage;
 use anyhow::Result;
 use config::Config;
 use routes::AppState;
-use sarmg_platform_postgres::{connect, run_migrations, PostgresConfig};
+use isarmg_postgres::{connect, run_migrations, PostgresConfig};
 use storage::LocalStorage;
 use tower_http::trace::TraceLayer;
 use tracing::info;
