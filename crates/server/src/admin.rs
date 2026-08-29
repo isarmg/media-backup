@@ -253,12 +253,12 @@ pub(crate) async fn update_user(
         WHERE id = ?
         "#,
     )
-    .bind(id)
     .bind(username)
     .bind(display_name)
     .bind(storage_path)
     .bind(request.quota_bytes)
     .bind(request.enabled)
+    .bind(id)
     .execute(&state.pool)
     .await?;
     if changed.rows_affected() == 0 {
@@ -275,8 +275,8 @@ pub(crate) async fn reset_user_password(
     password::validate_password(&request.password)?;
     let password_hash = password::hash_password(request.password).await?;
     let changed = sqlx::query("UPDATE accounts SET password_hash = ? WHERE id = ?")
-        .bind(id)
         .bind(password_hash)
+        .bind(id)
         .execute(&state.pool)
         .await?;
     if changed.rows_affected() == 0 {

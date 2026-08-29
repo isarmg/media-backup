@@ -201,6 +201,7 @@ async fn bootstrap(
     )
     .bind(account_id)
     .bind(device_id)
+    .bind(device_id)
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
@@ -475,6 +476,7 @@ async fn complete_upload(
             "#,
         )
         .bind(auth.account_id)
+        .bind(&request.content_blake3)
         .bind(&request.content_blake3)
         .bind(request.content_size as i64)
         .bind(stored_size as i64)
