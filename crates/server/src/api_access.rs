@@ -41,7 +41,7 @@ pub async fn create_api_key(
         r#"
         INSERT INTO api_keys(account_id, device_id, name, prefix, token_hash)
         VALUES (?, ?, ?, ?, ?)
-        RETURNING id, (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS created_at_ms
+        RETURNING id, (CAST(strftime('%s', created_at) AS INTEGER) * 1000) AS created_at_ms
         "#,
     )
     .bind(auth.account_id)
@@ -79,9 +79,9 @@ pub async fn list_api_keys(
     let rows = sqlx::query(
         r#"
         SELECT id, name, prefix,
-               (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS created_at_ms,
+               (CAST(strftime('%s', created_at) AS INTEGER) * 1000) AS created_at_ms,
                CASE WHEN last_used_at IS NULL THEN NULL
-                    ELSE (EXTRACT(EPOCH FROM last_used_at) * 1000)::BIGINT END AS last_used_at_ms
+                    ELSE (CAST(strftime('%s', last_used_at) AS INTEGER) * 1000) END AS last_used_at_ms
         FROM api_keys
         WHERE account_id = ? AND revoked_at IS NULL
         ORDER BY created_at DESC
@@ -138,9 +138,9 @@ pub async fn audit_events(
     let rows = sqlx::query(
         r#"
         SELECT sequence, actor_kind, action, entity_kind, entity_id,
-               (EXTRACT(EPOCH FROM occurred_at) * 1000)::BIGINT AS occurred_at_ms
+               (CAST(strftime('%s', occurred_at) AS INTEGER) * 1000) AS occurred_at_ms
         FROM audit_events
-        WHERE account_id = ? AND (?::BIGINT IS NULL OR sequence < ?)
+        WHERE account_id = ? AND (? IS NULL OR sequence < ?)
         ORDER BY sequence DESC LIMIT ?
         "#,
     )

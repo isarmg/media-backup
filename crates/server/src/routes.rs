@@ -441,7 +441,7 @@ async fn complete_upload(
     } else {
         let expected_size = request_storage_size(&request)?;
         let used_bytes: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(stored_size), 0)::BIGINT FROM blobs WHERE account_id = ?",
+            "SELECT COALESCE(SUM(stored_size), 0) FROM blobs WHERE account_id = ?",
         )
         .bind(auth.account_id)
         .fetch_one(&mut *transaction)
@@ -757,14 +757,14 @@ async fn ensure_quota(
         return Ok(());
     }
     let used_bytes: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(stored_size), 0)::BIGINT FROM blobs WHERE account_id = ?",
+        "SELECT COALESCE(SUM(stored_size), 0) FROM blobs WHERE account_id = ?",
     )
     .bind(account_id)
     .fetch_one(&mut **transaction)
     .await?;
     let reserved_bytes: i64 = sqlx::query_scalar(
         r#"
-        SELECT COALESCE(SUM(p.expected_size), 0)::BIGINT
+        SELECT COALESCE(SUM(p.expected_size), 0)
         FROM upload_parts p
         JOIN uploads u ON u.id = p.upload_id
         WHERE u.account_id = ? AND u.state = 'uploading'

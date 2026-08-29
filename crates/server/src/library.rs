@@ -60,13 +60,13 @@ pub async fn timeline(
         FROM assets
         WHERE account_id = ?
           AND ((? AND deleted_at IS NOT NULL) OR (NOT ? AND deleted_at IS NULL))
-          AND (?::BIGINT IS NULL OR (source_created_at_ms, id) < (?, ?))
-          AND (?::BOOLEAN IS NULL OR favorite = ?)
-          AND (?::BOOLEAN IS NULL OR archived = ?)
-          AND (?::UUID IS NULL OR EXISTS (
+          AND (? IS NULL OR source_created_at_ms < ? OR (source_created_at_ms = ? AND id < ?))
+          AND (? IS NULL OR favorite = ?)
+          AND (? IS NULL OR archived = ?)
+          AND (? IS NULL OR EXISTS (
               SELECT 1 FROM album_assets aa WHERE aa.album_id = ? AND aa.asset_id = assets.id
           ))
-          AND (?::UUID IS NULL OR EXISTS (
+          AND (? IS NULL OR EXISTS (
               SELECT 1 FROM tag_assets ta WHERE ta.tag_id = ? AND ta.asset_id = assets.id
           ))
         ORDER BY source_created_at_ms DESC, id DESC
@@ -75,6 +75,9 @@ pub async fn timeline(
     )
     .bind(auth.account_id)
     .bind(query.trashed)
+    .bind(query.trashed)
+    .bind(before_ms)
+    .bind(before_ms)
     .bind(before_ms)
     .bind(before_id)
     .bind(query.favorite)
@@ -115,7 +118,7 @@ pub async fn sync_changes(
     let rows = sqlx::query(
         r#"
         SELECT sequence, entity_kind, entity_id, operation,
-               (EXTRACT(EPOCH FROM changed_at) * 1000)::BIGINT AS changed_at_ms
+               (CAST(strftime('%s', changed_at) AS INTEGER) * 1000) AS changed_at_ms
         FROM account_changes
         WHERE account_id = ? AND sequence > ?
         ORDER BY sequence
@@ -350,8 +353,8 @@ pub async fn list_albums(
     let rows = sqlx::query(
         r#"
         SELECT a.id, a.source_album_id, a.name,
-               COUNT(aa.asset_id)::BIGINT AS asset_count,
-               (EXTRACT(EPOCH FROM a.updated_at) * 1000)::BIGINT AS updated_at_ms
+               COUNT(aa.asset_id) AS asset_count,
+               (CAST(strftime('%s', a.updated_at) AS INTEGER) * 1000) AS updated_at_ms
         FROM albums a LEFT JOIN album_assets aa ON aa.album_id = a.id
         WHERE a.account_id = ?
         GROUP BY a.id ORDER BY a.updated_at DESC
@@ -439,8 +442,8 @@ pub async fn sync_album(
     let row = sqlx::query(
         r#"
         SELECT a.id, a.source_album_id, a.name,
-               COUNT(aa.asset_id)::BIGINT AS asset_count,
-               (EXTRACT(EPOCH FROM a.updated_at) * 1000)::BIGINT AS updated_at_ms
+               COUNT(aa.asset_id) AS asset_count,
+               (CAST(strftime('%s', a.updated_at) AS INTEGER) * 1000) AS updated_at_ms
         FROM albums a LEFT JOIN album_assets aa ON aa.album_id = a.id
         WHERE a.id = ? AND a.account_id = ? GROUP BY a.id
         "#,
@@ -458,8 +461,8 @@ pub async fn list_tags(
 ) -> Result<Json<Vec<TagRecord>>, AppError> {
     let rows = sqlx::query(
         r#"
-        SELECT t.id, t.name, COUNT(ta.asset_id)::BIGINT AS asset_count,
-               (EXTRACT(EPOCH FROM t.updated_at) * 1000)::BIGINT AS updated_at_ms
+        SELECT t.id, t.name, COUNT(ta.asset_id) AS asset_count,
+               (CAST(strftime('%s', t.updated_at) AS INTEGER) * 1000) AS updated_at_ms
         FROM tags t LEFT JOIN tag_assets ta ON ta.tag_id = t.id
         WHERE t.account_id = ? GROUP BY t.id ORDER BY t.updated_at DESC
         "#,
@@ -480,8 +483,8 @@ pub async fn create_tag(
     let row = sqlx::query(
         r#"
         INSERT INTO tags(account_id, name) VALUES (?, ?)
-        RETURNING id, name, 0::BIGINT AS asset_count,
-                  (EXTRACT(EPOCH FROM updated_at) * 1000)::BIGINT AS updated_at_ms
+        RETURNING id, name, 0 AS asset_count,
+                  (CAST(strftime('%s', updated_at) AS INTEGER) * 1000) AS updated_at_ms
         "#,
     )
     .bind(auth.account_id)
@@ -706,7 +709,7 @@ pub(crate) async fn load_asset_summary(
         r#"
         SELECT id, source_asset_id, media_kind, source_created_at_ms, favorite, archived,
                CASE WHEN deleted_at IS NULL THEN NULL
-                    ELSE (EXTRACT(EPOCH FROM deleted_at) * 1000)::BIGINT END AS trashed_at_ms
+                    ELSE (CAST(strftime('%s', deleted_at) AS INTEGER) * 1000) END AS trashed_at_ms
         FROM assets WHERE id = ? AND account_id = ?
         "#,
     )

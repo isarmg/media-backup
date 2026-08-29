@@ -26,13 +26,13 @@ pub async fn prometheus(
     let row = sqlx::query(
         r#"
         SELECT
-          (SELECT COUNT(*)::BIGINT FROM accounts WHERE enabled) AS accounts,
-          (SELECT COUNT(*)::BIGINT FROM devices) AS devices,
-          (SELECT COUNT(*)::BIGINT FROM assets WHERE deleted_at IS NULL) AS assets,
-          (SELECT COUNT(*)::BIGINT FROM assets WHERE deleted_at IS NOT NULL) AS trashed_assets,
-          (SELECT COUNT(*)::BIGINT FROM uploads WHERE state = 'uploading') AS active_uploads,
-          (SELECT COALESCE(SUM(stored_size), 0)::BIGINT FROM blobs WHERE storage_encoding = 'plain-v1') AS stored_bytes,
-          (SELECT COUNT(*)::BIGINT FROM api_keys WHERE revoked_at IS NULL) AS api_keys
+          (SELECT COUNT(*) FROM accounts WHERE enabled) AS accounts,
+          (SELECT COUNT(*) FROM devices) AS devices,
+          (SELECT COUNT(*) FROM assets WHERE deleted_at IS NULL) AS assets,
+          (SELECT COUNT(*) FROM assets WHERE deleted_at IS NOT NULL) AS trashed_assets,
+          (SELECT COUNT(*) FROM uploads WHERE state = 'uploading') AS active_uploads,
+          (SELECT COALESCE(SUM(stored_size), 0) FROM blobs WHERE storage_encoding = 'plain-v1') AS stored_bytes,
+          (SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL) AS api_keys
         "#,
     )
     .fetch_one(&state.pool)

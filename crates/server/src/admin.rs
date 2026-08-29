@@ -289,16 +289,16 @@ async fn load_users(state: &AppState) -> Result<Vec<AdminUser>, AppError> {
     let rows = sqlx::query(
         r#"
         SELECT a.id, a.username, a.display_name, a.storage_path, a.quota_bytes, a.enabled,
-               to_char(a.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at,
-               COALESCE((SELECT SUM(b.stored_size) FROM blobs b WHERE b.account_id = a.id), 0)::BIGINT AS used_bytes,
+               strftime('%Y-%m-%dT%H:%M:%SZ', a.created_at) AS created_at,
+               COALESCE((SELECT SUM(b.stored_size) FROM blobs b WHERE b.account_id = a.id), 0) AS used_bytes,
                COALESCE((
                    SELECT SUM(p.expected_size)
                    FROM upload_parts p JOIN uploads u ON u.id = p.upload_id
                    WHERE u.account_id = a.id AND u.state = 'uploading'
-               ), 0)::BIGINT AS pending_bytes,
-               (SELECT COUNT(*) FROM devices d WHERE d.account_id = a.id)::BIGINT AS device_count,
-               (SELECT COUNT(*) FROM resources r JOIN assets s ON s.id = r.asset_id WHERE s.account_id = a.id)::BIGINT AS resource_count,
-               COALESCE(to_char((SELECT MAX(d.last_seen_at) FROM devices d WHERE d.account_id = a.id) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), '') AS last_seen_at
+               ), 0) AS pending_bytes,
+               (SELECT COUNT(*) FROM devices d WHERE d.account_id = a.id) AS device_count,
+               (SELECT COUNT(*) FROM resources r JOIN assets s ON s.id = r.asset_id WHERE s.account_id = a.id) AS resource_count,
+               COALESCE(strftime('%Y-%m-%dT%H:%M:%SZ', (SELECT MAX(d.last_seen_at) FROM devices d WHERE d.account_id = a.id)), '') AS last_seen_at
         FROM accounts a
         ORDER BY a.created_at ASC
         "#,
@@ -375,7 +375,7 @@ async fn ensure_unique_username(
     except_id: Option<Uuid>,
 ) -> Result<(), AppError> {
     let existing: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM accounts WHERE lower(username) = lower(?) AND (?::UUID IS NULL OR id <> ?)",
+        "SELECT id FROM accounts WHERE lower(username) = lower(?) AND (? IS NULL OR id <> ?)",
     )
     .bind(username)
     .bind(except_id)
@@ -393,7 +393,7 @@ async fn ensure_unique_path(
     except_id: Option<Uuid>,
 ) -> Result<(), AppError> {
     let existing: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM accounts WHERE storage_path = ? AND (?::UUID IS NULL OR id <> ?)",
+        "SELECT id FROM accounts WHERE storage_path = ? AND (? IS NULL OR id <> ?)",
     )
     .bind(storage_path)
     .bind(except_id)
