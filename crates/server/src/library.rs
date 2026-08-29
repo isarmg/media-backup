@@ -10,7 +10,7 @@ use photo_backup_protocol::{
     UpdateAssetRequest,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Row};
+use sqlx::{SqlitePool, Row};
 use uuid::Uuid;
 
 use crate::{audit, auth::AuthContext, error::AppError, routes::AppState};
@@ -58,19 +58,19 @@ pub async fn timeline(
         r#"
         SELECT id, source_created_at_ms
         FROM assets
-        WHERE account_id = $1
-          AND (($2 AND deleted_at IS NOT NULL) OR (NOT $2 AND deleted_at IS NULL))
-          AND ($3::BIGINT IS NULL OR (source_created_at_ms, id) < ($3, $4))
-          AND ($5::BOOLEAN IS NULL OR favorite = $5)
-          AND ($6::BOOLEAN IS NULL OR archived = $6)
-          AND ($7::UUID IS NULL OR EXISTS (
-              SELECT 1 FROM album_assets aa WHERE aa.album_id = $7 AND aa.asset_id = assets.id
+        WHERE account_id = ?
+          AND ((? AND deleted_at IS NOT NULL) OR (NOT ? AND deleted_at IS NULL))
+          AND (?::BIGINT IS NULL OR (source_created_at_ms, id) < (?, ?))
+          AND (?::BOOLEAN IS NULL OR favorite = ?)
+          AND (?::BOOLEAN IS NULL OR archived = ?)
+          AND (?::UUID IS NULL OR EXISTS (
+              SELECT 1 FROM album_assets aa WHERE aa.album_id = ? AND aa.asset_id = assets.id
           ))
-          AND ($8::UUID IS NULL OR EXISTS (
-              SELECT 1 FROM tag_assets ta WHERE ta.tag_id = $8 AND ta.asset_id = assets.id
+          AND (?::UUID IS NULL OR EXISTS (
+              SELECT 1 FROM tag_assets ta WHERE ta.tag_id = ? AND ta.asset_id = assets.id
           ))
         ORDER BY source_created_at_ms DESC, id DESC
-        LIMIT $9
+        LIMIT ?
         "#,
     )
     .bind(auth.account_id)
@@ -117,9 +117,9 @@ pub async fn sync_changes(
         SELECT sequence, entity_kind, entity_id, operation,
                (EXTRACT(EPOCH FROM changed_at) * 1000)::BIGINT AS changed_at_ms
         FROM account_changes
-        WHERE account_id = $1 AND sequence > $2
+        WHERE account_id = ? AND sequence > ?
         ORDER BY sequence
-        LIMIT $3
+        LIMIT ?
         "#,
     )
     .bind(auth.account_id)
@@ -163,10 +163,10 @@ pub async fn update_asset(
     let updated: Option<Uuid> = sqlx::query_scalar(
         r#"
         UPDATE assets SET
-            favorite = COALESCE($3, favorite),
-            archived = COALESCE($4, archived),
-            updated_at = now()
-        WHERE id = $1 AND account_id = $2
+            favorite = COALESCE(?, favorite),
+            archived = COALESCE(?, archived),
+            updated_at = datetime('now')
+        WHERE id = ? AND account_id = ?
         RETURNING id
         "#,
     )
@@ -235,7 +235,7 @@ async fn set_trashed(
 ) -> Result<(), AppError> {
     let mut transaction = state.pool.begin().await?;
     let changed = sqlx::query(
-        "UPDATE assets SET deleted_at = CASE WHEN $3 THEN now() ELSE NULL END, updated_at = now() WHERE id = $1 AND account_id = $2",
+        "UPDATE assets SET deleted_at = CASE WHEN ? THEN datetime('now') ELSE NULL END, updated_at = datetime('now') WHERE id = ? AND account_id = ?",
     )
     .bind(asset_id)
     .bind(auth.account_id)
@@ -276,7 +276,7 @@ pub async fn delete_asset_permanently(
 ) -> Result<StatusCode, AppError> {
     let mut transaction = state.pool.begin().await?;
     let storage_path: Option<String> =
-        sqlx::query_scalar("SELECT storage_path FROM accounts WHERE id = $1 FOR UPDATE")
+        sqlx::query_scalar("SELECT storage_path FROM accounts WHERE id = ?")
             .bind(auth.account_id)
             .fetch_optional(&mut *transaction)
             .await?;
@@ -285,7 +285,7 @@ pub async fn delete_asset_permanently(
         r#"
         SELECT DISTINCT r.blob_id FROM resources r
         JOIN assets a ON a.id = r.asset_id
-        WHERE a.id = $1 AND a.account_id = $2 AND a.deleted_at IS NOT NULL
+        WHERE a.id = ? AND a.account_id = ? AND a.deleted_at IS NOT NULL
         "#,
     )
     .bind(asset_id)
@@ -295,23 +295,31 @@ pub async fn delete_asset_permanently(
     if blob_ids.is_empty() {
         return Err(AppError::not_found("trashed asset not found"));
     }
-    sqlx::query("DELETE FROM assets WHERE id = $1 AND account_id = $2 AND deleted_at IS NOT NULL")
+    sqlx::query("DELETE FROM assets WHERE id = ? AND account_id = ? AND deleted_at IS NOT NULL")
         .bind(asset_id)
         .bind(auth.account_id)
         .execute(&mut *transaction)
         .await?;
-    let orphan_paths: Vec<String> = sqlx::query_scalar(
-        r#"
-        DELETE FROM blobs b
-        WHERE b.id = ANY($1) AND b.account_id = $2
-          AND NOT EXISTS (SELECT 1 FROM resources r WHERE r.blob_id = b.id)
-        RETURNING b.storage_path
-        "#,
-    )
-    .bind(&blob_ids)
-    .bind(auth.account_id)
-    .fetch_all(&mut *transaction)
-    .await?;
+    let mut orphan_paths = Vec::new();
+    for blob_id in &blob_ids {
+        let orphan: Option<String> = sqlx::query_scalar(
+            "SELECT b.storage_path FROM blobs b \
+             WHERE b.id = ? AND b.account_id = ? \
+               AND NOT EXISTS (SELECT 1 FROM resources r WHERE r.blob_id = b.id)",
+        )
+        .bind(blob_id)
+        .bind(auth.account_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some(path) = orphan {
+            sqlx::query("DELETE FROM blobs WHERE id = ? AND account_id = ?")
+                .bind(blob_id)
+                .bind(auth.account_id)
+                .execute(&mut *transaction)
+                .await?;
+            orphan_paths.push(path);
+        }
+    }
     audit::record_change(
         &mut transaction,
         auth.account_id,
@@ -345,7 +353,7 @@ pub async fn list_albums(
                COUNT(aa.asset_id)::BIGINT AS asset_count,
                (EXTRACT(EPOCH FROM a.updated_at) * 1000)::BIGINT AS updated_at_ms
         FROM albums a LEFT JOIN album_assets aa ON aa.album_id = a.id
-        WHERE a.account_id = $1
+        WHERE a.account_id = ?
         GROUP BY a.id ORDER BY a.updated_at DESC
         "#,
     )
@@ -370,10 +378,10 @@ pub async fn sync_album(
     let album_id: Uuid = sqlx::query_scalar(
         r#"
         INSERT INTO albums(account_id, device_id, source_album_id, name)
-        VALUES ($1, $2, $3, $4)
+        VALUES (?, ?, ?, ?)
         ON CONFLICT(account_id, device_id, source_album_id) DO UPDATE SET
             name = excluded.name,
-            updated_at = now()
+            updated_at = datetime('now')
         RETURNING id
         "#,
     )
@@ -384,25 +392,33 @@ pub async fn sync_album(
     .fetch_one(&mut *transaction)
     .await?;
     if request.replace_members {
-        sqlx::query("DELETE FROM album_assets WHERE album_id = $1")
+        sqlx::query("DELETE FROM album_assets WHERE album_id = ?")
             .bind(album_id)
             .execute(&mut *transaction)
             .await?;
     }
-    sqlx::query(
-        r#"
-        INSERT INTO album_assets(album_id, asset_id)
-        SELECT $1, id FROM assets
-        WHERE account_id = $2 AND device_id = $3 AND source_asset_id = ANY($4)
-        ON CONFLICT DO NOTHING
-        "#,
-    )
-    .bind(album_id)
-    .bind(auth.account_id)
-    .bind(auth.device_id)
-    .bind(&request.source_asset_ids)
-    .execute(&mut *transaction)
-    .await?;
+    for source_asset_id in &request.source_asset_ids {
+        let asset_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM assets \
+             WHERE account_id = ? AND device_id = ? AND source_asset_id = ?",
+        )
+        .bind(auth.account_id)
+        .bind(auth.device_id)
+        .bind(source_asset_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some(asset_id) = asset_id {
+            sqlx::query(
+                "INSERT INTO album_assets(album_id, asset_id, added_at) \
+                 VALUES(?, ?, datetime('now')) \
+                 ON CONFLICT(album_id, asset_id) DO NOTHING",
+            )
+            .bind(album_id)
+            .bind(asset_id)
+            .execute(&mut *transaction)
+            .await?;
+        }
+    }
     audit::record_change(
         &mut transaction,
         auth.account_id,
@@ -426,7 +442,7 @@ pub async fn sync_album(
                COUNT(aa.asset_id)::BIGINT AS asset_count,
                (EXTRACT(EPOCH FROM a.updated_at) * 1000)::BIGINT AS updated_at_ms
         FROM albums a LEFT JOIN album_assets aa ON aa.album_id = a.id
-        WHERE a.id = $1 AND a.account_id = $2 GROUP BY a.id
+        WHERE a.id = ? AND a.account_id = ? GROUP BY a.id
         "#,
     )
     .bind(album_id)
@@ -445,7 +461,7 @@ pub async fn list_tags(
         SELECT t.id, t.name, COUNT(ta.asset_id)::BIGINT AS asset_count,
                (EXTRACT(EPOCH FROM t.updated_at) * 1000)::BIGINT AS updated_at_ms
         FROM tags t LEFT JOIN tag_assets ta ON ta.tag_id = t.id
-        WHERE t.account_id = $1 GROUP BY t.id ORDER BY t.updated_at DESC
+        WHERE t.account_id = ? GROUP BY t.id ORDER BY t.updated_at DESC
         "#,
     )
     .bind(auth.account_id)
@@ -463,7 +479,7 @@ pub async fn create_tag(
     let mut transaction = state.pool.begin().await?;
     let row = sqlx::query(
         r#"
-        INSERT INTO tags(account_id, name) VALUES ($1, $2)
+        INSERT INTO tags(account_id, name) VALUES (?, ?)
         RETURNING id, name, 0::BIGINT AS asset_count,
                   (EXTRACT(EPOCH FROM updated_at) * 1000)::BIGINT AS updated_at_ms
         "#,
@@ -504,7 +520,7 @@ pub async fn set_tag_assets(
     }
     let mut transaction = state.pool.begin().await?;
     let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tags WHERE id = $1 AND account_id = $2)")
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tags WHERE id = ? AND account_id = ?)")
             .bind(tag_id)
             .bind(auth.account_id)
             .fetch_one(&mut *transaction)
@@ -512,22 +528,30 @@ pub async fn set_tag_assets(
     if !exists {
         return Err(AppError::not_found("tag not found"));
     }
-    sqlx::query("DELETE FROM tag_assets WHERE tag_id = $1")
+    sqlx::query("DELETE FROM tag_assets WHERE tag_id = ?")
         .bind(tag_id)
         .execute(&mut *transaction)
         .await?;
-    sqlx::query(
-        r#"
-        INSERT INTO tag_assets(tag_id, asset_id)
-        SELECT $1, id FROM assets WHERE account_id = $2 AND id = ANY($3)
-        ON CONFLICT DO NOTHING
-        "#,
-    )
-    .bind(tag_id)
-    .bind(auth.account_id)
-    .bind(&request.asset_ids)
-    .execute(&mut *transaction)
-    .await?;
+    for asset_id in &request.asset_ids {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM assets WHERE account_id = ? AND id = ?)",
+        )
+        .bind(auth.account_id)
+        .bind(asset_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if exists {
+            sqlx::query(
+                "INSERT INTO tag_assets(tag_id, asset_id, added_at) \
+                 VALUES(?, ?, datetime('now')) \
+                 ON CONFLICT(tag_id, asset_id) DO NOTHING",
+            )
+            .bind(tag_id)
+            .bind(asset_id)
+            .execute(&mut *transaction)
+            .await?;
+        }
+    }
     audit::record_change(&mut transaction, auth.account_id, "tag", tag_id, "upsert").await?;
     transaction.commit().await?;
     audit::record(
@@ -571,8 +595,8 @@ async fn change_tag_asset(
         r#"
         SELECT EXISTS(
             SELECT 1 FROM tags t, assets a
-            WHERE t.id = $1 AND t.account_id = $3
-              AND a.id = $2 AND a.account_id = $3
+            WHERE t.id = ? AND t.account_id = ?
+              AND a.id = ? AND a.account_id = ?
         )
         "#,
     )
@@ -586,14 +610,14 @@ async fn change_tag_asset(
     }
     if add {
         sqlx::query(
-            "INSERT INTO tag_assets(tag_id, asset_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            "INSERT INTO tag_assets(tag_id, asset_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
         )
         .bind(tag_id)
         .bind(asset_id)
         .execute(&mut *transaction)
         .await?;
     } else {
-        sqlx::query("DELETE FROM tag_assets WHERE tag_id = $1 AND asset_id = $2")
+        sqlx::query("DELETE FROM tag_assets WHERE tag_id = ? AND asset_id = ?")
             .bind(tag_id)
             .bind(asset_id)
             .execute(&mut *transaction)
@@ -631,15 +655,17 @@ pub async fn duplicate_groups(
     let limit = query.limit.unwrap_or(50).clamp(1, 200) as i64;
     let rows = sqlx::query(
         r#"
-        SELECT b.content_blake3, b.plaintext_size, ARRAY_AGG(DISTINCT a.id) AS asset_ids
+        SELECT b.id AS blob_id, b.content_blake3, b.plaintext_size,
+               COUNT(DISTINCT a.id) AS asset_count
         FROM blobs b
         JOIN resources r ON r.blob_id = b.id
         JOIN assets a ON a.id = r.asset_id
-        WHERE b.account_id = $1 AND b.storage_encoding = 'plain-v1'
+        WHERE b.account_id = ? AND b.storage_encoding = 'plain-v1'
           AND b.content_blake3 IS NOT NULL AND a.deleted_at IS NULL AND r.role = 'primary'
-        GROUP BY b.id HAVING COUNT(DISTINCT a.id) > 1
+        GROUP BY b.id, b.content_blake3, b.plaintext_size
+        HAVING COUNT(DISTINCT a.id) > 1
         ORDER BY COUNT(DISTINCT a.id) DESC, b.created_at
-        LIMIT $2
+        LIMIT ?
         "#,
     )
     .bind(auth.account_id)
@@ -648,7 +674,16 @@ pub async fn duplicate_groups(
     .await?;
     let mut groups = Vec::with_capacity(rows.len());
     for row in rows {
-        let ids: Vec<Uuid> = row.get("asset_ids");
+        let blob_id: Uuid = row.get("blob_id");
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT a.id FROM assets a \
+             JOIN resources r ON r.asset_id = a.id \
+             WHERE r.blob_id = ? AND a.deleted_at IS NULL AND r.role = 'primary' \
+             ORDER BY a.created_at",
+        )
+        .bind(blob_id)
+        .fetch_all(&state.pool)
+        .await?;
         let mut assets = Vec::with_capacity(ids.len());
         for asset_id in ids {
             assets.push(load_asset_summary(&state.pool, auth.account_id, asset_id).await?);
@@ -663,7 +698,7 @@ pub async fn duplicate_groups(
 }
 
 pub(crate) async fn load_asset_summary(
-    pool: &PgPool,
+    pool: &SqlitePool,
     account_id: Uuid,
     asset_id: Uuid,
 ) -> Result<AssetSummary, AppError> {
@@ -672,7 +707,7 @@ pub(crate) async fn load_asset_summary(
         SELECT id, source_asset_id, media_kind, source_created_at_ms, favorite, archived,
                CASE WHEN deleted_at IS NULL THEN NULL
                     ELSE (EXTRACT(EPOCH FROM deleted_at) * 1000)::BIGINT END AS trashed_at_ms
-        FROM assets WHERE id = $1 AND account_id = $2
+        FROM assets WHERE id = ? AND account_id = ?
         "#,
     )
     .bind(asset_id)
@@ -685,7 +720,7 @@ pub(crate) async fn load_asset_summary(
         SELECT r.id, r.role, r.filename, r.mime_type, r.metadata,
                b.plaintext_size, b.storage_encoding
         FROM resources r JOIN blobs b ON b.id = r.blob_id
-        WHERE r.asset_id = $1 ORDER BY r.created_at, r.id
+        WHERE r.asset_id = ? ORDER BY r.created_at, r.id
         "#,
     )
     .bind(asset_id)
@@ -694,7 +729,7 @@ pub(crate) async fn load_asset_summary(
     let tag_names: Vec<String> = sqlx::query_scalar(
         r#"
         SELECT t.name FROM tags t JOIN tag_assets ta ON ta.tag_id = t.id
-        WHERE ta.asset_id = $1 ORDER BY lower(t.name), t.id
+        WHERE ta.asset_id = ? ORDER BY lower(t.name), t.id
         "#,
     )
     .bind(asset_id)
@@ -738,7 +773,7 @@ fn parse_media_kind(value: String) -> MediaKind {
     }
 }
 
-fn album_from_row(row: sqlx::postgres::PgRow) -> AlbumRecord {
+fn album_from_row(row: sqlx::sqlite::SqliteRow) -> AlbumRecord {
     AlbumRecord {
         album_id: row.get("id"),
         source_album_id: row.get("source_album_id"),
@@ -748,7 +783,7 @@ fn album_from_row(row: sqlx::postgres::PgRow) -> AlbumRecord {
     }
 }
 
-fn tag_from_row(row: sqlx::postgres::PgRow) -> TagRecord {
+fn tag_from_row(row: sqlx::sqlite::SqliteRow) -> TagRecord {
     TagRecord {
         tag_id: row.get("id"),
         name: row.get("name"),

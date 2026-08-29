@@ -40,7 +40,7 @@ pub async fn create_api_key(
     let row = sqlx::query(
         r#"
         INSERT INTO api_keys(account_id, device_id, name, prefix, token_hash)
-        VALUES ($1, $2, $3, $4, $5)
+        VALUES (?, ?, ?, ?, ?)
         RETURNING id, (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS created_at_ms
         "#,
     )
@@ -83,7 +83,7 @@ pub async fn list_api_keys(
                CASE WHEN last_used_at IS NULL THEN NULL
                     ELSE (EXTRACT(EPOCH FROM last_used_at) * 1000)::BIGINT END AS last_used_at_ms
         FROM api_keys
-        WHERE account_id = $1 AND revoked_at IS NULL
+        WHERE account_id = ? AND revoked_at IS NULL
         ORDER BY created_at DESC
         "#,
     )
@@ -109,7 +109,7 @@ pub async fn revoke_api_key(
     Path(api_key_id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
     let changed = sqlx::query(
-        "UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND account_id = $2 AND revoked_at IS NULL",
+        "UPDATE api_keys SET revoked_at = datetime('now') WHERE id = ? AND account_id = ? AND revoked_at IS NULL",
     )
     .bind(api_key_id)
     .bind(auth.account_id)
@@ -140,8 +140,8 @@ pub async fn audit_events(
         SELECT sequence, actor_kind, action, entity_kind, entity_id,
                (EXTRACT(EPOCH FROM occurred_at) * 1000)::BIGINT AS occurred_at_ms
         FROM audit_events
-        WHERE account_id = $1 AND ($2::BIGINT IS NULL OR sequence < $2)
-        ORDER BY sequence DESC LIMIT $3
+        WHERE account_id = ? AND (?::BIGINT IS NULL OR sequence < ?)
+        ORDER BY sequence DESC LIMIT ?
         "#,
     )
     .bind(auth.account_id)

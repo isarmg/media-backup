@@ -218,7 +218,7 @@ pub(crate) async fn create_user(
     sqlx::query(
         r#"
         INSERT INTO accounts(id, username, password_hash, display_name, storage_path, quota_bytes, enabled)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(id)
@@ -249,8 +249,8 @@ pub(crate) async fn update_user(
     let changed = sqlx::query(
         r#"
         UPDATE accounts
-        SET username = $2, display_name = $3, storage_path = $4, quota_bytes = $5, enabled = $6
-        WHERE id = $1
+        SET username = ?, display_name = ?, storage_path = ?, quota_bytes = ?, enabled = ?
+        WHERE id = ?
         "#,
     )
     .bind(id)
@@ -274,7 +274,7 @@ pub(crate) async fn reset_user_password(
 ) -> Result<StatusCode, AppError> {
     password::validate_password(&request.password)?;
     let password_hash = password::hash_password(request.password).await?;
-    let changed = sqlx::query("UPDATE accounts SET password_hash = $2 WHERE id = $1")
+    let changed = sqlx::query("UPDATE accounts SET password_hash = ? WHERE id = ?")
         .bind(id)
         .bind(password_hash)
         .execute(&state.pool)
@@ -316,7 +316,7 @@ async fn load_user(state: &AppState, id: Uuid) -> Result<AdminUser, AppError> {
         .ok_or_else(|| AppError::not_found("user not found"))
 }
 
-fn row_to_user(row: sqlx::postgres::PgRow) -> AdminUser {
+fn row_to_user(row: sqlx::sqlite::SqliteRow) -> AdminUser {
     AdminUser {
         id: row.get("id"),
         username: row.get("username"),
@@ -375,7 +375,7 @@ async fn ensure_unique_username(
     except_id: Option<Uuid>,
 ) -> Result<(), AppError> {
     let existing: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM accounts WHERE lower(username) = lower($1) AND ($2::UUID IS NULL OR id <> $2)",
+        "SELECT id FROM accounts WHERE lower(username) = lower(?) AND (?::UUID IS NULL OR id <> ?)",
     )
     .bind(username)
     .bind(except_id)
@@ -393,7 +393,7 @@ async fn ensure_unique_path(
     except_id: Option<Uuid>,
 ) -> Result<(), AppError> {
     let existing: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM accounts WHERE storage_path = $1 AND ($2::UUID IS NULL OR id <> $2)",
+        "SELECT id FROM accounts WHERE storage_path = ? AND (?::UUID IS NULL OR id <> ?)",
     )
     .bind(storage_path)
     .bind(except_id)

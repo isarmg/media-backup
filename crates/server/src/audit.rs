@@ -1,10 +1,10 @@
-use sqlx::PgPool;
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::{auth::AuthContext, error::AppError};
 
 pub async fn record(
-    pool: &PgPool,
+    pool: &SqlitePool,
     auth: &AuthContext,
     action: &str,
     entity_kind: Option<&str>,
@@ -13,7 +13,7 @@ pub async fn record(
     sqlx::query(
         r#"
         INSERT INTO audit_events(account_id, actor_kind, actor_id, action, entity_kind, entity_id)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        VALUES (?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(auth.account_id)
@@ -28,7 +28,7 @@ pub async fn record(
 }
 
 pub async fn record_change(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     account_id: Uuid,
     entity_kind: &str,
     entity_id: Uuid,
@@ -37,7 +37,7 @@ pub async fn record_change(
     sqlx::query(
         r#"
         INSERT INTO account_changes(account_id, entity_kind, entity_id, operation)
-        VALUES ($1, $2, $3, $4)
+        VALUES (?, ?, ?, ?)
         "#,
     )
     .bind(account_id)

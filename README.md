@@ -33,7 +33,7 @@
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y rustup postgresql postgresql-client pkg-config libssl-dev build-essential
+sudo apt-get install -y rustup pkg-config libssl-dev build-essential
 rustup default stable
 sudo ./scripts/setup-wsl.sh
 cargo build --release -p photo-backup-server
@@ -54,7 +54,7 @@ Caddy 会自动处理证书并传递 HTTPS 代理信息。使用其他代理时�
 
 主要环境变量见 [.env.example](.env.example)：
 
-- `DATABASE_URL`：PostgreSQL 连接串。
+- `DATABASE_URL`：SQLite 连接串，例如 `sqlite:///var/lib/isarmg/photo-backup/db/app.db`。
 - `DATA_DIR`：原始媒体和临时分块根目录。
 - `BIND`：推荐 `127.0.0.1:8080`。
 - `REQUIRE_HTTPS`：生产保持 `true`。

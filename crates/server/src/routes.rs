@@ -16,7 +16,7 @@ use photo_backup_protocol::{
 use rand::{rngs::OsRng, RngCore};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Row};
+use sqlx::{SqlitePool, Row};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
@@ -31,7 +31,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct AppState {
-    pub pool: PgPool,
+    pub pool: SqlitePool,
     pub storage: LocalStorage,
     pub config: Config,
 }
@@ -128,7 +128,12 @@ async fn live() -> Json<Value> {
 
 async fn ready(State(state): State<AppState>) -> Response {
     let (database, storage) = tokio::join!(
-        isarmg_postgres::ready(&state.pool),
+        async {
+            sqlx::query_scalar::<_, i32>("SELECT 1")
+                .fetch_one(&state.pool)
+                .await
+                .is_ok()
+        },
         state.storage.probe_readiness()
     );
     let storage = storage.is_ok();
@@ -163,7 +168,7 @@ async fn bootstrap(
         ));
     }
     let account: Option<(Uuid, Option<String>)> = sqlx::query_as(
-        "SELECT id, password_hash FROM accounts WHERE lower(username) = lower($1) AND enabled = TRUE",
+        "SELECT id, password_hash FROM accounts WHERE lower(username) = lower(?) AND enabled = TRUE",
     )
     .bind(username)
     .fetch_optional(&state.pool)
@@ -180,7 +185,7 @@ async fn bootstrap(
     let bearer_token = URL_SAFE_NO_PAD.encode(token_bytes);
     let token_hash = Sha256::digest(bearer_token.as_bytes()).to_vec();
     let device_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO devices(account_id, name, platform, token_hash) VALUES ($1, $2, $3, $4) RETURNING id",
+        "INSERT INTO devices(account_id, name, platform, token_hash) VALUES (?, ?, ?, ?) RETURNING id",
     )
     .bind(account_id)
     .bind(request.device_name.trim())
@@ -191,7 +196,7 @@ async fn bootstrap(
     sqlx::query(
         r#"
         INSERT INTO audit_events(account_id, actor_kind, actor_id, action, entity_kind, entity_id)
-        VALUES ($1, 'device', $2, 'device.bootstrap', 'device', $2)
+        VALUES (?, 'device', ?, 'device.bootstrap', 'device', ?)
         "#,
     )
     .bind(account_id)
@@ -217,11 +222,11 @@ async fn create_upload(
     let asset_id: Uuid = sqlx::query_scalar(
         r#"
         INSERT INTO assets(account_id, device_id, source_asset_id, media_kind, source_created_at_ms, favorite)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id, device_id, source_asset_id) DO UPDATE SET
             media_kind = excluded.media_kind,
             source_created_at_ms = excluded.source_created_at_ms,
-            updated_at = now(),
+            updated_at = datetime('now'),
             deleted_at = NULL
         RETURNING id
         "#,
@@ -243,7 +248,7 @@ async fn create_upload(
     .await?;
 
     let existing_blob: Option<Uuid> =
-        sqlx::query_scalar("SELECT id FROM blobs WHERE account_id = $1 AND content_blake3 = $2 AND storage_encoding = 'plain-v1'")
+        sqlx::query_scalar("SELECT id FROM blobs WHERE account_id = ? AND content_blake3 = ? AND storage_encoding = 'plain-v1'")
             .bind(auth.account_id)
             .bind(&request.content_blake3)
             .fetch_optional(&mut *transaction)
@@ -278,8 +283,8 @@ async fn create_upload(
     let existing_upload: Option<Uuid> = sqlx::query_scalar(
         r#"
         SELECT id FROM uploads
-        WHERE account_id = $1 AND device_id = $2 AND source_resource_id = $3
-          AND dedup_token = $4 AND state = 'uploading'
+        WHERE account_id = ? AND device_id = ? AND source_resource_id = ?
+          AND dedup_token = ? AND state = 'uploading'
         ORDER BY created_at DESC LIMIT 1
         "#,
     )
@@ -312,7 +317,7 @@ async fn create_upload(
     let upload_id: Uuid = sqlx::query_scalar(
         r#"
         INSERT INTO uploads(account_id, device_id, asset_id, source_resource_id, dedup_token, request)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        VALUES (?, ?, ?, ?, ?, ?)
         RETURNING id
         "#,
     )
@@ -326,7 +331,7 @@ async fn create_upload(
     .await?;
     for part in &request.parts {
         sqlx::query(
-            "INSERT INTO upload_parts(upload_id, part_index, expected_size, expected_blake3) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO upload_parts(upload_id, part_index, expected_size, expected_blake3) VALUES (?, ?, ?, ?)",
         )
         .bind(upload_id)
         .bind(part.index as i32)
@@ -354,7 +359,7 @@ async fn put_part(
         r#"
         SELECT p.expected_size, p.expected_blake3, u.state
         FROM upload_parts p JOIN uploads u ON u.id = p.upload_id
-        WHERE p.upload_id = $1 AND p.part_index = $2 AND u.account_id = $3
+        WHERE p.upload_id = ? AND p.part_index = ? AND u.account_id = ?
         "#,
     )
     .bind(upload_id)
@@ -376,7 +381,7 @@ async fn put_part(
         .map_err(|_| AppError::new(StatusCode::PAYLOAD_TOO_LARGE, "part exceeds server limit"))?;
     state.storage.put_part(upload_id, &spec, bytes).await?;
     sqlx::query(
-        "UPDATE upload_parts SET received_size = expected_size, received_at = now() WHERE upload_id = $1 AND part_index = $2",
+        "UPDATE upload_parts SET received_size = expected_size, received_at = datetime('now') WHERE upload_id = ? AND part_index = ?",
     )
     .bind(upload_id)
     .bind(index as i32)
@@ -391,7 +396,7 @@ async fn upload_status(
     Path(upload_id): Path<Uuid>,
 ) -> Result<Json<UploadStatusResponse>, AppError> {
     let state_value: String =
-        sqlx::query_scalar("SELECT state FROM uploads WHERE id = $1 AND account_id = $2")
+        sqlx::query_scalar("SELECT state FROM uploads WHERE id = ? AND account_id = ?")
             .bind(upload_id)
             .bind(auth.account_id)
             .fetch_optional(&state.pool)
@@ -410,7 +415,7 @@ async fn complete_upload(
     Path(upload_id): Path<Uuid>,
 ) -> Result<Json<CompleteUploadResponse>, AppError> {
     let row = sqlx::query(
-        "SELECT asset_id, request, state FROM uploads WHERE id = $1 AND account_id = $2",
+        "SELECT asset_id, request, state FROM uploads WHERE id = ? AND account_id = ?",
     )
     .bind(upload_id)
     .bind(auth.account_id)
@@ -425,7 +430,7 @@ async fn complete_upload(
     let mut transaction = state.pool.begin().await?;
     let policy = account_policy_for_update(&mut transaction, auth.account_id).await?;
     let existing_blob: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM blobs WHERE account_id = $1 AND content_blake3 = $2 AND storage_encoding = 'plain-v1' FOR UPDATE",
+        "SELECT id FROM blobs WHERE account_id = ? AND content_blake3 = ? AND storage_encoding = 'plain-v1'",
     )
     .bind(auth.account_id)
     .bind(&request.content_blake3)
@@ -436,7 +441,7 @@ async fn complete_upload(
     } else {
         let expected_size = request_storage_size(&request)?;
         let used_bytes: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(stored_size), 0)::BIGINT FROM blobs WHERE account_id = $1",
+            "SELECT COALESCE(SUM(stored_size), 0)::BIGINT FROM blobs WHERE account_id = ?",
         )
         .bind(auth.account_id)
         .fetch_one(&mut *transaction)
@@ -466,7 +471,7 @@ async fn complete_upload(
             INSERT INTO blobs(
                 account_id, dedup_token, content_blake3, plaintext_size, stored_size,
                 storage_path, wrapped_key, key_nonce, nonce_prefix, part_manifest, storage_encoding
-            ) VALUES ($1, $2, $2, $3, $4, $5, NULL, NULL, NULL, $6, 'plain-v1')
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, 'plain-v1')
             RETURNING id
             "#,
         )
@@ -490,7 +495,7 @@ async fn complete_upload(
     )
     .await?;
     sqlx::query(
-        "UPDATE uploads SET state = 'complete', completed_at = now(), updated_at = now() WHERE id = $1",
+        "UPDATE uploads SET state = 'complete', completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
     )
     .bind(upload_id)
     .execute(&mut *transaction)
@@ -519,7 +524,7 @@ async fn list_resources(
         r#"
         SELECT r.id FROM resources r
         JOIN assets a ON a.id = r.asset_id
-        WHERE a.account_id = $1 AND a.deleted_at IS NULL
+        WHERE a.account_id = ? AND a.deleted_at IS NULL
         ORDER BY a.source_created_at_ms DESC, r.created_at DESC
         LIMIT 1000
         "#,
@@ -555,7 +560,7 @@ async fn resource_content(
         FROM resources r
         JOIN assets a ON a.id = r.asset_id
         JOIN blobs b ON b.id = r.blob_id
-        WHERE r.id = $1 AND a.account_id = $2
+        WHERE r.id = ? AND a.account_id = ?
         "#,
     )
     .bind(resource_id)
@@ -628,9 +633,9 @@ fn is_blake3(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-async fn missing_parts(pool: &PgPool, upload_id: Uuid) -> Result<Vec<u32>, AppError> {
+async fn missing_parts(pool: &SqlitePool, upload_id: Uuid) -> Result<Vec<u32>, AppError> {
     let values: Vec<i32> = sqlx::query_scalar(
-        "SELECT part_index FROM upload_parts WHERE upload_id = $1 AND received_at IS NULL ORDER BY part_index",
+        "SELECT part_index FROM upload_parts WHERE upload_id = ? AND received_at IS NULL ORDER BY part_index",
     )
     .bind(upload_id)
     .fetch_all(pool)
@@ -639,7 +644,7 @@ async fn missing_parts(pool: &PgPool, upload_id: Uuid) -> Result<Vec<u32>, AppEr
 }
 
 async fn upsert_resource(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     asset_id: Uuid,
     blob_id: Uuid,
     request: &CreateUploadRequest,
@@ -649,7 +654,7 @@ async fn upsert_resource(
         INSERT INTO resources(
             asset_id, blob_id, source_resource_id, role, filename, mime_type,
             metadata
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(asset_id, source_resource_id) DO UPDATE SET
             blob_id = excluded.blob_id,
             role = excluded.role,
@@ -671,7 +676,7 @@ async fn upsert_resource(
 }
 
 async fn load_manifest(
-    pool: &PgPool,
+    pool: &SqlitePool,
     account_id: Uuid,
     resource_id: Uuid,
 ) -> Result<ResourceManifest, AppError> {
@@ -684,7 +689,7 @@ async fn load_manifest(
         FROM resources r
         JOIN assets a ON a.id = r.asset_id
         JOIN blobs b ON b.id = r.blob_id
-        WHERE r.id = $1 AND a.account_id = $2
+        WHERE r.id = ? AND a.account_id = ?
         "#,
     )
     .bind(resource_id)
@@ -724,11 +729,11 @@ struct AccountPolicy {
 }
 
 async fn account_policy_for_update(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     account_id: Uuid,
 ) -> Result<AccountPolicy, AppError> {
     let row = sqlx::query(
-        "SELECT storage_path, quota_bytes, enabled FROM accounts WHERE id = $1 FOR UPDATE",
+        "SELECT storage_path, quota_bytes, enabled FROM accounts WHERE id = ?",
     )
     .bind(account_id)
     .fetch_optional(&mut **transaction)
@@ -744,7 +749,7 @@ async fn account_policy_for_update(
 }
 
 async fn ensure_quota(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     account_id: Uuid,
     quota_bytes: i64,
     requested_bytes: i64,
@@ -753,7 +758,7 @@ async fn ensure_quota(
         return Ok(());
     }
     let used_bytes: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(stored_size), 0)::BIGINT FROM blobs WHERE account_id = $1",
+        "SELECT COALESCE(SUM(stored_size), 0)::BIGINT FROM blobs WHERE account_id = ?",
     )
     .bind(account_id)
     .fetch_one(&mut **transaction)
@@ -763,7 +768,7 @@ async fn ensure_quota(
         SELECT COALESCE(SUM(p.expected_size), 0)::BIGINT
         FROM upload_parts p
         JOIN uploads u ON u.id = p.upload_id
-        WHERE u.account_id = $1 AND u.state = 'uploading'
+        WHERE u.account_id = ? AND u.state = 'uploading'
         "#,
     )
     .bind(account_id)

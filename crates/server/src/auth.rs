@@ -73,7 +73,7 @@ pub async fn require_auth(
         SELECT d.account_id, d.id
         FROM devices d
         JOIN accounts a ON a.id = d.account_id
-        WHERE d.token_hash = $1 AND a.enabled = TRUE
+        WHERE d.token_hash = ? AND a.enabled = TRUE
         "#,
     )
     .bind(token_hash)
@@ -81,7 +81,7 @@ pub async fn require_auth(
     .await?;
     let (account_id, device_id, actor_kind, actor_id) =
         if let Some((account_id, device_id)) = device {
-            sqlx::query("UPDATE devices SET last_seen_at = now() WHERE id = $1")
+            sqlx::query("UPDATE devices SET last_seen_at = datetime('now') WHERE id = ?")
                 .bind(device_id)
                 .execute(&state.pool)
                 .await?;
@@ -92,14 +92,14 @@ pub async fn require_auth(
             SELECT k.account_id, k.device_id, k.id
             FROM api_keys k
             JOIN accounts a ON a.id = k.account_id
-            WHERE k.token_hash = $1 AND k.revoked_at IS NULL AND a.enabled = TRUE
+            WHERE k.token_hash = ? AND k.revoked_at IS NULL AND a.enabled = TRUE
             "#,
             )
             .bind(Sha256::digest(token.as_bytes()).to_vec())
             .fetch_optional(&state.pool)
             .await?;
             let (account_id, device_id, api_key_id) = api_key.ok_or_else(AppError::unauthorized)?;
-            sqlx::query("UPDATE api_keys SET last_used_at = now() WHERE id = $1")
+            sqlx::query("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?")
                 .bind(api_key_id)
                 .execute(&state.pool)
                 .await?;

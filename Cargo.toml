@@ -26,9 +26,8 @@ rand = "0.8"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-isarmg-postgres = { git = "https://github.com/isarmg/isarmg-foundation.git", rev = "a9a38c8f40ec6d17e482ffda25b455465ce2daf7" }
 sha2 = "0.10"
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "json", "migrate"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "uuid", "json", "migrate"] }
 subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
