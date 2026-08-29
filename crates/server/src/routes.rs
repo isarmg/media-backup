@@ -16,7 +16,7 @@ use photo_backup_protocol::{
 use rand::{rngs::OsRng, RngCore};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::{SqlitePool, Row};
+use sqlx::{Row, SqlitePool};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
@@ -414,14 +414,13 @@ async fn complete_upload(
     Extension(auth): Extension<AuthContext>,
     Path(upload_id): Path<Uuid>,
 ) -> Result<Json<CompleteUploadResponse>, AppError> {
-    let row = sqlx::query(
-        "SELECT asset_id, request, state FROM uploads WHERE id = ? AND account_id = ?",
-    )
-    .bind(upload_id)
-    .bind(auth.account_id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::not_found("upload not found"))?;
+    let row =
+        sqlx::query("SELECT asset_id, request, state FROM uploads WHERE id = ? AND account_id = ?")
+            .bind(upload_id)
+            .bind(auth.account_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| AppError::not_found("upload not found"))?;
     let asset_id: Uuid = row.get("asset_id");
     let request: CreateUploadRequest = serde_json::from_value(row.get::<Value, _>("request"))?;
     if !missing_parts(&state.pool, upload_id).await?.is_empty() {
@@ -732,13 +731,11 @@ async fn account_policy_for_update(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     account_id: Uuid,
 ) -> Result<AccountPolicy, AppError> {
-    let row = sqlx::query(
-        "SELECT storage_path, quota_bytes, enabled FROM accounts WHERE id = ?",
-    )
-    .bind(account_id)
-    .fetch_optional(&mut **transaction)
-    .await?
-    .ok_or_else(AppError::unauthorized)?;
+    let row = sqlx::query("SELECT storage_path, quota_bytes, enabled FROM accounts WHERE id = ?")
+        .bind(account_id)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or_else(AppError::unauthorized)?;
     if !row.get::<bool, _>("enabled") {
         return Err(AppError::new(StatusCode::FORBIDDEN, "account is disabled"));
     }

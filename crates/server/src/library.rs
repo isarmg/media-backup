@@ -10,7 +10,7 @@ use photo_backup_protocol::{
     UpdateAssetRequest,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::{SqlitePool, Row};
+use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::{audit, auth::AuthContext, error::AppError, routes::AppState};
