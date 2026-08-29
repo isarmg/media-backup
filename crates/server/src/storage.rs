@@ -62,6 +62,7 @@ impl LocalStorage {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn finalize(
         &self,
         account_id: Uuid,

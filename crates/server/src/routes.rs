@@ -756,12 +756,11 @@ async fn ensure_quota(
     if quota_bytes == 0 {
         return Ok(());
     }
-    let used_bytes: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(stored_size), 0) FROM blobs WHERE account_id = ?",
-    )
-    .bind(account_id)
-    .fetch_one(&mut **transaction)
-    .await?;
+    let used_bytes: i64 =
+        sqlx::query_scalar("SELECT COALESCE(SUM(stored_size), 0) FROM blobs WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_one(&mut **transaction)
+            .await?;
     let reserved_bytes: i64 = sqlx::query_scalar(
         r#"
         SELECT COALESCE(SUM(p.expected_size), 0)
