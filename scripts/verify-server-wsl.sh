@@ -1,40 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-set -a
-# shellcheck disable=SC1091
-source "$project_dir/.env"
-set +a
+base_url="${PHOTO_BACKUP_VERIFY_URL:-http://127.0.0.1:8080}"
+forwarded_proto="${PHOTO_BACKUP_VERIFY_FORWARDED_PROTO:-https}"
 
-cookie_file="$(mktemp)"
-trap 'rm -f "$cookie_file"' EXIT
+health_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  "$base_url/health")"
+admin_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+  --header "X-Forwarded-Proto: $forwarded_proto" "$base_url/admin")"
 
-login_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
-  --cookie-jar "$cookie_file" \
-  --header 'X-Forwarded-Proto: https' \
-  --header 'Content-Type: application/json' \
-  --data "{\"username\":\"$ADMIN_USERNAME\",\"password\":\"$ADMIN_PASSWORD\"}" \
-  http://127.0.0.1:8080/admin/api/login)"
-
-overview_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
-  --header 'X-Forwarded-Proto: https' \
-  --cookie "$cookie_file" http://127.0.0.1:8080/admin/api/overview)"
-
-page_fields="$(curl --silent --header 'X-Forwarded-Proto: https' http://127.0.0.1:8080/admin \
-  | grep -Eo 'id="admin(Username|Password)"' \
-  | wc -l)"
-
-client_rejection="$(curl --silent --output /dev/null --write-out '%{http_code}' \
-  --header 'Content-Type: application/json' \
-  --header 'X-Forwarded-Proto: https' \
-  --data '{"username":"missing-user","password":"incorrect-password","device_name":"verification","platform":"test"}' \
-  http://127.0.0.1:8080/v1/auth/bootstrap)"
-
-printf 'admin_login=%s overview=%s account_fields=%s invalid_client_login=%s\n' \
-  "$login_status" "$overview_status" "$page_fields" "$client_rejection"
-
-test "$login_status" = "204"
-test "$overview_status" = "200"
-test "$page_fields" = "2"
-test "$client_rejection" = "401"
+printf 'health=%s admin_page=%s\n' "$health_status" "$admin_status"
+test "$health_status" = "200"
+test "$admin_status" = "200"

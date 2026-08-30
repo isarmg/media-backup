@@ -23,6 +23,7 @@ jobs:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
+      - run: PHOTO_BACKUP_VERIFY_SYSTEMD=1 ./scripts/test-deployment.sh
       - run: cargo test --workspace --locked
 
   android:

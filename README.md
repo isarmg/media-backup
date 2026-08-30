@@ -33,18 +33,23 @@
 
 ## 服务端启动
 
-在 Debian/Ubuntu/WSL 安装 Rust 和编译依赖后：
+在 Debian/Ubuntu/WSL 安装 Rust 和编译依赖后，先构建带锁定依赖的 release 制品，再安装：
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y rustup pkg-config libssl-dev build-essential
 rustup default stable
+cargo build --release --locked -p photo-backup-server
 sudo ./scripts/setup-wsl.sh
-cargo build --release -p photo-backup-server
+sudoedit /etc/isarmg/photo-backup.env
 sudo ./scripts/start-server-wsl.sh
 ```
 
-服务启动时自动执行 SQLite 迁移。首次启动会把 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 写入独立的管理员认证表；之后由数据库中的 Argon2 密码摘要完成登录。管理页面位于 `https://你的域名/admin`；管理员先创建普通用户，移动端随后用普通用户账号登录。开发机只读健康检查为 `http://127.0.0.1:8080/health`。
+`setup-wsl.sh` 从 Cargo workspace 读取并校验 `MAJOR.MINOR.PATCH` 版本，把制品安装到不可变的 `/opt/isarmg/photo-backup/releases/<version>/bin`，再通过同目录临时链接和原子重命名切换 `/opt/isarmg/photo-backup/current`。同版本重复安装内容相同时是幂等的；内容不同会直接失败，不会覆盖既有制品。安装器只接受自己管理的 `current` 符号链接，其他安装目标及其父链出现符号链接或特殊文件时都会拒绝。
+
+首次安装会以排他创建方式生成 `/etc/isarmg/photo-backup.env`，权限为 `0600`；重复安装只修正权限，不改配置内容。脚本不会把密码或 Token 写入源码树、命令行或日志，也不会启动服务。必须先用 `sudoedit` 替换自动生成且未回显的 `ADMIN_PASSWORD`、`METRICS_TOKEN`，删除 `# INITIAL-SECRETS-MUST-BE-REPLACED` 标记，再手动运行启动脚本。服务以不可登录的 `isarmg-photo` 用户和组运行，不使用 root 或 PostgreSQL；SQLite 位于 `/var/lib/isarmg/photo-backup/db/app.db`，媒体位于与 `db/` 分离的 `/var/lib/isarmg/photo-backup/data/`。systemd 使用严格只读系统视图，仅放行状态和运行目录写入。
+
+服务启动时自动执行 SQLite 迁移。首次启动会把 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 写入独立的管理员认证表；之后由数据库中的 Argon2 密码摘要完成登录。管理页面位于 `https://你的域名/admin`；管理员先创建普通用户，移动端随后用普通用户账号登录。开发机只读健康检查为 `http://127.0.0.1:8080/health`。`sudo ./scripts/run-server-wsl.sh` 可启动已安装的同一 systemd 服务并跟随 Journal 日志；它和启动脚本都不会读取或执行源码树 `.env`。
 
 一个最小 Caddy 配置如下：
 
@@ -56,7 +61,7 @@ photos.example.com {
 
 Caddy 会自动处理证书并传递 HTTPS 代理信息。必须把直接连接 Axum 的代理 IP/CIDR 精确写入 `TRUSTED_PROXY_CIDRS`，并让代理覆盖或追加 `X-Forwarded-For` 与 `X-Forwarded-Proto`。服务从 Axum 提供的真实 socket peer 开始，由右向左逐跳解析代理链；未受信 peer 的所有转发头都会被忽略。仍应通过防火墙或回环绑定阻止绕过代理。
 
-主要环境变量见 [.env.example](.env.example)：
+开发环境变量示例见 [.env.example](.env.example)；生产值只保存在 `/etc/isarmg/photo-backup.env`：
 
 - `DATABASE_URL`：SQLite 连接串，例如 `sqlite:///var/lib/isarmg/photo-backup/db/app.db`。
 - `DATA_DIR`：原始媒体和临时分块根目录。

@@ -1,15 +1,40 @@
 [Unit]
-Description=Photo backup server
-After=network.target postgresql.service
-Requires=postgresql.service
+Description=Photo Backup server
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/mnt/sarmg.org/photo-backup
-EnvironmentFile=/mnt/sarmg.org/photo-backup/.env
-ExecStart=/mnt/sarmg.org/photo-backup/target/release/photo-backup-server
+User=isarmg-photo
+Group=isarmg-photo
+UMask=0077
+WorkingDirectory=/var/lib/isarmg/photo-backup
+EnvironmentFile=/etc/isarmg/photo-backup.env
+ExecStart=/opt/isarmg/photo-backup/current/bin/photo-backup-server serve
 Restart=on-failure
-RestartSec=3
+RestartSec=3s
+StateDirectory=isarmg/photo-backup
+StateDirectoryMode=0750
+RuntimeDirectory=isarmg/photo-backup
+RuntimeDirectoryMode=0750
+ReadWritePaths=/var/lib/isarmg/photo-backup /run/isarmg/photo-backup
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
 
 [Install]
 WantedBy=multi-user.target
