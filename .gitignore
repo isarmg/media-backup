@@ -4,6 +4,7 @@
 /server-data/
 /server.log
 /server.pid
+.*.photo-backup.lock
 /reference-immich/
 /.agents/
 /.codex/

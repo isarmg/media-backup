@@ -67,6 +67,23 @@ Caddy 会自动处理证书并传递 HTTPS 代理信息。必须把直接连接 
 - `ADMIN_SESSION_IDLE_SECONDS` / `ADMIN_SESSION_ABSOLUTE_SECONDS`：管理员 Session 空闲/绝对期限，默认 1800/43200 秒。
 - `METRICS_TOKEN`：启用 `/metrics` 的独立 Bearer Token；不设置则返回 404。
 
+## 一致备份、恢复与诊断
+
+服务器和所有维护命令会按稳定顺序同时取得 SQLite 文件与 `DATA_DIR` 各自相邻的独占运行锁。先停止服务，再以与服务相同的环境变量和系统用户执行命令；如果服务或另一条维护命令复用了任一数据库或数据目录，命令会直接失败。锁目录的任何符号链接组件都会被拒绝。
+
+```bash
+photo-backup-server backup create --output /srv/photo-backups/2026-08-29
+photo-backup-server backup verify --input /srv/photo-backups/2026-08-29
+photo-backup-server restore --input /srv/photo-backups/2026-08-29
+photo-backup-server doctor
+```
+
+`backup create` 要求输出路径尚不存在并位于 `DATA_DIR` 外。它通过 SQLite Online Backup API 取得包含 WAL 已提交页的一致数据库快照，并把 `DATA_DIR` 内全部常规文件复制到私有暂存目录。`manifest.json` 记录产品、格式、应用版本、Schema、关键表记录数，以及数据库和每个 Blob、上传分块、提交暂存对象等持久文件的大小与 BLAKE3；发布前会完成一次自验证。符号链接、特殊文件、非 UTF-8/逃逸路径和意外文件都会被拒绝。
+
+`backup verify` 会把数据库复制到私有临时目录，再执行 `integrity_check`、`foreign_key_check`、Migration/Schema、关键记录数、逐文件 Hash，以及 Blob 和未完成上传状态的数据库交叉校验。`restore` 先完成同样的全量预校验，再在数据库和 `DATA_DIR` 各自相邻目录暂存；SQLite sidecar 清理、两侧父目录同步和安装后验证共同构成提交点，提交前任一步失败都会同时回滚数据库与文件。提交后才清理带唯一名的旧代副本；如果命令明确报告“安装已成功但旧代清理未完成”，新代已经提交，不要重试恢复，应在确认服务读取正常后人工处理保留的 rollback 证据。成功恢复会清理 SQLite 的 `-wal`、`-shm` 和 `-journal` sidecar。SQLite 数据库文件必须位于 `DATA_DIR` 外，才能执行联合替换。
+
+`doctor` 会检查数据库完整性、外键、Schema、对象 Hash 和上传恢复状态，并执行可回滚的数据库写入探针及可清理的存储写读探针。备份不包含环境配置、管理员明文密码、`DATABASE_URL` 或外部 Token；管理员密码和凭据仍以摘要存在于 SQLite，媒体本身也可能敏感，因此备份目录仍须加密、限制权限并异地保存。不要在服务停止后绕过运行锁直接修改 SQLite 或 `DATA_DIR`。
+
 ## Android 与 iOS
 
 Android 工程在 `android/`，目标 API 36。先构建 Rust 动态库，再用 Android Studio 或 Gradle 构建：
@@ -109,7 +126,7 @@ open PhotoBackup.xcodeproj
 
 ## 运维与发布
 
-- PostgreSQL 与 `DATA_DIR` 必须作为一个一致性单元备份，并遵循至少 3-2-1 策略。
+- SQLite 与 `DATA_DIR` 必须通过上述命令作为一个一致性单元备份，并遵循至少 3-2-1 策略和定期恢复演练。
 - 指标只提供聚合数量和字节数；审计 API 按序列分页返回设备/API Key 的关键操作。
 - 大规模部署可在 `LocalStorage` 边界后增加 S3/MinIO，但不得改变 `plain-v1` 表示的“原始未加密字节”语义。
 - 推送会运行 Rust、Android 和 iOS CI；版本标签 `vX.Y.Z` 必须与 Cargo 工作区版本一致。

@@ -1155,6 +1155,7 @@ dependencies = [
  "blake3",
  "photo-backup-protocol",
  "rand",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",

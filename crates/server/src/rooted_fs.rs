@@ -1,5 +1,12 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RootEntryKind {
+    Directory,
+    RegularFile,
+}
+
 #[cfg(target_os = "linux")]
 mod platform {
+    use super::RootEntryKind;
     use rustix::{
         fd::OwnedFd,
         fs::{
@@ -90,6 +97,10 @@ mod platform {
         }
 
         pub(crate) fn create_new(&self, path: &Path) -> std::io::Result<tokio::fs::File> {
+            self.create_new_std(path).map(tokio::fs::File::from_std)
+        }
+
+        pub(crate) fn create_new_std(&self, path: &Path) -> std::io::Result<File> {
             validate_relative(path)?;
             let parent = path.parent().unwrap_or_else(|| Path::new(""));
             if !parent.as_os_str().is_empty() {
@@ -105,10 +116,14 @@ mod platform {
             )
             .map_err(std::io::Error::from)?;
             require_regular(&fd)?;
-            Ok(tokio::fs::File::from_std(File::from(fd)))
+            Ok(File::from(fd))
         }
 
         pub(crate) fn open_read(&self, path: &Path) -> std::io::Result<tokio::fs::File> {
+            self.open_read_std(path).map(tokio::fs::File::from_std)
+        }
+
+        pub(crate) fn open_read_std(&self, path: &Path) -> std::io::Result<File> {
             validate_relative(path)?;
             self.run_before_operation_hook();
             let fd = openat2(
@@ -120,7 +135,7 @@ mod platform {
             )
             .map_err(std::io::Error::from)?;
             require_regular(&fd)?;
-            Ok(tokio::fs::File::from_std(File::from(fd)))
+            Ok(File::from(fd))
         }
 
         pub(crate) fn open_lock_file(&self, path: &Path) -> std::io::Result<File> {
@@ -182,6 +197,36 @@ mod platform {
                         name.to_bytes(),
                     )));
                 }
+            }
+            Ok(entries)
+        }
+
+        pub(crate) fn list_entries(
+            &self,
+            directory: &Path,
+        ) -> std::io::Result<Vec<(std::ffi::OsString, RootEntryKind)>> {
+            if !directory.as_os_str().is_empty() {
+                validate_relative(directory)?;
+            }
+            self.run_before_operation_hook();
+            let fd = self.open_directory(directory, false)?;
+            let metadata_fd = dup(&fd).map_err(std::io::Error::from)?;
+            let mut entries = Vec::new();
+            for entry in Dir::new(fd).map_err(std::io::Error::from)? {
+                let entry = entry.map_err(std::io::Error::from)?;
+                let name = entry.file_name();
+                if name.to_bytes() == b"." || name.to_bytes() == b".." {
+                    continue;
+                }
+                let name = std::ffi::OsString::from(std::ffi::OsStr::from_bytes(name.to_bytes()));
+                let metadata = statat(&metadata_fd, &name, AtFlags::SYMLINK_NOFOLLOW)
+                    .map_err(std::io::Error::from)?;
+                let kind = match FileType::from_raw_mode(metadata.st_mode) {
+                    FileType::RegularFile => RootEntryKind::RegularFile,
+                    FileType::Directory => RootEntryKind::Directory,
+                    _ => return Err(unsafe_entry("refusing a symbolic link or special entry")),
+                };
+                entries.push((name, kind));
             }
             Ok(entries)
         }
@@ -390,6 +435,8 @@ mod platform {
 mod platform {
     use std::path::Path;
 
+    use super::RootEntryKind;
+
     #[derive(Clone, Debug)]
     pub(crate) struct RootedFs;
 
@@ -406,7 +453,15 @@ mod platform {
             Err(unsupported())
         }
 
+        pub(crate) fn create_new_std(&self, _path: &Path) -> std::io::Result<std::fs::File> {
+            Err(unsupported())
+        }
+
         pub(crate) fn open_read(&self, _path: &Path) -> std::io::Result<tokio::fs::File> {
+            Err(unsupported())
+        }
+
+        pub(crate) fn open_read_std(&self, _path: &Path) -> std::io::Result<std::fs::File> {
             Err(unsupported())
         }
 
@@ -426,6 +481,13 @@ mod platform {
             &self,
             _directory: &Path,
         ) -> std::io::Result<Vec<std::ffi::OsString>> {
+            Err(unsupported())
+        }
+
+        pub(crate) fn list_entries(
+            &self,
+            _directory: &Path,
+        ) -> std::io::Result<Vec<(std::ffi::OsString, RootEntryKind)>> {
             Err(unsupported())
         }
 
