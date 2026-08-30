@@ -2,6 +2,7 @@ use std::{path::Path, path::PathBuf, str::FromStr};
 
 use axum::{
     body::{to_bytes, Body},
+    extract::ConnectInfo,
     http::{header, Method, Request, Response, StatusCode},
     Router,
 };
@@ -80,11 +81,13 @@ async fn test_state(database: &Path, data: &Path) -> (AppState, SqlitePool) {
         development: true,
         admin_session_idle_seconds: 1_800,
         admin_session_absolute_seconds: 43_200,
+        trusted_proxy_cidrs: Vec::new(),
     };
     let state = AppState {
         pool: pool.clone(),
         storage,
         config,
+        login_admission: crate::login_admission::LoginAdmission::default(),
     };
     crate::admin::ensure_admin_user(&state)
         .await
@@ -216,9 +219,15 @@ fn json_request(
             .header(header::COOKIE, cookie)
             .header("x-csrf-token", csrf);
     }
-    builder
+    let mut request = builder
         .body(Body::from(body.to_string()))
-        .expect("build JSON request")
+        .expect("build JSON request");
+    request.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:41000"
+            .parse::<std::net::SocketAddr>()
+            .expect("test peer address"),
+    ));
+    request
 }
 
 fn authorized_request(

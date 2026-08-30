@@ -1,7 +1,10 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    net::SocketAddr,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use axum::{
-    extract::{Extension, Path, Request, State},
+    extract::{ConnectInfo, Extension, Path, Request, State},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri},
     middleware::Next,
     response::{Html, IntoResponse, Response},
@@ -188,23 +191,39 @@ pub(crate) async fn ensure_admin_user(state: &AppState) -> Result<(), AppError> 
 
 pub(crate) async fn login(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> Result<Response, AppError> {
     reject_browser_bearer(&headers)?;
     verify_same_origin(&headers)?;
     let normalized_username = request.username.trim().to_lowercase();
+    let source = crate::trusted_proxy::resolve_client_ip(
+        peer.ip(),
+        &headers,
+        &state.config.trusted_proxy_cidrs,
+    )?;
+    state.login_admission.check_source(source)?;
+    state
+        .login_admission
+        .check_account(&format!("admin:{normalized_username}"))?;
     let user = sqlx::query_as::<_, AuthUser>(
         "SELECT id, username, password_hash, session_version FROM auth_users \
          WHERE lower(username) = ? AND active = 1 AND role = 'admin'",
     )
     .bind(normalized_username)
     .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(AppError::unauthorized)?;
-    if !password::verify_password(request.password, user.password_hash.clone()).await {
+    .await?;
+    let verified = state
+        .login_admission
+        .verify(
+            request.password,
+            user.as_ref().map(|user| user.password_hash.clone()),
+        )
+        .await?;
+    let Some(user) = user.filter(|_| verified) else {
         return Err(AppError::unauthorized());
-    }
+    };
 
     let token = random_token();
     let csrf_token = random_token();
@@ -239,8 +258,8 @@ pub(crate) async fn login(
     sqlx::query(
         "INSERT INTO auth_sessions(\
              id, user_id, token_hash, csrf_hash, user_session_version, created_at, last_seen_at,\
-             idle_expires_at, absolute_expires_at, user_agent\
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             idle_expires_at, absolute_expires_at, user_agent, created_ip\
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(session_id)
     .bind(&user.id)
@@ -252,6 +271,7 @@ pub(crate) async fn login(
     .bind(idle_expires_at)
     .bind(absolute_expires_at)
     .bind(user_agent)
+    .bind(source.to_string())
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;

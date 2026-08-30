@@ -5,13 +5,15 @@
 ## 存储与安全边界
 
 - Android 与 iOS 客户端拒绝非 `https://` 的服务地址。
-- `REQUIRE_HTTPS=true`（默认）时，登录、管理、媒体和指标接口只接受 TLS 反向代理标记为 HTTPS 的请求；`/health*` 可留给本机探针。
+- `REQUIRE_HTTPS=true`（默认）时，登录、管理、媒体和指标接口只接受来自 `TRUSTED_PROXY_CIDRS` 中真实传输 peer 的 HTTPS 标记；`/health*` 可留给本机探针。
 - Axum 建议只监听 `127.0.0.1`，由 Caddy/Nginx 终止 TLS；生产模式使用带 `Secure` 的 `__Host-photo_session`。
 - 上传分块、合并对象和下载均校验 BLAKE3；`plain-v1` 对象落盘后是原始未加密字节。
 - 密码使用 Argon2 哈希；设备令牌和 API Key 只保存 SHA-256 摘要；移动端凭据分别存入 Android 加密偏好和 iOS Keychain。
 - 服务器管理员和取得数据卷访问权的人可以读取媒体。生产环境仍应使用磁盘/卷加密、最小权限和加密的异地备份。
 
 管理员身份、随机 Session 和 Session 绑定的 CSRF 摘要持久化在本项目自己的 SQLite 中。Session 有空闲与绝对期限，退出会在数据库撤销当前登录；管理员密码、角色或启用状态变化会使该管理员的全部既有 Session 失效。浏览器管理接口只接受 Cookie 身份，设备与 API Key 接口只接受各自的 Bearer Token，两者不能互换。
+
+管理员登录和设备 bootstrap 的请求体上限为 4 KiB。两条密码登录路径共享 Argon2 并发闸门与执行超时，并分别按真实来源 IP、规范化账户维护有容量和 TTL 上限的 Token Bucket；未知或停用账户也会执行同参数 dummy Argon2，限流响应带 `Retry-After`。
 
 仅在显式 `DEVELOPMENT=true` 且 `BIND` 为 `127.0.0.1` 或 `::1` 时，才允许 `REQUIRE_HTTPS=false` 和不带 `Secure` 的开发 Cookie；生产配置拒绝这种组合。
 
@@ -52,7 +54,7 @@ photos.example.com {
 }
 ```
 
-Caddy 会自动处理证书并传递 HTTPS 代理信息。使用其他代理时必须显式传递 `X-Forwarded-Proto`，同时用防火墙或回环绑定阻止绕过代理。
+Caddy 会自动处理证书并传递 HTTPS 代理信息。必须把直接连接 Axum 的代理 IP/CIDR 精确写入 `TRUSTED_PROXY_CIDRS`，并让代理覆盖或追加 `X-Forwarded-For` 与 `X-Forwarded-Proto`。服务从 Axum 提供的真实 socket peer 开始，由右向左逐跳解析代理链；未受信 peer 的所有转发头都会被忽略。仍应通过防火墙或回环绑定阻止绕过代理。
 
 主要环境变量见 [.env.example](.env.example)：
 
@@ -61,6 +63,7 @@ Caddy 会自动处理证书并传递 HTTPS 代理信息。使用其他代理时�
 - `BIND`：推荐 `127.0.0.1:8080`。
 - `REQUIRE_HTTPS`：生产必须保持 `true`。
 - `DEVELOPMENT`：仅回环开发环境可设为 `true`，默认 `false`。
+- `TRUSTED_PROXY_CIDRS`：逗号分隔的直接可信代理 IP/CIDR；为空时不信任任何转发头。示例中的 Caddy 与服务同机，因此只信任回环地址。
 - `ADMIN_SESSION_IDLE_SECONDS` / `ADMIN_SESSION_ABSOLUTE_SECONDS`：管理员 Session 空闲/绝对期限，默认 1800/43200 秒。
 - `METRICS_TOKEN`：启用 `/metrics` 的独立 Bearer Token；不设置则返回 404。
 

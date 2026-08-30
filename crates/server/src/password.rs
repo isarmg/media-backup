@@ -34,15 +34,17 @@ pub async fn hash_password(password: String) -> Result<String, AppError> {
 }
 
 pub async fn verify_password(password: String, encoded_hash: String) -> bool {
-    tokio::task::spawn_blocking(move || {
-        PasswordHash::new(&encoded_hash).ok().is_some_and(|hash| {
-            Argon2::default()
-                .verify_password(password.as_bytes(), &hash)
-                .is_ok()
-        })
+    tokio::task::spawn_blocking(move || verify_password_blocking(&password, &encoded_hash))
+        .await
+        .unwrap_or(false)
+}
+
+pub(crate) fn verify_password_blocking(password: &str, encoded_hash: &str) -> bool {
+    PasswordHash::new(encoded_hash).ok().is_some_and(|hash| {
+        Argon2::default()
+            .verify_password(password.as_bytes(), &hash)
+            .is_ok()
     })
-    .await
-    .unwrap_or(false)
 }
 
 #[cfg(test)]

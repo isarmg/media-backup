@@ -1,10 +1,11 @@
 use axum::{
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::{header::AUTHORIZATION, StatusCode},
     middleware::Next,
     response::Response,
 };
 use sha2::{Digest, Sha256};
+use std::net::SocketAddr;
 use uuid::Uuid;
 
 use crate::{error::AppError, routes::AppState};
@@ -14,36 +15,26 @@ pub async fn require_secure_transport(
     request: Request,
     next: Next,
 ) -> Result<Response, AppError> {
-    if !state.config.require_https || forwarded_as_https(request.headers()) {
+    if !state.config.require_https {
+        return Ok(next.run(request).await);
+    }
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(peer)| peer.ip());
+    if peer.is_some_and(|peer| {
+        crate::trusted_proxy::forwarded_as_https(
+            peer,
+            request.headers(),
+            &state.config.trusted_proxy_cidrs,
+        )
+    }) {
         return Ok(next.run(request).await);
     }
     Err(AppError::new(
         StatusCode::UPGRADE_REQUIRED,
         "HTTPS is required",
     ))
-}
-
-fn forwarded_as_https(headers: &axum::http::HeaderMap) -> bool {
-    if headers
-        .get("x-forwarded-proto")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(',')
-                .next()
-                .is_some_and(|value| value.trim() == "https")
-        })
-    {
-        return true;
-    }
-    headers
-        .get("forwarded")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(';')
-                .any(|entry| entry.trim().eq_ignore_ascii_case("proto=https"))
-        })
 }
 
 #[derive(Debug, Clone)]
@@ -112,31 +103,4 @@ pub async fn require_auth(
         actor_id,
     });
     Ok(next.run(request).await)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::forwarded_as_https;
-    use axum::http::{HeaderMap, HeaderValue};
-
-    #[test]
-    fn accepts_standard_https_proxy_headers() {
-        let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
-        assert!(forwarded_as_https(&headers));
-        headers.remove("x-forwarded-proto");
-        headers.insert(
-            "forwarded",
-            HeaderValue::from_static("for=192.0.2.1;proto=https"),
-        );
-        assert!(forwarded_as_https(&headers));
-    }
-
-    #[test]
-    fn rejects_insecure_or_missing_proxy_headers() {
-        let mut headers = HeaderMap::new();
-        assert!(!forwarded_as_https(&headers));
-        headers.insert("x-forwarded-proto", HeaderValue::from_static("http"));
-        assert!(!forwarded_as_https(&headers));
-    }
 }

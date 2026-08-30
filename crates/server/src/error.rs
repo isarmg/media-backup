@@ -10,6 +10,7 @@ use std::fmt;
 pub struct AppError {
     pub status: StatusCode,
     pub message: String,
+    retry_after: Option<u64>,
 }
 
 impl fmt::Display for AppError {
@@ -25,6 +26,7 @@ impl AppError {
         Self {
             status,
             message: message.into(),
+            retry_after: None,
         }
     }
 
@@ -43,17 +45,33 @@ impl AppError {
     pub fn conflict(message: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, message)
     }
+
+    pub fn too_many_requests(retry_after: u64) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "too many login attempts".to_owned(),
+            retry_after: Some(retry_after.max(1)),
+        }
+    }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (
+        let mut response = (
             self.status,
             Json(ErrorResponse {
                 error: self.message,
             }),
         )
-            .into_response()
+            .into_response();
+        if let Some(retry_after) = self.retry_after {
+            if let Ok(value) = retry_after.to_string().parse() {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::RETRY_AFTER, value);
+            }
+        }
+        response
     }
 }
 

@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, Extension, Path, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Extension, Path, State},
     http::{header, HeaderValue, StatusCode},
     middleware,
     response::{IntoResponse, Response},
@@ -17,6 +17,7 @@ use rand::{rngs::OsRng, RngCore};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
+use std::net::SocketAddr;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
@@ -25,7 +26,9 @@ use crate::{
     auth::{require_auth, require_secure_transport, AuthContext},
     config::Config,
     error::AppError,
-    library, metrics, password,
+    library,
+    login_admission::LoginAdmission,
+    metrics,
     storage::{LocalStorage, ObjectState},
     upload_commit,
 };
@@ -35,6 +38,7 @@ pub struct AppState {
     pub pool: SqlitePool,
     pub storage: LocalStorage,
     pub config: Config,
+    pub login_admission: LoginAdmission,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -99,12 +103,22 @@ pub fn router(state: AppState) -> Router {
 
     let sensitive = Router::new()
         .route("/metrics", get(metrics::prometheus))
-        .route("/v1/auth/bootstrap", post(bootstrap))
+        .route(
+            "/v1/auth/bootstrap",
+            post(bootstrap).layer(DefaultBodyLimit::max(
+                crate::login_admission::LOGIN_BODY_LIMIT_BYTES,
+            )),
+        )
         .route("/admin", get(admin::page))
         .route("/admin/", get(admin::page))
         .route("/admin/sarmg-design.css", get(admin::design_styles))
         .route("/admin/admin.css", get(admin::product_styles))
-        .route("/admin/api/login", post(admin::login))
+        .route(
+            "/admin/api/login",
+            post(admin::login).layer(DefaultBodyLimit::max(
+                crate::login_admission::LOGIN_BODY_LIMIT_BYTES,
+            )),
+        )
         .merge(admin_protected)
         .merge(protected)
         .route_layer(middleware::from_fn_with_state(
@@ -158,6 +172,8 @@ async fn ready(State(state): State<AppState>) -> Response {
 
 async fn bootstrap(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<BootstrapRequest>,
 ) -> Result<Json<BootstrapResponse>, AppError> {
     let username = request.username.trim();
@@ -170,18 +186,33 @@ async fn bootstrap(
             "username, password, device_name and platform are required",
         ));
     }
+    let source = crate::trusted_proxy::resolve_client_ip(
+        peer.ip(),
+        &headers,
+        &state.config.trusted_proxy_cidrs,
+    )?;
+    state.login_admission.check_source(source)?;
+    state
+        .login_admission
+        .check_account(&format!("device:{}", username.to_lowercase()))?;
     let account: Option<(Uuid, Option<String>)> = sqlx::query_as(
         "SELECT id, password_hash FROM accounts WHERE lower(username) = lower(?) AND enabled = TRUE",
     )
     .bind(username)
     .fetch_optional(&state.pool)
     .await?;
-    let Some((account_id, Some(password_hash))) = account else {
+    let verified = state
+        .login_admission
+        .verify(
+            request.password,
+            account
+                .as_ref()
+                .and_then(|(_, password_hash)| password_hash.clone()),
+        )
+        .await?;
+    let Some((account_id, Some(_))) = account.filter(|_| verified) else {
         return Err(AppError::unauthorized());
     };
-    if !password::verify_password(request.password, password_hash).await {
-        return Err(AppError::unauthorized());
-    }
     let mut transaction = state.pool.begin().await?;
     let mut token_bytes = [0_u8; 32];
     OsRng.fill_bytes(&mut token_bytes);

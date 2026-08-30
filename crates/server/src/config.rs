@@ -2,6 +2,8 @@ use std::{env, net::SocketAddr, path::PathBuf};
 
 use anyhow::{Context, Result};
 
+use crate::trusted_proxy::TrustedNetwork;
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
@@ -15,6 +17,7 @@ pub struct Config {
     pub development: bool,
     pub admin_session_idle_seconds: u64,
     pub admin_session_absolute_seconds: u64,
+    pub trusted_proxy_cidrs: Vec<TrustedNetwork>,
 }
 
 impl Config {
@@ -63,6 +66,17 @@ impl Config {
         {
             anyhow::bail!("admin session TTLs must be non-zero and idle cannot exceed absolute");
         }
+        let trusted_proxy_cidrs = env::var("TRUSTED_PROXY_CIDRS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::parse)
+            .collect::<std::result::Result<Vec<_>, String>>()
+            .map_err(anyhow::Error::msg)
+            .context(
+                "TRUSTED_PROXY_CIDRS must be a comma-separated list of exact IP/CIDR values",
+            )?;
         Ok(Self {
             database_url,
             data_dir,
@@ -75,6 +89,7 @@ impl Config {
             development,
             admin_session_idle_seconds,
             admin_session_absolute_seconds,
+            trusted_proxy_cidrs,
         })
     }
 }
