@@ -3,14 +3,15 @@ mod platform {
     use rustix::{
         fd::OwnedFd,
         fs::{
-            fstat, fsync, linkat, mkdirat, open, openat2, statat, unlinkat, AtFlags, FileType,
-            Mode, OFlags, ResolveFlags,
+            flock, fstat, fsync, linkat, mkdirat, open, openat2, statat, unlinkat, AtFlags, Dir,
+            FileType, FlockOperation, Mode, OFlags, ResolveFlags,
         },
         io::{dup, Errno},
     };
     use std::{
         fmt,
         fs::File,
+        os::unix::ffi::OsStrExt,
         path::{Component, Path},
         sync::Arc,
     };
@@ -120,6 +121,69 @@ mod platform {
             .map_err(std::io::Error::from)?;
             require_regular(&fd)?;
             Ok(tokio::fs::File::from_std(File::from(fd)))
+        }
+
+        pub(crate) fn open_lock_file(&self, path: &Path) -> std::io::Result<File> {
+            validate_relative(path)?;
+            let parent = path.parent().unwrap_or_else(|| Path::new(""));
+            if !parent.as_os_str().is_empty() {
+                self.open_directory(parent, true)?;
+            }
+            self.run_before_operation_hook();
+            let fd = openat2(
+                &self.inner.root,
+                path,
+                OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::from_raw_mode(0o600),
+                self.inner.resolve,
+            )
+            .map_err(std::io::Error::from)?;
+            require_regular(&fd)?;
+            Ok(File::from(fd))
+        }
+
+        pub(crate) fn lock_exclusive(file: &File) -> std::io::Result<()> {
+            flock(file, FlockOperation::LockExclusive).map_err(std::io::Error::from)
+        }
+
+        pub(crate) fn sync_parent(&self, path: &Path) -> std::io::Result<()> {
+            validate_relative(path)?;
+            self.run_before_operation_hook();
+            let parent = self.open_parent(path, false)?;
+            fsync(&parent.fd).map_err(std::io::Error::from)
+        }
+
+        pub(crate) fn list_regular_files(
+            &self,
+            directory: &Path,
+        ) -> std::io::Result<Vec<std::ffi::OsString>> {
+            validate_relative(directory)?;
+            self.run_before_operation_hook();
+            let fd = match self.open_directory(directory, false) {
+                Ok(fd) => fd,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+                Err(error) => return Err(error),
+            };
+            let mut entries = Vec::new();
+            for entry in Dir::new(fd).map_err(std::io::Error::from)? {
+                let entry = entry.map_err(std::io::Error::from)?;
+                let name = entry.file_name();
+                if name.to_bytes() == b"." || name.to_bytes() == b".." {
+                    continue;
+                }
+                let metadata = statat(
+                    &self.inner.root,
+                    directory.join(std::ffi::OsStr::from_bytes(name.to_bytes())),
+                    AtFlags::SYMLINK_NOFOLLOW,
+                )
+                .map_err(std::io::Error::from)?;
+                if FileType::from_raw_mode(metadata.st_mode) == FileType::RegularFile {
+                    entries.push(std::ffi::OsString::from(std::ffi::OsStr::from_bytes(
+                        name.to_bytes(),
+                    )));
+                }
+            }
+            Ok(entries)
         }
 
         pub(crate) fn remove_file(&self, path: &Path) -> std::io::Result<bool> {
@@ -343,6 +407,25 @@ mod platform {
         }
 
         pub(crate) fn open_read(&self, _path: &Path) -> std::io::Result<tokio::fs::File> {
+            Err(unsupported())
+        }
+
+        pub(crate) fn open_lock_file(&self, _path: &Path) -> std::io::Result<std::fs::File> {
+            Err(unsupported())
+        }
+
+        pub(crate) fn lock_exclusive(_file: &std::fs::File) -> std::io::Result<()> {
+            Err(unsupported())
+        }
+
+        pub(crate) fn sync_parent(&self, _path: &Path) -> std::io::Result<()> {
+            Err(unsupported())
+        }
+
+        pub(crate) fn list_regular_files(
+            &self,
+            _directory: &Path,
+        ) -> std::io::Result<Vec<std::ffi::OsString>> {
             Err(unsupported())
         }
 

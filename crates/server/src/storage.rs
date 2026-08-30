@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     future::poll_fn,
     path::{Path, PathBuf},
     pin::Pin,
@@ -24,6 +25,23 @@ pub struct LocalStorage {
     root_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ObjectState {
+    Missing,
+    Matches,
+    Mismatch,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CommitKeys {
+    pub staged: String,
+    pub final_blob: String,
+}
+
+pub(crate) struct UploadCommitGuard {
+    _file: std::fs::File,
+}
+
 impl LocalStorage {
     pub async fn new(root: PathBuf) -> Result<Self, AppError> {
         fs::create_dir_all(&root).await?;
@@ -43,6 +61,52 @@ impl LocalStorage {
 
     fn part_path(&self, upload_id: Uuid, index: u32) -> PathBuf {
         self.upload_dir(upload_id).join(format!("{index:08}.part"))
+    }
+
+    pub(crate) async fn lock_upload_commit(
+        &self,
+        upload_id: Uuid,
+    ) -> Result<UploadCommitGuard, AppError> {
+        let directory = self.upload_dir(upload_id);
+        self.files.ensure_dir(&directory)?;
+        let file = self.files.open_lock_file(&directory.join("commit.lock"))?;
+        let file = tokio::task::spawn_blocking(move || {
+            RootedFs::lock_exclusive(&file)?;
+            Ok::<_, std::io::Error>(file)
+        })
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, "upload commit lock task failed");
+            AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "storage lock failed")
+        })??;
+        Ok(UploadCommitGuard { _file: file })
+    }
+
+    pub(crate) fn commit_keys(
+        &self,
+        configured_path: &str,
+        upload_id: Uuid,
+        content_blake3: &str,
+    ) -> Result<CommitKeys, AppError> {
+        if content_blake3.len() != 64
+            || !content_blake3.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(AppError::bad_request("invalid content hash"));
+        }
+        let account = StorageKey::parse(configured_path)?;
+        let staged = account
+            .as_path()
+            .join("staging")
+            .join(format!("commit-{upload_id}-{}.stage", Uuid::new_v4()));
+        let final_blob = account
+            .as_path()
+            .join("objects")
+            .join(&content_blake3[..2])
+            .join(content_blake3.to_ascii_lowercase());
+        Ok(CommitKeys {
+            staged: path_to_key(&staged)?,
+            final_blob: path_to_key(&final_blob)?,
+        })
     }
 
     pub async fn put_part(
@@ -124,45 +188,109 @@ impl LocalStorage {
         }
     }
 
+    #[cfg(test)]
     pub async fn finalize(
         &self,
         configured_path: &str,
         upload_id: Uuid,
         parts: &[UploadPartSpec],
-        filename: &str,
+        _filename: &str,
         expected_size: u64,
         expected_blake3: &str,
     ) -> Result<(String, u64), AppError> {
-        let account_dir = StorageKey::parse(configured_path)?;
-        self.files.ensure_dir(account_dir.as_path())?;
-        let extension = Path::new(filename)
-            .extension()
-            .and_then(|value| value.to_str())
-            .filter(|value| {
-                !value.is_empty()
-                    && value.len() <= 16
-                    && value
-                        .chars()
-                        .all(|character| character.is_ascii_alphanumeric())
-            })
-            .unwrap_or("media");
-        let final_path = account_dir.join(&format!("{upload_id}.{extension}"));
-        if let Some(matches) =
-            existing_file_matches(&self.files, &final_path, expected_size, expected_blake3).await?
+        let _guard = self.lock_upload_commit(upload_id).await?;
+        let keys = self.commit_keys(configured_path, upload_id, expected_blake3)?;
+        self.assemble_commit(
+            configured_path,
+            upload_id,
+            parts,
+            &keys.staged,
+            expected_size,
+            expected_blake3,
+        )
+        .await?;
+        self.publish_commit(
+            configured_path,
+            upload_id,
+            &keys.staged,
+            &keys.final_blob,
+            expected_size,
+            expected_blake3,
+        )
+        .await?;
+        self.remove_commit_stage(configured_path, upload_id, &keys.staged)?;
+        Ok((keys.final_blob, expected_size))
+    }
+
+    pub(crate) async fn inspect_object(
+        &self,
+        configured_path: &str,
+        storage_path: &str,
+        expected_size: u64,
+        expected_blake3: &str,
+    ) -> Result<ObjectState, AppError> {
+        let key = scoped_blob_key(configured_path, storage_path)?;
+        match existing_file_matches(&self.files, key.as_path(), expected_size, expected_blake3)
+            .await?
         {
-            return if matches {
-                Ok((path_to_key(&final_path)?, expected_size))
-            } else {
-                Err(AppError::conflict(
-                    "stored blob conflicts with upload manifest",
-                ))
-            };
+            None => Ok(ObjectState::Missing),
+            Some(true) => Ok(ObjectState::Matches),
+            Some(false) => Ok(ObjectState::Mismatch),
         }
-        let temporary_path = account_dir.join(&format!(".{upload_id}.{}.tmp", Uuid::new_v4()));
+    }
+
+    pub(crate) async fn inspect_commit_stage(
+        &self,
+        configured_path: &str,
+        upload_id: Uuid,
+        staged_key: &str,
+        expected_size: u64,
+        expected_blake3: &str,
+    ) -> Result<ObjectState, AppError> {
+        let key = commit_stage_key(configured_path, upload_id, staged_key)?;
+        match existing_file_matches(&self.files, key.as_path(), expected_size, expected_blake3)
+            .await?
+        {
+            None => Ok(ObjectState::Missing),
+            Some(true) => Ok(ObjectState::Matches),
+            Some(false) => Ok(ObjectState::Mismatch),
+        }
+    }
+
+    pub(crate) async fn assemble_commit(
+        &self,
+        configured_path: &str,
+        upload_id: Uuid,
+        parts: &[UploadPartSpec],
+        staged_key: &str,
+        expected_size: u64,
+        expected_blake3: &str,
+    ) -> Result<(), AppError> {
+        let staged = commit_stage_key(configured_path, upload_id, staged_key)?;
+        match self
+            .inspect_commit_stage(
+                configured_path,
+                upload_id,
+                staged_key,
+                expected_size,
+                expected_blake3,
+            )
+            .await?
+        {
+            ObjectState::Matches => return Ok(()),
+            ObjectState::Mismatch => {
+                self.files.remove_file(staged.as_path())?;
+            }
+            ObjectState::Missing => {}
+        }
+        let parent = staged.as_path().parent().ok_or_else(invalid_storage_key)?;
+        self.files.ensure_dir(parent)?;
         let (mut temporary, mut output) =
-            TemporaryPart::create(self.files.clone(), temporary_path)?;
-        let assembly = async {
+            TemporaryPart::create(self.files.clone(), staged.as_path().to_path_buf())?;
+        let result = async {
             let mut total = 0_u64;
+            let mut content_hasher = blake3::Hasher::new();
+            let mut buffer = vec![0_u8; 1024 * 1024];
             for part in parts {
                 let part_path = self.part_path(upload_id, part.index);
                 let mut input = match self.files.open_read(&part_path) {
@@ -175,48 +303,134 @@ impl LocalStorage {
                     }
                     Err(error) => return Err(error.into()),
                 };
-                let copied = tokio::io::copy(&mut input, &mut output).await?;
-                total = total.checked_add(copied).ok_or_else(|| {
-                    AppError::conflict("assembled content size does not match manifest")
-                })?;
+                let mut part_size = 0_u64;
+                let mut part_hasher = blake3::Hasher::new();
+                loop {
+                    let read = input.read(&mut buffer).await?;
+                    if read == 0 {
+                        break;
+                    }
+                    let read = u64::try_from(read)
+                        .map_err(|_| AppError::conflict("assembled content size overflow"))?;
+                    part_size = part_size
+                        .checked_add(read)
+                        .ok_or_else(|| AppError::conflict("assembled content size overflow"))?;
+                    total = total
+                        .checked_add(read)
+                        .ok_or_else(|| AppError::conflict("assembled content size overflow"))?;
+                    let bytes = &buffer[..usize::try_from(read).unwrap_or(buffer.len())];
+                    part_hasher.update(bytes);
+                    content_hasher.update(bytes);
+                    output.write_all(bytes).await?;
+                }
+                if part_size != part.size || part_hasher.finalize().to_hex().as_str() != part.blake3
+                {
+                    return Err(AppError::conflict(format!(
+                        "part {} no longer matches its manifest",
+                        part.index
+                    )));
+                }
+            }
+            if total != expected_size
+                || content_hasher.finalize().to_hex().as_str() != expected_blake3
+            {
+                return Err(AppError::conflict(
+                    "assembled content does not match upload manifest",
+                ));
             }
             output.sync_all().await?;
-            Ok::<u64, AppError>(total)
+            Ok::<(), AppError>(())
         }
         .await;
         drop(output);
-        let total = match assembly {
-            Ok(total) => total,
+        match result {
+            Ok(()) => {
+                self.files.sync_parent(staged.as_path())?;
+                temporary.remove_on_drop = false;
+                Ok(())
+            }
             Err(error) => {
                 cleanup_temporary_best_effort(&mut temporary);
-                return Err(error);
+                Err(error)
             }
-        };
-        if total != expected_size {
-            cleanup_temporary_best_effort(&mut temporary);
-            return Err(AppError::conflict(
-                "assembled content size does not match manifest",
-            ));
         }
-        let actual_hash = hash_file(&self.files, temporary.path()).await?;
-        if actual_hash != expected_blake3 {
-            cleanup_temporary_best_effort(&mut temporary);
-            return Err(AppError::conflict(
-                "assembled content hash does not match manifest",
-            ));
+    }
+
+    pub(crate) async fn publish_commit(
+        &self,
+        configured_path: &str,
+        upload_id: Uuid,
+        staged_key: &str,
+        final_key: &str,
+        expected_size: u64,
+        expected_blake3: &str,
+    ) -> Result<(), AppError> {
+        let staged = commit_stage_key(configured_path, upload_id, staged_key)?;
+        let final_blob = scoped_blob_key(configured_path, final_key)?;
+        if self
+            .inspect_commit_stage(
+                configured_path,
+                upload_id,
+                staged_key,
+                expected_size,
+                expected_blake3,
+            )
+            .await?
+            != ObjectState::Matches
+        {
+            return Err(AppError::conflict("staged blob is missing or corrupt"));
         }
-        let published = self.files.link_no_replace(temporary.path(), &final_path)?;
-        cleanup_temporary(&mut temporary)?;
-        if !published
-            && !existing_file_matches(&self.files, &final_path, expected_size, expected_blake3)
-                .await?
-                .unwrap_or(false)
+        let parent = final_blob
+            .as_path()
+            .parent()
+            .ok_or_else(invalid_storage_key)?;
+        self.files.ensure_dir(parent)?;
+        self.files
+            .link_no_replace(staged.as_path(), final_blob.as_path())?;
+        if self
+            .inspect_object(configured_path, final_key, expected_size, expected_blake3)
+            .await?
+            != ObjectState::Matches
         {
             return Err(AppError::conflict(
-                "stored blob conflicts with upload manifest",
+                "final blob conflicts with upload manifest",
             ));
         }
-        Ok((path_to_key(&final_path)?, total))
+        Ok(())
+    }
+
+    pub(crate) fn remove_commit_stage(
+        &self,
+        configured_path: &str,
+        upload_id: Uuid,
+        staged_key: &str,
+    ) -> Result<bool, AppError> {
+        let staged = commit_stage_key(configured_path, upload_id, staged_key)?;
+        Ok(self.files.remove_file(staged.as_path())?)
+    }
+
+    pub(crate) fn cleanup_orphan_staging(
+        &self,
+        configured_path: &str,
+        referenced_keys: &HashSet<String>,
+    ) -> Result<u64, AppError> {
+        let account = StorageKey::parse(configured_path)?;
+        let directory = account.as_path().join("staging");
+        let mut removed = 0_u64;
+        for name in self.files.list_regular_files(&directory)? {
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !is_commit_stage_name(name) {
+                continue;
+            }
+            let candidate = directory.join(name);
+            let key = path_to_key(&candidate)?;
+            if !referenced_keys.contains(&key) && self.files.remove_file(&candidate)? {
+                removed = removed.saturating_add(1);
+            }
+        }
+        Ok(removed)
     }
 
     pub async fn open_blob(
@@ -291,6 +505,7 @@ impl LocalStorage {
     }
 }
 
+#[cfg(test)]
 async fn hash_file(files: &RootedFs, path: &Path) -> Result<String, AppError> {
     let mut file = files.open_read(path)?;
     let mut hasher = blake3::Hasher::new();
@@ -460,6 +675,45 @@ fn scoped_blob_key(account_path: &str, storage_path: &str) -> Result<StorageKey,
         ));
     }
     Ok(storage)
+}
+
+fn commit_stage_key(
+    account_path: &str,
+    upload_id: Uuid,
+    staged_key: &str,
+) -> Result<StorageKey, AppError> {
+    let account = StorageKey::parse(account_path)?;
+    let staged = StorageKey::parse(staged_key)?;
+    let expected_parent = account.as_path().join("staging");
+    let name = staged
+        .as_path()
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(invalid_storage_key)?;
+    if staged.as_path().parent() != Some(expected_parent.as_path())
+        || !name.starts_with(&format!("commit-{upload_id}-"))
+        || !is_commit_stage_name(name)
+    {
+        return Err(AppError::bad_request(
+            "staged blob key is outside its upload account",
+        ));
+    }
+    Ok(staged)
+}
+
+fn is_commit_stage_name(name: &str) -> bool {
+    let Some(value) = name
+        .strip_prefix("commit-")
+        .and_then(|value| value.strip_suffix(".stage"))
+    else {
+        return false;
+    };
+    // UUID strings themselves contain dashes, so validate the two fixed-width UUID fields.
+    value.is_ascii()
+        && value.len() == 73
+        && value.as_bytes().get(36) == Some(&b'-')
+        && Uuid::parse_str(&value[..36]).is_ok()
+        && Uuid::parse_str(&value[37..]).is_ok()
 }
 
 fn path_to_key(path: &Path) -> Result<String, AppError> {

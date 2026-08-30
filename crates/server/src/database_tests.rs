@@ -10,11 +10,15 @@ use sqlx::SqlitePool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+use photo_backup_protocol::{CreateUploadRequest, MediaKind, UploadPartSpec};
+
 use crate::{
     config::Config,
     database,
     routes::{router, AppState},
     storage::LocalStorage,
+    upload_commit,
+    upload_commit::CommitFailpoint,
 };
 
 const ADMIN_USERNAME: &str = "test-admin";
@@ -74,14 +78,15 @@ async fn test_state(database: &Path, data: &Path) -> (AppState, SqlitePool) {
         metrics_token: None,
         require_https: false,
     };
-    (
-        AppState {
-            pool: pool.clone(),
-            storage,
-            config,
-        },
-        pool,
-    )
+    let state = AppState {
+        pool: pool.clone(),
+        storage,
+        config,
+    };
+    upload_commit::reconcile_all(&state)
+        .await
+        .expect("reconcile uploads on test startup");
+    (state, pool)
 }
 
 #[tokio::test]
@@ -742,4 +747,405 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
     );
     drop(restarted_app);
     restarted_pool.close().await;
+}
+
+async fn seed_account(pool: &SqlitePool, storage_path: &str, suffix: &str) -> (Uuid, Uuid) {
+    let account_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO accounts(
+            id, username, display_name, storage_path, quota_bytes, enabled, created_at
+        ) VALUES (?, ?, ?, ?, 100000000, TRUE, datetime('now'))
+        "#,
+    )
+    .bind(account_id)
+    .bind(format!("commit-account-{suffix}"))
+    .bind(format!("Commit Account {suffix}"))
+    .bind(storage_path)
+    .execute(pool)
+    .await
+    .expect("insert commit test account");
+    let device_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO devices(
+            id, account_id, name, platform, token_hash, created_at, last_seen_at
+        ) VALUES (?, ?, ?, 'test', ?, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(device_id)
+    .bind(account_id)
+    .bind(format!("Commit Device {suffix}"))
+    .bind(
+        blake3::hash(format!("token-{suffix}").as_bytes())
+            .as_bytes()
+            .to_vec(),
+    )
+    .execute(pool)
+    .await
+    .expect("insert commit test device");
+    (account_id, device_id)
+}
+
+async fn seed_received_upload(
+    state: &AppState,
+    account_id: Uuid,
+    device_id: Uuid,
+    content: &[u8],
+    suffix: &str,
+) -> Uuid {
+    let asset_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO assets(
+            id, account_id, device_id, source_asset_id, media_kind, source_created_at_ms,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'photo', 1, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(asset_id)
+    .bind(account_id)
+    .bind(device_id)
+    .bind(format!("commit-asset-{suffix}"))
+    .execute(&state.pool)
+    .await
+    .expect("insert commit test asset");
+
+    let content_hash = blake3::hash(content).to_hex().to_string();
+    let part = UploadPartSpec {
+        index: 0,
+        size: content.len() as u64,
+        blake3: content_hash.clone(),
+    };
+    let request = CreateUploadRequest {
+        source_asset_id: format!("commit-asset-{suffix}"),
+        source_resource_id: format!("commit-resource-{suffix}"),
+        media_kind: MediaKind::Photo,
+        role: "primary".to_owned(),
+        filename: format!("{suffix}.jpg"),
+        mime_type: "image/jpeg".to_owned(),
+        source_created_at_ms: 1,
+        content_size: content.len() as u64,
+        content_blake3: content_hash,
+        metadata: None,
+        parts: vec![part.clone()],
+    };
+    let upload_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO uploads(
+            id, account_id, device_id, asset_id, source_resource_id, dedup_token, request,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(upload_id)
+    .bind(account_id)
+    .bind(device_id)
+    .bind(asset_id)
+    .bind(&request.source_resource_id)
+    .bind(&request.content_blake3)
+    .bind(serde_json::to_value(&request).expect("serialize commit request"))
+    .execute(&state.pool)
+    .await
+    .expect("insert commit test upload");
+    sqlx::query(
+        r#"
+        INSERT INTO upload_parts(
+            upload_id, part_index, expected_size, expected_blake3
+        ) VALUES (?, 0, ?, ?)
+        "#,
+    )
+    .bind(upload_id)
+    .bind(i64::try_from(part.size).expect("part size fits SQLite"))
+    .bind(&part.blake3)
+    .execute(&state.pool)
+    .await
+    .expect("insert commit test part");
+    state
+        .storage
+        .put_part(upload_id, &part, Body::from(content.to_vec()), 1024 * 1024)
+        .await
+        .expect("persist commit test part");
+    sqlx::query(
+        "UPDATE upload_parts SET received_size = expected_size, received_at = datetime('now') WHERE upload_id = ? AND part_index = 0",
+    )
+    .bind(upload_id)
+    .execute(&state.pool)
+    .await
+    .expect("mark commit test part received");
+    upload_id
+}
+
+async fn close_test_state(state: AppState, pool: SqlitePool) {
+    drop(pool);
+    state.pool.close().await;
+}
+
+#[tokio::test]
+async fn upload_commit_recovers_every_durable_crash_boundary_after_restart() {
+    let workspace = TestWorkspace::new();
+    let (mut state, mut pool) = test_state(&workspace.database(), &workspace.data()).await;
+    let (account_id, device_id) = seed_account(&pool, "blobs/recovery", "recovery").await;
+
+    for (index, failpoint) in [
+        CommitFailpoint::CommitStarted,
+        CommitFailpoint::StageFsync,
+        CommitFailpoint::Finalizing,
+        CommitFailpoint::Published,
+        CommitFailpoint::MetadataCommitted,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let content = format!("restart-safe-upload-{index}-{}", "x".repeat(128 * 1024));
+        let upload_id = seed_received_upload(
+            &state,
+            account_id,
+            device_id,
+            content.as_bytes(),
+            &format!("restart-{index}"),
+        )
+        .await;
+        let error =
+            upload_commit::complete_with_failpoint(&state, upload_id, account_id, failpoint)
+                .await
+                .expect_err("failpoint simulates process death");
+        assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
+        let resources_before: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM resources r JOIN uploads u ON u.asset_id = r.asset_id WHERE u.id = ?",
+        )
+        .bind(upload_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count pre-recovery resources");
+        let blobs_before: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM blobs b JOIN uploads u ON u.account_id = b.account_id AND u.commit_blob_id = b.id WHERE u.id = ?",
+        )
+        .bind(upload_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count pre-recovery blobs");
+        let expected_metadata = i64::from(failpoint == CommitFailpoint::MetadataCommitted);
+        assert_eq!(
+            resources_before, expected_metadata,
+            "resource must appear exactly with the proven metadata transaction"
+        );
+        assert_eq!(
+            blobs_before, expected_metadata,
+            "quota-bearing blob must appear exactly with the proven metadata transaction"
+        );
+
+        close_test_state(state, pool).await;
+        (state, pool) = test_state(&workspace.database(), &workspace.data()).await;
+        let commit_state: String =
+            sqlx::query_scalar("SELECT commit_state FROM uploads WHERE id = ?")
+                .bind(upload_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read recovered commit state");
+        assert_eq!(commit_state, "committed");
+        let counts: (i64, i64) = sqlx::query_as(
+            r#"
+            SELECT
+                (SELECT COUNT(*) FROM blobs b JOIN uploads u ON u.commit_blob_id = b.id WHERE u.id = ?1),
+                (SELECT COUNT(*) FROM resources r JOIN uploads u ON u.commit_resource_id = r.id WHERE u.id = ?1)
+            "#,
+        )
+        .bind(upload_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count recovered metadata");
+        assert_eq!(counts, (1, 1));
+        let (staged_key, final_key): (Option<String>, String) =
+            sqlx::query_as("SELECT commit_staged_key, commit_final_key FROM uploads WHERE id = ?")
+                .bind(upload_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read recovered object keys");
+        if let Some(staged_key) = staged_key {
+            assert!(!workspace.data().join(staged_key).exists());
+        }
+        assert!(workspace.data().join(final_key).is_file());
+    }
+    close_test_state(state, pool).await;
+}
+
+#[tokio::test]
+async fn upload_commit_serializes_retries_and_deduplicates_concurrent_uploads() {
+    let workspace = TestWorkspace::new();
+    let (state, pool) = test_state(&workspace.database(), &workspace.data()).await;
+    let (account_id, device_id) = seed_account(&pool, "blobs/concurrent", "concurrent").await;
+    let content = vec![91_u8; 256 * 1024 + 17];
+    let upload_id =
+        seed_received_upload(&state, account_id, device_id, &content, "same-upload").await;
+    let first_state = state.clone();
+    let second_state = state.clone();
+    let (first, second) = tokio::join!(
+        upload_commit::complete(&first_state, upload_id, account_id),
+        upload_commit::complete(&second_state, upload_id, account_id),
+    );
+    let first = first.expect("first retry completes");
+    let second = second.expect("second retry is idempotent");
+    assert_eq!(first.resource_id, second.resource_id);
+
+    let upload_two =
+        seed_received_upload(&state, account_id, device_id, &content, "same-content-two").await;
+    let upload_three = seed_received_upload(
+        &state,
+        account_id,
+        device_id,
+        &content,
+        "same-content-three",
+    )
+    .await;
+    let state_two = state.clone();
+    let state_three = state.clone();
+    let (two, three) = tokio::join!(
+        upload_commit::complete(&state_two, upload_two, account_id),
+        upload_commit::complete(&state_three, upload_three, account_id),
+    );
+    two.expect("first concurrent content commit");
+    three.expect("second concurrent content commit");
+    let blob_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM blobs WHERE account_id = ? AND content_blake3 = ?",
+    )
+    .bind(account_id)
+    .bind(blake3::hash(&content).to_hex().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("count deduplicated blobs");
+    let resource_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM resources WHERE asset_id IN (SELECT asset_id FROM uploads WHERE id IN (?1, ?2, ?3))",
+    )
+    .bind(upload_id)
+    .bind(upload_two)
+    .bind(upload_three)
+    .fetch_one(&pool)
+    .await
+    .expect("count independently committed resources");
+    assert_eq!(blob_count, 1);
+    assert_eq!(resource_count, 3);
+    close_test_state(state, pool).await;
+}
+
+#[tokio::test]
+async fn reconciler_never_accepts_same_size_different_content() {
+    let workspace = TestWorkspace::new();
+    let (state, pool) = test_state(&workspace.database(), &workspace.data()).await;
+    let (account_id, device_id) = seed_account(&pool, "blobs/conflict", "conflict").await;
+    let expected = vec![17_u8; 128 * 1024 + 9];
+    let conflicting = vec![23_u8; expected.len()];
+    let upload_id =
+        seed_received_upload(&state, account_id, device_id, &expected, "hash-conflict").await;
+    upload_commit::complete_with_failpoint(
+        &state,
+        upload_id,
+        account_id,
+        CommitFailpoint::Finalizing,
+    )
+    .await
+    .expect_err("stop before publication");
+    let final_key: String = sqlx::query_scalar("SELECT commit_final_key FROM uploads WHERE id = ?")
+        .bind(upload_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read final key");
+    let final_path = workspace.data().join(&final_key);
+    std::fs::create_dir_all(final_path.parent().expect("final parent"))
+        .expect("create conflicting final parent");
+    std::fs::write(&final_path, &conflicting).expect("write conflicting final blob");
+
+    close_test_state(state, pool).await;
+    let (restarted, restarted_pool) = test_state(&workspace.database(), &workspace.data()).await;
+    let commit_state: String = sqlx::query_scalar("SELECT commit_state FROM uploads WHERE id = ?")
+        .bind(upload_id)
+        .fetch_one(&restarted_pool)
+        .await
+        .expect("read conflicted commit state");
+    assert_eq!(commit_state, "unknown");
+    let metadata_counts: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM blobs WHERE account_id = ?1), (SELECT COUNT(*) FROM resources r JOIN uploads u ON u.asset_id = r.asset_id WHERE u.id = ?2)",
+    )
+    .bind(account_id)
+    .bind(upload_id)
+    .fetch_one(&restarted_pool)
+    .await
+    .expect("count conflicted metadata");
+    assert_eq!(metadata_counts, (0, 0));
+    assert_eq!(
+        std::fs::read(final_path).expect("read preserved conflict"),
+        conflicting
+    );
+    close_test_state(restarted, restarted_pool).await;
+}
+
+#[tokio::test]
+async fn orphan_cleanup_is_scoped_and_preserves_cross_account_references() {
+    let workspace = TestWorkspace::new();
+    let (state, pool) = test_state(&workspace.database(), &workspace.data()).await;
+    let (account_a, device_a) = seed_account(&pool, "blobs/account-a", "boundary-a").await;
+    let (_account_b, _device_b) = seed_account(&pool, "blobs/account-b", "boundary-b").await;
+    let content = b"cross-account-stage-proof";
+    let upload_id =
+        seed_received_upload(&state, account_a, device_a, content, "boundary-upload").await;
+    upload_commit::complete_with_failpoint(
+        &state,
+        upload_id,
+        account_a,
+        CommitFailpoint::Finalizing,
+    )
+    .await
+    .expect_err("stop with a durable stage");
+    let original_stage: String =
+        sqlx::query_scalar("SELECT commit_staged_key FROM uploads WHERE id = ?")
+            .bind(upload_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read original stage key");
+    let foreign_stage = format!(
+        "blobs/account-b/staging/commit-{upload_id}-{}.stage",
+        Uuid::new_v4()
+    );
+    let foreign_path = workspace.data().join(&foreign_stage);
+    std::fs::create_dir_all(foreign_path.parent().expect("foreign stage parent"))
+        .expect("create foreign stage parent");
+    std::fs::write(&foreign_path, content).expect("write foreign staged content");
+    sqlx::query("UPDATE uploads SET commit_staged_key = ? WHERE id = ?")
+        .bind(&foreign_stage)
+        .bind(upload_id)
+        .execute(&pool)
+        .await
+        .expect("inject cross-account staged key");
+    let orphan = workspace.data().join(format!(
+        "blobs/account-a/staging/commit-{}-{}.stage",
+        Uuid::new_v4(),
+        Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(orphan.parent().expect("orphan parent")).expect("create orphan parent");
+    std::fs::write(&orphan, b"orphan").expect("write orphan stage");
+
+    let report = upload_commit::reconcile_all(&state)
+        .await
+        .expect("run account-bound reconciler");
+    let commit_state: String = sqlx::query_scalar("SELECT commit_state FROM uploads WHERE id = ?")
+        .bind(upload_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read boundary state");
+    assert_eq!(commit_state, "unknown");
+    assert!(
+        foreign_path.is_file(),
+        "must not delete another account's referenced file"
+    );
+    assert!(
+        !orphan.exists(),
+        "unreferenced generated stage should be removed"
+    );
+    assert!(
+        !workspace.data().join(original_stage).exists(),
+        "superseded local stage is an orphan and should be removed"
+    );
+    assert!(report.orphan_stages_removed >= 2);
+    close_test_state(state, pool).await;
 }

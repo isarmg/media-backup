@@ -26,7 +26,8 @@ use crate::{
     config::Config,
     error::AppError,
     library, metrics, password,
-    storage::LocalStorage,
+    storage::{LocalStorage, ObjectState},
+    upload_commit,
 };
 
 #[derive(Clone)]
@@ -257,13 +258,36 @@ async fn create_upload(
     .fetch_one(&mut *transaction)
     .await?;
 
-    let existing_blob: Option<Uuid> =
-        sqlx::query_scalar("SELECT id FROM blobs WHERE account_id = ? AND content_blake3 = ? AND storage_encoding = 'plain-v1'")
-            .bind(auth.account_id)
-            .bind(&request.content_blake3)
-            .fetch_optional(&mut *transaction)
-            .await?;
-    if let Some(blob_id) = existing_blob {
+    let existing_blob = sqlx::query(
+        "SELECT id, storage_path, stored_size FROM blobs WHERE account_id = ? AND content_blake3 = ? AND storage_encoding = 'plain-v1'",
+    )
+    .bind(auth.account_id)
+    .bind(&request.content_blake3)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if let Some(existing_blob) = existing_blob {
+        let blob_id: Uuid = existing_blob.get("id");
+        let storage_path: String = existing_blob.get("storage_path");
+        let stored_size: i64 = existing_blob.get("stored_size");
+        transaction.commit().await?;
+        let size_matches = u64::try_from(stored_size).ok() == Some(request.content_size);
+        let file_matches = size_matches
+            && state
+                .storage
+                .inspect_object(
+                    &policy.storage_path,
+                    &storage_path,
+                    request.content_size,
+                    &request.content_blake3,
+                )
+                .await?
+                == ObjectState::Matches;
+        if !file_matches {
+            return Err(AppError::conflict(
+                "deduplicated blob is missing or does not match its full hash",
+            ));
+        }
+        let mut transaction = state.pool.begin().await?;
         let resource_id = upsert_resource(&mut transaction, asset_id, blob_id, &request).await?;
         audit::record_change(
             &mut transaction,
@@ -295,6 +319,7 @@ async fn create_upload(
         SELECT id FROM uploads
         WHERE account_id = ? AND device_id = ? AND source_resource_id = ?
           AND dedup_token = ? AND state = 'uploading'
+          AND commit_state IN ('receiving', 'commit_started', 'finalizing')
         ORDER BY created_at DESC LIMIT 1
         "#,
     )
@@ -371,7 +396,7 @@ async fn put_part(
 ) -> Result<StatusCode, AppError> {
     let row = sqlx::query(
         r#"
-        SELECT p.expected_size, p.expected_blake3, u.state
+        SELECT p.expected_size, p.expected_blake3, u.state, u.commit_state
         FROM upload_parts p JOIN uploads u ON u.id = p.upload_id
         WHERE p.upload_id = ? AND p.part_index = ? AND u.account_id = ?
         "#,
@@ -382,8 +407,13 @@ async fn put_part(
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::not_found("upload part not found"))?;
-    if row.get::<String, _>("state") == "complete" {
+    if row.get::<String, _>("commit_state") == "committed" {
         return Ok(StatusCode::NO_CONTENT);
+    }
+    if row.get::<String, _>("commit_state") != "receiving" {
+        return Err(AppError::conflict(
+            "upload parts are frozen after commit starts",
+        ));
     }
     let spec = UploadPartSpec {
         index,
@@ -410,7 +440,7 @@ async fn upload_status(
     Path(upload_id): Path<Uuid>,
 ) -> Result<Json<UploadStatusResponse>, AppError> {
     let state_value: String =
-        sqlx::query_scalar("SELECT state FROM uploads WHERE id = ? AND account_id = ?")
+        sqlx::query_scalar("SELECT commit_state FROM uploads WHERE id = ? AND account_id = ?")
             .bind(upload_id)
             .bind(auth.account_id)
             .fetch_optional(&state.pool)
@@ -428,106 +458,19 @@ async fn complete_upload(
     Extension(auth): Extension<AuthContext>,
     Path(upload_id): Path<Uuid>,
 ) -> Result<Json<CompleteUploadResponse>, AppError> {
-    let row =
-        sqlx::query("SELECT asset_id, request, state FROM uploads WHERE id = ? AND account_id = ?")
-            .bind(upload_id)
-            .bind(auth.account_id)
-            .fetch_optional(&state.pool)
-            .await?
-            .ok_or_else(|| AppError::not_found("upload not found"))?;
-    let asset_id: Uuid = row.get("asset_id");
-    let request: CreateUploadRequest = serde_json::from_value(row.get::<Value, _>("request"))?;
-    if !missing_parts(&state.pool, upload_id).await?.is_empty() {
-        return Err(AppError::conflict("upload still has missing parts"));
-    }
-    let mut transaction = state.pool.begin().await?;
-    let policy = account_policy_for_update(&mut transaction, auth.account_id).await?;
-    let existing_blob: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM blobs WHERE account_id = ? AND content_blake3 = ? AND storage_encoding = 'plain-v1'",
-    )
-    .bind(auth.account_id)
-    .bind(&request.content_blake3)
-    .fetch_optional(&mut *transaction)
-    .await?;
-    let (blob_id, deduplicated) = if let Some(id) = existing_blob {
-        (id, true)
-    } else {
-        let expected_size = request_storage_size(&request)?;
-        let used_bytes: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(stored_size), 0) FROM blobs WHERE account_id = ?",
-        )
-        .bind(auth.account_id)
-        .fetch_one(&mut *transaction)
-        .await?;
-        if policy.quota_bytes > 0
-            && used_bytes.checked_add(expected_size).unwrap_or(i64::MAX) > policy.quota_bytes
-        {
-            return Err(AppError::new(
-                StatusCode::INSUFFICIENT_STORAGE,
-                "account storage quota exceeded",
-            ));
-        }
-        let (storage_path, stored_size) = state
-            .storage
-            .finalize(
-                &policy.storage_path,
-                upload_id,
-                &request.parts,
-                &request.filename,
-                request.content_size,
-                &request.content_blake3,
-            )
-            .await?;
-        let id = sqlx::query_scalar(
-            r#"
-            INSERT INTO blobs(
-                id, account_id, dedup_token, content_blake3, plaintext_size, stored_size,
-                storage_path, wrapped_key, key_nonce, nonce_prefix, part_manifest, storage_encoding,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, 'plain-v1', datetime('now'))
-            RETURNING id
-            "#,
-        )
-        .bind(Uuid::new_v4())
-        .bind(auth.account_id)
-        .bind(&request.content_blake3)
-        .bind(&request.content_blake3)
-        .bind(request.content_size as i64)
-        .bind(stored_size as i64)
-        .bind(storage_path)
-        .bind(serde_json::to_value(&request.parts)?)
-        .fetch_one(&mut *transaction)
-        .await?;
-        (id, false)
-    };
-    let resource_id = upsert_resource(&mut transaction, asset_id, blob_id, &request).await?;
-    audit::record_change(
-        &mut transaction,
-        auth.account_id,
-        "asset",
-        asset_id,
-        "upsert",
-    )
-    .await?;
-    sqlx::query(
-        "UPDATE uploads SET state = 'complete', completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?",
-    )
-    .bind(upload_id)
-    .execute(&mut *transaction)
-    .await?;
-    transaction.commit().await?;
+    let outcome = upload_commit::complete(&state, upload_id, auth.account_id).await?;
     audit::record(
         &state.pool,
         &auth,
         "upload.complete",
         Some("resource"),
-        Some(resource_id),
+        Some(outcome.resource_id),
     )
     .await?;
     Ok(Json(CompleteUploadResponse {
-        resource_id,
-        asset_id,
-        deduplicated,
+        resource_id: outcome.resource_id,
+        asset_id: outcome.asset_id,
+        deduplicated: outcome.deduplicated,
     }))
 }
 
@@ -787,6 +730,7 @@ async fn ensure_quota(
         FROM upload_parts p
         JOIN uploads u ON u.id = p.upload_id
         WHERE u.account_id = ? AND u.state = 'uploading'
+          AND u.commit_state IN ('receiving', 'commit_started', 'finalizing', 'unknown')
         "#,
     )
     .bind(account_id)

@@ -11,6 +11,7 @@ mod password;
 mod rooted_fs;
 mod routes;
 mod storage;
+mod upload_commit;
 
 #[cfg(test)]
 mod database_tests;
@@ -32,12 +33,20 @@ async fn main() -> Result<()> {
     let pool = database::connect(&config.database_url).await?;
     sqlx::migrate!("../../migrations").run(&pool).await?;
     let storage = LocalStorage::new(config.data_dir.clone()).await?;
-    let app = routes::router(AppState {
+    let state = AppState {
         pool,
         storage,
         config: config.clone(),
-    })
-    .layer(TraceLayer::new_for_http());
+    };
+    let reconciliation = upload_commit::reconcile_all(&state).await?;
+    info!(
+        recovered = reconciliation.recovered,
+        marked_unknown = reconciliation.marked_unknown,
+        orphan_stages_removed = reconciliation.orphan_stages_removed,
+        errors = reconciliation.errors,
+        "upload commit reconciliation finished"
+    );
+    let app = routes::router(state).layer(TraceLayer::new_for_http());
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     info!(address = %config.bind, "photo backup server listening");
     axum::serve(listener, app).await?;
