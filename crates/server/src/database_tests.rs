@@ -6,15 +6,13 @@ use axum::{
     Router,
 };
 use serde_json::{json, Value};
-use sqlx::{
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
-    SqlitePool,
-};
+use sqlx::SqlitePool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
 use crate::{
     config::Config,
+    database,
     routes::{router, AppState},
     storage::LocalStorage,
 };
@@ -50,14 +48,13 @@ impl Drop for TestWorkspace {
     }
 }
 
+fn database_url(path: &Path) -> String {
+    format!("sqlite://{}", path.display())
+}
+
 async fn test_state(database: &Path, data: &Path) -> (AppState, SqlitePool) {
-    let options = SqliteConnectOptions::new()
-        .filename(database)
-        .create_if_missing(true)
-        .foreign_keys(true);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(4)
-        .connect_with(options)
+    let database_url = database_url(database);
+    let pool = database::connect(&database_url)
         .await
         .expect("connect test SQLite");
     sqlx::migrate!("../../migrations")
@@ -68,7 +65,7 @@ async fn test_state(database: &Path, data: &Path) -> (AppState, SqlitePool) {
         .await
         .expect("create test storage");
     let config = Config {
-        database_url: database.display().to_string(),
+        database_url,
         data_dir: data.to_path_buf(),
         bind: "127.0.0.1:0".parse().expect("test bind address"),
         admin_username: ADMIN_USERNAME.to_owned(),
@@ -85,6 +82,106 @@ async fn test_state(database: &Path, data: &Path) -> (AppState, SqlitePool) {
         },
         pool,
     )
+}
+
+#[tokio::test]
+async fn production_pool_applies_pragmas_and_persists_after_reopen() {
+    let workspace = TestWorkspace::new();
+    let database_path = workspace.database();
+    assert!(!database_path.exists());
+
+    let database_url = database_url(&database_path);
+    let pool = database::connect(&database_url)
+        .await
+        .expect("connect production SQLite pool");
+    assert!(database_path.is_file());
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migrate production SQLite pool");
+
+    let mut first = pool.acquire().await.expect("acquire first connection");
+    let mut second = pool.acquire().await.expect("acquire second connection");
+    for connection in [&mut *first, &mut *second] {
+        let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&mut *connection)
+            .await
+            .expect("read journal mode");
+        let foreign_keys: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+            .fetch_one(&mut *connection)
+            .await
+            .expect("read foreign key setting");
+        let busy_timeout: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+            .fetch_one(&mut *connection)
+            .await
+            .expect("read busy timeout");
+        let synchronous: i64 = sqlx::query_scalar("PRAGMA synchronous")
+            .fetch_one(&mut *connection)
+            .await
+            .expect("read synchronous setting");
+
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(busy_timeout, 5_000);
+        assert_eq!(synchronous, 2);
+    }
+    drop(first);
+    drop(second);
+
+    let invalid_foreign_key = sqlx::query(
+        "INSERT INTO devices(\
+             id, account_id, name, platform, token_hash, created_at, last_seen_at\
+         ) VALUES (?, ?, 'invalid', 'test', ?, datetime('now'), datetime('now'))",
+    )
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(vec![7_u8; 32])
+    .execute(&pool)
+    .await;
+    assert!(
+        matches!(invalid_foreign_key, Err(sqlx::Error::Database(_))),
+        "foreign key enforcement must reject an orphan device"
+    );
+
+    let account_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO accounts(\
+             id, username, display_name, storage_path, quota_bytes, enabled, created_at\
+         ) VALUES (?, 'persistent-user', 'Persistent User', 'blobs/persistent', 1, true, datetime('now'))",
+    )
+    .bind(account_id)
+    .execute(&pool)
+    .await
+    .expect("insert persistent account");
+
+    let foreign_key_violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&pool)
+        .await
+        .expect("check foreign keys");
+    assert!(foreign_key_violations.is_empty());
+    let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
+        .fetch_one(&pool)
+        .await
+        .expect("check SQLite integrity");
+    assert_eq!(integrity, "ok");
+
+    pool.close().await;
+    let reopened = database::connect(&database_url)
+        .await
+        .expect("reopen production SQLite pool");
+    sqlx::migrate!("../../migrations")
+        .run(&reopened)
+        .await
+        .expect("rerun migrations after reopen");
+    let persisted: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE id = ? AND username = ?")
+            .bind(account_id)
+            .bind("persistent-user")
+            .fetch_one(&reopened)
+            .await
+            .expect("read persistent account");
+    assert_eq!(persisted, 1);
+    reopened.close().await;
 }
 
 fn json_request(

@@ -3,6 +3,7 @@ mod api_access;
 mod audit;
 mod auth;
 mod config;
+mod database;
 mod error;
 mod library;
 mod metrics;
@@ -27,10 +28,7 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
     let config = Config::from_env()?;
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(10)
-        .connect(&config.database_url)
-        .await?;
+    let pool = database::connect(&config.database_url).await?;
     sqlx::migrate!("../../migrations").run(&pool).await?;
     let storage = LocalStorage::new(config.data_dir.clone()).await?;
     let app = routes::router(AppState {
