@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: "com.example.photobackup.processing",
+            forTaskWithIdentifier: MobileContractV02.processingTask,
             using: nil
         ) { task in
             guard let processing = task as? BGProcessingTask else { return }

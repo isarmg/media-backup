@@ -30,20 +30,51 @@ pub enum AgentError {
     NotFound,
     #[error("invalid media kind: {0}")]
     InvalidMediaKind(String),
+    #[error("invalid mobile v0.2 contract: {0}")]
+    InvalidContract(String),
 }
 
+pub const MOBILE_PRODUCT: &str = "photo-backup";
+pub const MOBILE_APPLICATION_VERSION: &str = "0.2.0";
+pub const MOBILE_REVISION: u32 = 1;
+pub const MOBILE_STATE_EPOCH: &str = "photo-backup-mobile-v0.2-r1";
+pub const MOBILE_DATABASE_FILENAME: &str = "agent-v0.2-r1.sqlite";
+pub const MOBILE_STAGING_DIRECTORY: &str = "backup-staging-v0.2-r1";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentConfig {
-    #[serde(default = "default_part_size")]
+    pub product: String,
+    pub application_version: String,
+    pub revision: u32,
+    pub state_epoch: String,
     pub part_size: usize,
 }
 
-fn default_part_size() -> usize {
-    16 * 1024 * 1024
+impl AgentConfig {
+    fn validate(&self) -> Result<(), AgentError> {
+        validate_contract(
+            &self.product,
+            &self.application_version,
+            self.revision,
+            &self.state_epoch,
+        )?;
+        if self.part_size == 0 {
+            return Err(AgentError::InvalidContract(
+                "part_size must be greater than zero".to_owned(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnqueueResource {
+    pub product: String,
+    pub application_version: String,
+    pub revision: u32,
+    pub state_epoch: String,
     pub source_asset_id: String,
     pub source_resource_id: String,
     pub media_kind: String,
@@ -55,24 +86,41 @@ pub struct EnqueueResource {
     pub modified_ms: i64,
     pub source_size: u64,
     pub metadata_json: Option<String>,
-    #[serde(default)]
     pub remove_source_after_prepare: bool,
 }
 
+impl EnqueueResource {
+    fn validate(&self) -> Result<(), AgentError> {
+        validate_contract(
+            &self.product,
+            &self.application_version,
+            self.revision,
+            &self.state_epoch,
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalPart {
     pub index: u32,
     pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PreparedJob {
+    pub product: String,
+    pub application_version: String,
+    pub revision: u32,
+    pub state_epoch: String,
     pub job_id: String,
     pub request: CreateUploadRequest,
     pub local_parts: Vec<LocalPart>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct AgentStats {
     pub discovered: u64,
     pub ready: u64,
@@ -82,6 +130,46 @@ pub struct AgentStats {
     pub failed: u64,
 }
 
+fn validate_contract(
+    product: &str,
+    application_version: &str,
+    revision: u32,
+    state_epoch: &str,
+) -> Result<(), AgentError> {
+    if product != MOBILE_PRODUCT {
+        return Err(AgentError::InvalidContract(format!(
+            "product must be {MOBILE_PRODUCT}"
+        )));
+    }
+    if application_version != MOBILE_APPLICATION_VERSION {
+        return Err(AgentError::InvalidContract(format!(
+            "application_version must be {MOBILE_APPLICATION_VERSION}"
+        )));
+    }
+    if revision != MOBILE_REVISION {
+        return Err(AgentError::InvalidContract(format!(
+            "revision must be {MOBILE_REVISION}"
+        )));
+    }
+    if state_epoch != MOBILE_STATE_EPOCH {
+        return Err(AgentError::InvalidContract(format!(
+            "state_epoch must be {MOBILE_STATE_EPOCH}"
+        )));
+    }
+    Ok(())
+}
+
+impl PreparedJob {
+    fn validate(&self) -> Result<(), AgentError> {
+        validate_contract(
+            &self.product,
+            &self.application_version,
+            self.revision,
+            &self.state_epoch,
+        )
+    }
+}
+
 pub struct Agent {
     connection: Mutex<Connection>,
     config: AgentConfig,
@@ -89,7 +177,11 @@ pub struct Agent {
 
 impl Agent {
     pub fn open(path: impl AsRef<Path>, config: AgentConfig) -> Result<Self, AgentError> {
+        // Contract validation deliberately precedes every filesystem or SQLite
+        // operation, so a v0.1 payload is a zero-write rejection.
+        config.validate()?;
         let connection = database::open_current(path.as_ref())?;
+        validate_persisted_jobs(&connection)?;
         connection.execute(
             "UPDATE jobs SET state = 'ready', upload_id = NULL WHERE state IN ('preparing', 'uploading') AND prepared_json IS NOT NULL",
             [],
@@ -127,6 +219,7 @@ impl Agent {
     }
 
     pub fn enqueue(&self, input: EnqueueResource) -> Result<String, AgentError> {
+        input.validate()?;
         let now = now_ms();
         let connection = self
             .connection
@@ -213,7 +306,9 @@ impl Agent {
                 )
                 .optional()?;
             if let Some(json) = existing {
-                return Ok(Some(serde_json::from_str(&json)?));
+                let prepared: PreparedJob = serde_json::from_str(&json)?;
+                prepared.validate()?;
+                return Ok(Some(prepared));
             }
         }
 
@@ -239,6 +334,10 @@ impl Agent {
                         Ok((
                             row.get(0)?,
                             EnqueueResource {
+                                product: MOBILE_PRODUCT.to_owned(),
+                                application_version: MOBILE_APPLICATION_VERSION.to_owned(),
+                                revision: MOBILE_REVISION,
+                                state_epoch: MOBILE_STATE_EPOCH.to_owned(),
                                 source_asset_id: row.get(1)?,
                                 source_resource_id: row.get(2)?,
                                 media_kind: row.get(3)?,
@@ -314,6 +413,10 @@ impl Agent {
             parts: content.parts.iter().map(|part| part.spec.clone()).collect(),
         };
         let prepared = PreparedJob {
+            product: MOBILE_PRODUCT.to_owned(),
+            application_version: MOBILE_APPLICATION_VERSION.to_owned(),
+            revision: MOBILE_REVISION,
+            state_epoch: MOBILE_STATE_EPOCH.to_owned(),
             job_id: job_id.to_owned(),
             request,
             local_parts: content
@@ -373,22 +476,27 @@ impl Agent {
                 )
                 .optional()?
         };
+        let prepared = prepared
+            .as_deref()
+            .map(serde_json::from_str::<PreparedJob>)
+            .transpose()?;
+        if let Some(job) = &prepared {
+            job.validate()?;
+        }
         self.update_job(
             "UPDATE jobs SET state = 'complete', error = NULL, updated_at_ms = ?2 WHERE id = ?1",
             params![job_id, now_ms()],
         )?;
-        if let Some(json) = prepared {
-            if let Ok(job) = serde_json::from_str::<PreparedJob>(&json) {
-                for part in &job.local_parts {
-                    let _ = fs::remove_file(&part.path);
-                }
-                if let Some(parent) = job
-                    .local_parts
-                    .first()
-                    .and_then(|part| Path::new(&part.path).parent())
-                {
-                    let _ = fs::remove_dir(parent);
-                }
+        if let Some(job) = prepared {
+            for part in &job.local_parts {
+                let _ = fs::remove_file(&part.path);
+            }
+            if let Some(parent) = job
+                .local_parts
+                .first()
+                .and_then(|part| Path::new(&part.path).parent())
+            {
+                let _ = fs::remove_dir(parent);
             }
         }
         Ok(())
@@ -459,6 +567,17 @@ impl Agent {
     }
 }
 
+fn validate_persisted_jobs(connection: &Connection) -> Result<(), AgentError> {
+    let mut statement = connection
+        .prepare("SELECT prepared_json FROM jobs WHERE prepared_json IS NOT NULL ORDER BY id")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        let prepared: PreparedJob = serde_json::from_str(&row?)?;
+        prepared.validate()?;
+    }
+    Ok(())
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -475,6 +594,37 @@ mod tests {
 
     use super::*;
 
+    fn current_config(part_size: usize) -> AgentConfig {
+        AgentConfig {
+            product: MOBILE_PRODUCT.to_owned(),
+            application_version: MOBILE_APPLICATION_VERSION.to_owned(),
+            revision: MOBILE_REVISION,
+            state_epoch: MOBILE_STATE_EPOCH.to_owned(),
+            part_size,
+        }
+    }
+
+    fn current_resource() -> EnqueueResource {
+        EnqueueResource {
+            product: MOBILE_PRODUCT.to_owned(),
+            application_version: MOBILE_APPLICATION_VERSION.to_owned(),
+            revision: MOBILE_REVISION,
+            state_epoch: MOBILE_STATE_EPOCH.to_owned(),
+            source_asset_id: "asset".to_owned(),
+            source_resource_id: "resource".to_owned(),
+            media_kind: "photo".to_owned(),
+            role: "primary".to_owned(),
+            file_path: String::new(),
+            filename: "source.jpg".to_owned(),
+            mime_type: "image/jpeg".to_owned(),
+            source_created_at_ms: 1,
+            modified_ms: 1,
+            source_size: 0,
+            metadata_json: None,
+            remove_source_after_prepare: false,
+        }
+    }
+
     #[test]
     fn prepared_job_contains_original_plaintext_parts() {
         let root = std::env::temp_dir().join(format!("photo-backup-agent-{}", Uuid::new_v4()));
@@ -482,9 +632,13 @@ mod tests {
         let source = root.join("photo.jpg");
         let original = b"server storage must contain these exact original bytes";
         fs::write(&source, original).unwrap();
-        let agent = Agent::open(root.join("agent.sqlite"), AgentConfig { part_size: 11 }).unwrap();
+        let agent = Agent::open(root.join("agent.sqlite"), current_config(11)).unwrap();
         agent
             .enqueue(EnqueueResource {
+                product: MOBILE_PRODUCT.to_owned(),
+                application_version: MOBILE_APPLICATION_VERSION.to_owned(),
+                revision: MOBILE_REVISION,
+                state_epoch: MOBILE_STATE_EPOCH.to_owned(),
                 source_asset_id: "asset-1".to_owned(),
                 source_resource_id: "resource-1".to_owned(),
                 media_kind: "photo".to_owned(),
@@ -512,16 +666,44 @@ mod tests {
             .flat_map(|part| fs::read(&part.path).unwrap())
             .collect::<Vec<_>>();
         assert_eq!(assembled, original);
+        let mut persisted = serde_json::to_value(&prepared).unwrap();
+        persisted["legacy_cipher_metadata"] = serde_json::Value::Bool(true);
+        assert!(serde_json::from_value::<PreparedJob>(persisted).is_err());
+        let mut persisted = serde_json::to_value(&prepared).unwrap();
+        persisted["application_version"] = serde_json::Value::String("0.1.0".to_owned());
+        assert!(serde_json::from_value::<PreparedJob>(persisted)
+            .unwrap()
+            .validate()
+            .is_err());
         assert!(!source.exists());
         drop(agent);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
+    fn mobile_json_contract_has_no_defaults_or_unknown_field_tolerance() {
+        assert_eq!(env!("CARGO_PKG_VERSION"), MOBILE_APPLICATION_VERSION);
+        let mut config = serde_json::to_value(current_config(16)).unwrap();
+        config.as_object_mut().unwrap().remove("part_size");
+        assert!(serde_json::from_value::<AgentConfig>(config).is_err());
+
+        let mut config = serde_json::to_value(current_config(16)).unwrap();
+        config["master_key_b64"] = serde_json::Value::String("legacy".to_owned());
+        assert!(serde_json::from_value::<AgentConfig>(config).is_err());
+
+        let mut resource = serde_json::to_value(current_resource()).unwrap();
+        resource
+            .as_object_mut()
+            .unwrap()
+            .remove("remove_source_after_prepare");
+        assert!(serde_json::from_value::<EnqueueResource>(resource).is_err());
+    }
+
+    #[test]
     fn fresh_agent_database_has_exact_current_metadata_and_schema() {
         let root = tempfile::tempdir().unwrap();
         let database_path = root.path().join("agent.sqlite3");
-        drop(Agent::open(&database_path, AgentConfig { part_size: 16 }).unwrap());
+        drop(Agent::open(&database_path, current_config(16)).unwrap());
 
         #[cfg(unix)]
         assert_eq!(
@@ -646,7 +828,7 @@ mod tests {
         let orphan = sidecar(&missing, "-wal");
         fs::write(&orphan, b"orphan-generation-evidence").unwrap();
         let before = fs::read(&orphan).unwrap();
-        let result = Agent::open(&missing, AgentConfig { part_size: 16 });
+        let result = Agent::open(&missing, current_config(16));
         assert!(result.is_err());
         assert!(!missing.exists());
         assert!(fs::read(orphan).unwrap() == before);
@@ -658,12 +840,12 @@ mod tests {
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(&current, &symbolic).unwrap();
-            assert!(Agent::open(&symbolic, AgentConfig { part_size: 16 }).is_err());
+            assert!(Agent::open(&symbolic, current_config(16)).is_err());
             assert!(generation_bytes(&current) == before);
 
             let hard = root.path().join("hard.sqlite3");
             fs::hard_link(&current, &hard).unwrap();
-            assert!(Agent::open(&hard, AgentConfig { part_size: 16 }).is_err());
+            assert!(Agent::open(&hard, current_config(16)).is_err());
             assert!(generation_bytes(&current) == before);
         }
     }
@@ -707,7 +889,7 @@ mod tests {
             )
             .unwrap();
         assert!(sidecar(&path, "-wal").exists());
-        let agent = Agent::open(&path, AgentConfig { part_size: 16 }).unwrap();
+        let agent = Agent::open(&path, current_config(16)).unwrap();
         assert!(!agent
             .needs_resource("wal-asset", "wal-resource", 1)
             .unwrap());
@@ -721,9 +903,13 @@ mod tests {
         let database_path = root.path().join("agent.sqlite3");
         let source = root.path().join("source.jpg");
         fs::write(&source, b"current-content").unwrap();
-        let agent = Agent::open(&database_path, AgentConfig { part_size: 16 }).unwrap();
+        let agent = Agent::open(&database_path, current_config(16)).unwrap();
         let job_id = agent
             .enqueue(EnqueueResource {
+                product: MOBILE_PRODUCT.to_owned(),
+                application_version: MOBILE_APPLICATION_VERSION.to_owned(),
+                revision: MOBILE_REVISION,
+                state_epoch: MOBILE_STATE_EPOCH.to_owned(),
                 source_asset_id: "asset".to_owned(),
                 source_resource_id: "resource".to_owned(),
                 media_kind: "photo".to_owned(),
@@ -744,7 +930,7 @@ mod tests {
             .unwrap();
         drop(agent);
 
-        let agent = Agent::open(&database_path, AgentConfig { part_size: 16 }).unwrap();
+        let agent = Agent::open(&database_path, current_config(16)).unwrap();
         let state: String = agent
             .connection
             .lock()
@@ -756,9 +942,51 @@ mod tests {
         assert_eq!(state, "ready");
     }
 
+    #[test]
+    fn noncurrent_persisted_job_is_rejected_before_crash_recovery_updates() {
+        let root = tempfile::tempdir().unwrap();
+        let database_path = root.path().join("agent.sqlite3");
+        let source = root.path().join("source.jpg");
+        fs::write(&source, b"current-content").unwrap();
+        let agent = Agent::open(&database_path, current_config(16)).unwrap();
+        let mut input = current_resource();
+        input.file_path = source.to_string_lossy().into_owned();
+        input.source_size = 15;
+        let job_id = agent.enqueue(input).unwrap();
+        agent.next_prepared(root.path()).unwrap().unwrap();
+        drop(agent);
+
+        let connection = Connection::open(&database_path).unwrap();
+        let persisted: String = connection
+            .query_row(
+                "SELECT prepared_json FROM jobs WHERE id = ?1",
+                [&job_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut persisted: serde_json::Value = serde_json::from_str(&persisted).unwrap();
+        persisted["legacy_cipher_metadata"] = serde_json::Value::Bool(true);
+        connection
+            .execute(
+                "UPDATE jobs SET state = 'uploading', prepared_json = ?2 WHERE id = ?1",
+                params![job_id, persisted.to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert!(Agent::open(&database_path, current_config(16)).is_err());
+        let connection = Connection::open(&database_path).unwrap();
+        let state: String = connection
+            .query_row("SELECT state FROM jobs WHERE id = ?1", [&job_id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(state, "uploading");
+    }
+
     fn assert_rejected_without_byte_changes(path: &Path) {
         let before = generation_bytes(path);
-        let result = Agent::open(path, AgentConfig { part_size: 16 });
+        let result = Agent::open(path, current_config(16));
         let error = match result {
             Ok(_) => panic!("non-current agent database was accepted"),
             Err(error) => error,

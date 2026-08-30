@@ -23,7 +23,7 @@
     </array>
     <key>BGTaskSchedulerPermittedIdentifiers</key>
     <array>
-        <string>com.example.photobackup.processing</string>
+        <string>com.example.photobackup.v02.processing.v0-2-r1</string>
     </array>
 </dict>
 </plist>

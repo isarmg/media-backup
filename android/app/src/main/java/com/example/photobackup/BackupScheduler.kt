@@ -1,4 +1,4 @@
-package com.example.photobackup
+package com.example.photobackup.v02
 
 import android.content.Context
 import androidx.work.BackoffPolicy
@@ -14,13 +14,13 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 object BackupScheduler {
-    const val TAG = "photo-backup"
+    const val TAG = MobileContractV02.WORK_TAG
     const val SOURCE_KEY = "backup_source"
     const val SOURCE_MANUAL = "manual"
     const val SOURCE_AUTOMATIC = "automatic"
 
-    private const val NOW_WORK = "photo-backup-now"
-    private const val PERIODIC_WORK = "photo-backup-periodic"
+    private const val NOW_WORK = MobileContractV02.NOW_WORK
+    private const val PERIODIC_WORK = MobileContractV02.PERIODIC_WORK
     private const val PERIOD_HOURS = 6L
 
     fun syncAutomatic(context: Context, config: SecureConfig) {

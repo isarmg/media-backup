@@ -22,6 +22,26 @@ targets:
       - framework: Vendor/PhotoBackupRust.xcframework
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.photobackup
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.photobackup.v02
         PRODUCT_NAME: PhotoBackup
         CODE_SIGN_STYLE: Automatic
+  PhotoBackupTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - PhotoBackupTests
+    dependencies:
+      - target: PhotoBackup
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.photobackup.v02.tests
+        CODE_SIGN_STYLE: Automatic
+schemes:
+  PhotoBackup:
+    build:
+      targets:
+        PhotoBackup: all
+    test:
+      config: Debug
+      targets:
+        - PhotoBackupTests

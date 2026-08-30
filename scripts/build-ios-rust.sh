@@ -9,8 +9,8 @@ mkdir -p "$VENDOR/device/headers" "$VENDOR/simulator/headers"
 cd "$ROOT"
 cargo build -p photo-backup-mobile --release --target aarch64-apple-ios
 cargo build -p photo-backup-mobile --release --target aarch64-apple-ios-sim
-cp crates/mobile-ffi/include/photo_backup.h "$VENDOR/device/headers/"
-cp crates/mobile-ffi/include/photo_backup.h "$VENDOR/simulator/headers/"
+cp crates/mobile-ffi/include/photo_backup_v0_2_r1.h "$VENDOR/device/headers/"
+cp crates/mobile-ffi/include/photo_backup_v0_2_r1.h "$VENDOR/simulator/headers/"
 
 xcodebuild -create-xcframework \
   -library target/aarch64-apple-ios/release/libphoto_backup_mobile.a \

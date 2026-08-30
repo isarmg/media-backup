@@ -88,6 +88,10 @@ photo-backup-server doctor
 
 ## Android 与 iOS
 
+0.2.0 移动端是全新的、不可兼容的 `photo-backup-mobile-v0.2-r1` 合约 epoch。C ABI 只导出 `pb_v0_2_r1_*`，公开头文件仅为 `photo_backup_v0_2_r1.h`；Android JNI 只接受 `com.example.photobackup.v02.NativeBridgeV02` 的版本化方法。所有配置和入队 JSON 必须显式携带且精确匹配 `product="photo-backup"`、`application_version="0.2.0"`、`revision=1`、`state_epoch="photo-backup-mobile-v0.2-r1"`，`part_size` 与布尔字段也必须显式提供，未知字段一律拒绝。
+
+Android application ID 与 iOS bundle ID 均为 `com.example.photobackup.v02`。两端使用新的 Keychain/加密偏好、Bearer Token、后台任务、数据库 `agent-v0.2-r1.sqlite` 和 staging `backup-staging-v0.2-r1` 命名空间；不会扫描、读取、导入或删除 0.1 的凭据、队列和 staging。携带 `master_key_b64`、`dedupe_key_b64` 的完整 0.1 配置会在创建数据库、目录或 staging 之前以零写入方式失败。旧状态只能由独立升级工具显式处理，产品移动端没有 alias、fallback 或自动迁移。
+
 Android 工程在 `android/`，目标 API 36。先构建 Rust 动态库，再用 Android Studio 或 Gradle 构建：
 
 ```powershell

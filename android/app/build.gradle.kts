@@ -13,13 +13,16 @@ val workspaceVersion = file("../../Cargo.toml").readText()
 
 val semanticVersion = workspaceVersion.substringBefore('-').split('.').map(String::toInt)
 require(semanticVersion.size == 3) { "Workspace version must use major.minor.patch" }
+require(workspaceVersion == "0.2.0") {
+    "The mobile v0.2 revision 1 contract requires workspace version 0.2.0; define a new epoch before bumping"
+}
 
 android {
-    namespace = "com.example.photobackup"
+    namespace = "com.example.photobackup.v02"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.photobackup"
+        applicationId = "com.example.photobackup.v02"
         minSdk = 26
         targetSdk = 36
         versionCode = semanticVersion[0] * 1_000_000 + semanticVersion[1] * 1_000 + semanticVersion[2]
@@ -58,4 +61,5 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.11.2")
     implementation("androidx.security:security-crypto:1.1.0")
     implementation("com.squareup.okhttp3:okhttp:5.1.0")
+    testImplementation("junit:junit:4.13.2")
 }

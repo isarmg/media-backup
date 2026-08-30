@@ -1,4 +1,4 @@
-package com.example.photobackup
+package com.example.photobackup.v02
 
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
@@ -23,7 +23,7 @@ class SecureConfig(context: Context) {
         .build()
     private val preferences = EncryptedSharedPreferences.create(
         context,
-        "photo_backup_secure",
+        MobileContractV02.PREFERENCES_FILE,
         masterKey,
         EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
@@ -34,7 +34,7 @@ class SecureConfig(context: Context) {
         set(value) {
             val normalized = value.trim().trimEnd('/')
             val editor = preferences.edit().putString("server_url", normalized)
-            if (normalized != serverUrl) editor.remove("bearer_token")
+            if (normalized != serverUrl) editor.remove(MobileContractV02.TOKEN_KEY)
             editor.apply()
         }
 
@@ -43,7 +43,7 @@ class SecureConfig(context: Context) {
         set(value) {
             val normalized = value.trim()
             val editor = preferences.edit().putString("username", normalized)
-            if (normalized != username) editor.remove("bearer_token")
+            if (normalized != username) editor.remove(MobileContractV02.TOKEN_KEY)
             editor.apply()
         }
 
@@ -51,13 +51,13 @@ class SecureConfig(context: Context) {
         get() = preferences.getString("password", "") ?: ""
         set(value) {
             val editor = preferences.edit().putString("password", value)
-            if (value != password) editor.remove("bearer_token")
+            if (value != password) editor.remove(MobileContractV02.TOKEN_KEY)
             editor.apply()
         }
 
     var bearerToken: String
-        get() = preferences.getString("bearer_token", "") ?: ""
-        set(value) = preferences.edit().putString("bearer_token", value).apply()
+        get() = preferences.getString(MobileContractV02.TOKEN_KEY, "") ?: ""
+        set(value) = preferences.edit().putString(MobileContractV02.TOKEN_KEY, value).apply()
 
     var autoBackup: Boolean
         get() = preferences.getBoolean("auto_backup", false)

@@ -1,4 +1,4 @@
-package com.example.photobackup
+package com.example.photobackup.v02
 
 import android.content.ContentUris
 import android.content.Context
@@ -130,8 +130,8 @@ class MediaScanner(private val context: Context) {
                     albums.getOrPut(bucketId) { MutableAlbum(bucketName) }.sourceAssetIds += sourceId
                 }
                 val thumbnailId = "$sourceId#thumbnail-v1"
-                val needsPrimary = NativeBridge.nativeNeeds(handle, sourceId, sourceId, modifiedMs)
-                val needsThumbnail = NativeBridge.nativeNeeds(handle, sourceId, thumbnailId, modifiedMs)
+                val needsPrimary = NativeBridgeV02.needsV02R1(handle, sourceId, sourceId, modifiedMs)
+                val needsThumbnail = NativeBridgeV02.needsV02R1(handle, sourceId, thumbnailId, modifiedMs)
                 if (!needsPrimary && !needsThumbnail) continue
                 val output = File(sourceDir, UUID.randomUUID().toString())
                 try {
@@ -214,7 +214,7 @@ class MediaScanner(private val context: Context) {
         metadata: JSONObject,
         removeSource: Boolean,
     ) {
-        val input = JSONObject()
+        val input = MobileContractV02.putIdentity(JSONObject())
             .put("source_asset_id", sourceAssetId)
             .put("source_resource_id", sourceResourceId)
             .put("media_kind", mediaKind)
@@ -227,8 +227,7 @@ class MediaScanner(private val context: Context) {
             .put("source_size", file.length())
             .put("metadata_json", metadata.toString())
             .put("remove_source_after_prepare", removeSource)
-        val result = JSONObject(NativeBridge.nativeEnqueue(handle, input.toString()))
-        if (!result.getBoolean("ok")) error(result.optString("error", "Rust Agent enqueue failed"))
+        MobileContractV02.requireEnvelope(NativeBridgeV02.enqueueV02R1(handle, input.toString()))
     }
 
     private fun createThumbnail(source: File, mediaKind: String, sourceDir: File): File? {

@@ -32,7 +32,7 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate {
         self.serverURL = serverURL
         self.token = token
         super.init()
-        let configuration = URLSessionConfiguration.background(withIdentifier: "com.example.photobackup.upload")
+        let configuration = URLSessionConfiguration.background(withIdentifier: MobileContractV02.uploadSession)
         configuration.sessionSendsLaunchEvents = true
         configuration.isDiscretionary = false
         configuration.waitsForConnectivity = true

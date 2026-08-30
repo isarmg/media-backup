@@ -6,13 +6,13 @@ import Photos
 final class BackupCoordinator: ObservableObject {
     static let shared = BackupCoordinator()
 
-    @Published var serverURL = UserDefaults.standard.string(forKey: "server_url") ?? ""
+    @Published var serverURL = MobileContractV02.preferences.string(forKey: "server_url") ?? ""
     @Published var username = KeychainStore.load("username") ?? ""
     @Published var password = KeychainStore.load("password") ?? ""
     @Published var status = "等待配置"
     @Published var running = false
     @Published var albums: [PhotoAlbum] = []
-    @Published var selectedAlbumIds: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "selected_album_ids") ?? [])
+    @Published var selectedAlbumIds: Set<String> = Set(MobileContractV02.preferences.stringArray(forKey: "selected_album_ids") ?? [])
     @Published var remoteAssets: [RemoteAsset] = []
     @Published var showingTrash = false
     @Published var libraryLoading = false
@@ -21,7 +21,7 @@ final class BackupCoordinator: ObservableObject {
     @Published var remoteThumbnails: [UUID: Data] = [:]
 
     private var uploader: BackgroundUploader?
-    private var albumSelectionConfigured = UserDefaults.standard.bool(forKey: "album_selection_configured")
+    private var albumSelectionConfigured = MobileContractV02.preferences.bool(forKey: "album_selection_configured")
 
     func refreshAlbums() async {
         let authorization = await PhotoScanner().requestAccess()
@@ -33,16 +33,16 @@ final class BackupCoordinator: ObservableObject {
         if !albumSelectionConfigured {
             selectedAlbumIds = Set(albums.map(\.id))
             albumSelectionConfigured = true
-            UserDefaults.standard.set(true, forKey: "album_selection_configured")
-            UserDefaults.standard.set(Array(selectedAlbumIds), forKey: "selected_album_ids")
+            MobileContractV02.preferences.set(true, forKey: "album_selection_configured")
+            MobileContractV02.preferences.set(Array(selectedAlbumIds), forKey: "selected_album_ids")
         }
     }
 
     func setAlbum(_ id: String, enabled: Bool) {
         if enabled { selectedAlbumIds.insert(id) } else { selectedAlbumIds.remove(id) }
-        UserDefaults.standard.set(Array(selectedAlbumIds), forKey: "selected_album_ids")
+        MobileContractV02.preferences.set(Array(selectedAlbumIds), forKey: "selected_album_ids")
         albumSelectionConfigured = true
-        UserDefaults.standard.set(true, forKey: "album_selection_configured")
+        MobileContractV02.preferences.set(true, forKey: "album_selection_configured")
     }
 
     func refreshLibrary(trashed: Bool? = nil) async {
@@ -52,9 +52,9 @@ final class BackupCoordinator: ObservableObject {
         do {
             let library = try await remoteLibrary()
             remoteAssets = try await library.timeline(trashed: requestedTrash)
-            let sequence = UserDefaults.standard.object(forKey: "library_sync_sequence") as? NSNumber
+            let sequence = MobileContractV02.preferences.object(forKey: "library_sync_sequence") as? NSNumber
             let nextSequence = try await library.advanceSync(from: sequence?.int64Value ?? 0)
-            UserDefaults.standard.set(nextSequence, forKey: "library_sync_sequence")
+            MobileContractV02.preferences.set(nextSequence, forKey: "library_sync_sequence")
             duplicateGroupCount = try await library.duplicateGroupCount()
             var thumbnails: [UUID: Data] = [:]
             for asset in remoteAssets.prefix(24) {
@@ -151,19 +151,19 @@ final class BackupCoordinator: ObservableObject {
                 throw CoordinatorFailure.message("请输入登录账号和密码")
             }
             let normalizedURL = serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            let credentialsChanged = UserDefaults.standard.string(forKey: "server_url") != normalizedURL
+            let credentialsChanged = MobileContractV02.preferences.string(forKey: "server_url") != normalizedURL
                 || KeychainStore.load("username") != normalizedUsername
                 || KeychainStore.load("password") != password
-            UserDefaults.standard.set(normalizedURL, forKey: "server_url")
+            MobileContractV02.preferences.set(normalizedURL, forKey: "server_url")
             username = normalizedUsername
             try KeychainStore.save(normalizedUsername, for: "username")
             try KeychainStore.save(password, for: "password")
-            if credentialsChanged { KeychainStore.delete("bearer_token") }
-            var bearer = KeychainStore.load("bearer_token")
+            if credentialsChanged { KeychainStore.delete(MobileContractV02.tokenKey) }
+            var bearer = KeychainStore.load(MobileContractV02.tokenKey)
             if bearer == nil {
                 status = "正在登录并注册设备"
                 bearer = try await BackgroundUploader.bootstrap(serverURL: baseURL, username: normalizedUsername, password: password)
-                try KeychainStore.save(bearer!, for: "bearer_token")
+                try KeychainStore.save(bearer!, for: MobileContractV02.tokenKey)
             }
             let support = try FileManager.default.url(
                 for: .applicationSupportDirectory,
@@ -171,11 +171,11 @@ final class BackupCoordinator: ObservableObject {
                 appropriateFor: nil,
                 create: true
             )
-            let staging = support.appendingPathComponent("backup-staging", isDirectory: true)
-            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
             let agent = try RustAgent(
-                databasePath: support.appendingPathComponent("agent.sqlite").path
+                databasePath: support.appendingPathComponent(MobileContractV02.databaseFilename).path
             )
+            let staging = support.appendingPathComponent(MobileContractV02.stagingDirectory, isDirectory: true)
+            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
             let authorization = await PhotoScanner().requestAccess()
             guard authorization == .authorized || authorization == .limited else {
                 throw CoordinatorFailure.message("没有可用的照片访问权限")
@@ -185,9 +185,9 @@ final class BackupCoordinator: ObservableObject {
             if !albumSelectionConfigured {
                 selectedAlbumIds = Set(albums.map(\.id))
                 albumSelectionConfigured = true
-                UserDefaults.standard.set(true, forKey: "album_selection_configured")
+                MobileContractV02.preferences.set(true, forKey: "album_selection_configured")
             }
-            UserDefaults.standard.set(Array(selectedAlbumIds), forKey: "selected_album_ids")
+            MobileContractV02.preferences.set(Array(selectedAlbumIds), forKey: "selected_album_ids")
             let scan = try await PhotoScanner().scan(
                 agent: agent,
                 stagingRoot: staging,
@@ -211,7 +211,7 @@ final class BackupCoordinator: ObservableObject {
     }
 
     private func scheduleBackgroundRun() {
-        let request = BGProcessingTaskRequest(identifier: "com.example.photobackup.processing")
+        let request = BGProcessingTaskRequest(identifier: MobileContractV02.processingTask)
         request.requiresNetworkConnectivity = true
         request.requiresExternalPower = false
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
@@ -227,23 +227,23 @@ final class BackupCoordinator: ObservableObject {
             throw CoordinatorFailure.message("请输入登录账号和密码")
         }
         let normalizedURL = serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let credentialsChanged = UserDefaults.standard.string(forKey: "server_url") != normalizedURL
+        let credentialsChanged = MobileContractV02.preferences.string(forKey: "server_url") != normalizedURL
             || KeychainStore.load("username") != normalizedUsername
             || KeychainStore.load("password") != password
-        UserDefaults.standard.set(normalizedURL, forKey: "server_url")
+        MobileContractV02.preferences.set(normalizedURL, forKey: "server_url")
         serverURL = normalizedURL
         username = normalizedUsername
         try KeychainStore.save(normalizedUsername, for: "username")
         try KeychainStore.save(password, for: "password")
-        if credentialsChanged { KeychainStore.delete("bearer_token") }
-        var bearer = KeychainStore.load("bearer_token")
+        if credentialsChanged { KeychainStore.delete(MobileContractV02.tokenKey) }
+        var bearer = KeychainStore.load(MobileContractV02.tokenKey)
         if bearer == nil {
             bearer = try await BackgroundUploader.bootstrap(
                 serverURL: baseURL,
                 username: normalizedUsername,
                 password: password
             )
-            try KeychainStore.save(bearer!, for: "bearer_token")
+            try KeychainStore.save(bearer!, for: MobileContractV02.tokenKey)
         }
         return RemoteLibrary(serverURL: baseURL, token: bearer!)
     }

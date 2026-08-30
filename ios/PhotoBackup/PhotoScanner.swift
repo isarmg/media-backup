@@ -79,6 +79,10 @@ struct PhotoScanner {
                 try await export(resource, to: output)
                 let size = ((try FileManager.default.attributesOfItem(atPath: output.path)[.size]) as? NSNumber)?.uint64Value ?? 0
                 try agent.enqueue(EnqueueInput(
+                    product: MobileContractV02.product,
+                    applicationVersion: MobileContractV02.applicationVersion,
+                    revision: MobileContractV02.revision,
+                    stateEpoch: MobileContractV02.stateEpoch,
                     sourceAssetId: asset.localIdentifier,
                     sourceResourceId: resourceId,
                     mediaKind: asset.mediaType == .video ? "video" : "photo",
@@ -100,6 +104,10 @@ struct PhotoScanner {
                 let output = sourceRoot.appendingPathComponent("\(UUID().uuidString).thumbnail.jpg")
                 try thumbnail.write(to: output, options: .atomic)
                 try agent.enqueue(EnqueueInput(
+                    product: MobileContractV02.product,
+                    applicationVersion: MobileContractV02.applicationVersion,
+                    revision: MobileContractV02.revision,
+                    stateEpoch: MobileContractV02.stateEpoch,
                     sourceAssetId: asset.localIdentifier,
                     sourceResourceId: thumbnailId,
                     mediaKind: asset.mediaType == .video ? "video" : "photo",

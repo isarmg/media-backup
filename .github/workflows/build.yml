@@ -24,6 +24,7 @@ jobs:
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: ./scripts/check-mobile-v02-contract.sh
       - run: cargo fmt --all -- --check
       - run: PHOTO_BACKUP_VERIFY_SYSTEMD=1 ./scripts/test-deployment.sh
       - run: cargo test --workspace --locked
@@ -59,7 +60,7 @@ jobs:
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
           cargo ndk -t arm64-v8a -o android/app/src/main/jniLibs build -p photo-backup-mobile --release
-      - run: gradle -p android assembleDebug
+      - run: gradle -p android testDebugUnitTest assembleDebug
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: photo-backup-android-debug
@@ -84,6 +85,11 @@ jobs:
       - run: brew install xcodegen
       - run: ./scripts/build-ios-rust.sh
       - run: cd ios && xcodegen generate
+      - name: Run iOS state-epoch isolation tests
+        run: |
+          simulator_udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/{print $2; exit}')"
+          test -n "$simulator_udid"
+          xcodebuild -project ios/PhotoBackup.xcodeproj -scheme PhotoBackup -sdk iphonesimulator -destination "id=$simulator_udid" CODE_SIGNING_ALLOWED=NO -derivedDataPath ios/DerivedData test
       - name: Build without signing
         run: xcodebuild -project ios/PhotoBackup.xcodeproj -scheme PhotoBackup -sdk iphoneos -configuration Release CODE_SIGNING_ALLOWED=NO -derivedDataPath ios/DerivedData build
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

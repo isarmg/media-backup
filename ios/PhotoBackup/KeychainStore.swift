@@ -6,7 +6,7 @@ enum KeychainStore {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key,
-            kSecAttrService as String: "com.example.photobackup",
+            kSecAttrService as String: MobileContractV02.keychainService,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -20,7 +20,7 @@ enum KeychainStore {
         let identity: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key,
-            kSecAttrService as String: "com.example.photobackup",
+            kSecAttrService as String: MobileContractV02.keychainService,
         ]
         let attributes: [String: Any] = [
             kSecValueData as String: Data(value.utf8),
@@ -43,7 +43,7 @@ enum KeychainStore {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: key,
-            kSecAttrService as String: "com.example.photobackup",
+            kSecAttrService as String: MobileContractV02.keychainService,
         ]
         SecItemDelete(query as CFDictionary)
     }

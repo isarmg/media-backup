@@ -1,4 +1,4 @@
-package com.example.photobackup
+package com.example.photobackup.v02
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -62,15 +62,18 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
                 token = api.bootstrap(config.username, config.password, Build.MODEL)
                 config.bearerToken = token
             }
-            val nativeConfig = JSONObject()
+            val nativeConfig = MobileContractV02.putIdentity(JSONObject())
                 .put("part_size", 16 * 1024 * 1024)
-            val handle = NativeBridge.nativeOpen(
-                applicationContext.getDatabasePath("agent.sqlite").absolutePath,
+            val handle = NativeBridgeV02.openV02R1(
+                applicationContext.getDatabasePath(MobileContractV02.DATABASE_FILENAME).absolutePath,
                 nativeConfig.toString(),
             )
             if (handle == 0L) error("无法打开 Rust Agent")
             try {
-                val stagingRoot = File(applicationContext.filesDir, "backup-staging").also { it.mkdirs() }
+                val stagingRoot = File(
+                    applicationContext.filesDir,
+                    MobileContractV02.STAGING_DIRECTORY,
+                ).also { it.mkdirs() }
                 publish(config, snapshot.copy(message = "正在扫描媒体库"), "扫描", 0, 0)
                 val selectedAlbumIds = if (!config.cameraOnly && !config.albumSelectionConfigured) {
                     DeviceAlbums.list(applicationContext).mapTo(mutableSetOf()) { it.id }
@@ -100,13 +103,15 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
                         config.saveSnapshot(snapshot.copy(state = "idle", message = "备份已停止", currentItem = ""))
                         return Result.failure(workDataOf(OUTPUT_MESSAGE to "备份已停止"))
                     }
-                    val envelope = JSONObject(NativeBridge.nativeNext(handle, stagingRoot.absolutePath))
-                    if (!envelope.getBoolean("ok")) error(envelope.optString("error"))
+                    val envelope = MobileContractV02.requireEnvelope(
+                        NativeBridgeV02.nextV02R1(handle, stagingRoot.absolutePath),
+                    )
                     if (envelope.isNull("value")) {
                         queueDrained = true
                         break
                     }
                     val job = envelope.getJSONObject("value")
+                    MobileContractV02.requireIdentity(job)
                     val filename = job.optJSONObject("request")?.optString("filename", "媒体文件") ?: "媒体文件"
                     snapshot = snapshot.copy(message = "正在备份 $filename", currentItem = filename)
                     publish(config, snapshot, "上传", snapshot.completed, maxOf(scan.discovered, 1))
@@ -137,7 +142,7 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
                     return Result.retry()
                 }
             } finally {
-                NativeBridge.nativeClose(handle)
+                NativeBridgeV02.closeV02R1(handle)
             }
             snapshot = snapshot.copy(
                 state = "success",
@@ -170,11 +175,11 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
         try {
             val create = api.createUpload(job.getJSONObject("request").toString())
             if (create.getString("disposition") == "complete") {
-                NativeBridge.nativeMarkComplete(handle, jobId)
+                MobileContractV02.requireEnvelope(NativeBridgeV02.markCompleteV02R1(handle, jobId))
                 return 0L
             }
             val uploadId = create.getString("upload_id")
-            NativeBridge.nativeMarkUpload(handle, jobId, uploadId)
+            MobileContractV02.requireEnvelope(NativeBridgeV02.markUploadV02R1(handle, jobId, uploadId))
             val files = mutableMapOf<Int, File>()
             val localParts = job.getJSONArray("local_parts")
             for (position in 0 until localParts.length()) {
@@ -188,13 +193,15 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
                 val file = files[index] ?: error("缺少本地分块 $index")
                 api.uploadPart(uploadId, index, file)
                 uploadedBytes += file.length()
-                NativeBridge.nativeMarkPart(handle, jobId, index)
+                MobileContractV02.requireEnvelope(NativeBridgeV02.markPartV02R1(handle, jobId, index))
             }
             api.complete(uploadId)
-            NativeBridge.nativeMarkComplete(handle, jobId)
+            MobileContractV02.requireEnvelope(NativeBridgeV02.markCompleteV02R1(handle, jobId))
             return uploadedBytes
         } catch (error: Exception) {
-            NativeBridge.nativeMarkFailed(handle, jobId, error.message ?: "上传失败", true)
+            MobileContractV02.requireEnvelope(
+                NativeBridgeV02.markFailedV02R1(handle, jobId, error.message ?: "上传失败", true),
+            )
             throw error
         }
     }
@@ -274,7 +281,7 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
         const val PROGRESS_ITEM = "item"
         const val OUTPUT_MESSAGE = "result_message"
 
-        private const val CHANNEL_ID = "photo-backup"
+        private const val CHANNEL_ID = MobileContractV02.NOTIFICATION_CHANNEL
         private const val NOTIFICATION_ID = 4102
         private const val MAX_SCAN_ITEMS = 40
         private const val MAX_UPLOAD_ITEMS = 60
