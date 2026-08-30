@@ -19,7 +19,7 @@ use crate::{
 };
 
 #[cfg(unix)]
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 
 const APPLICATION: &str = "photo-backup";
 const FORMAT_VERSION: u32 = 1;
@@ -1236,6 +1236,11 @@ fn ensure_regular_file(path: &Path, label: &str) -> anyhow::Result<()> {
         "{label} must not be a symbolic link"
     );
     ensure!(metadata.is_file(), "{label} is not a regular file");
+    #[cfg(unix)]
+    ensure!(
+        metadata.nlink() == 1,
+        "{label} must not have multiple hard links"
+    );
     Ok(())
 }
 
@@ -2185,5 +2190,22 @@ mod tests {
             .unwrap();
         drop(connection);
         assert!(doctor(&config).is_err());
+    }
+
+    #[tokio::test]
+    async fn doctor_and_restore_reject_a_hardlinked_live_database() {
+        let (root, config, _, _, _, _) = setup().await;
+        create(&config, &root.backup()).unwrap();
+        let database_alias = root.0.join("database-alias.sqlite3");
+        fs::hard_link(root.database(), &database_alias).unwrap();
+        let alias_config = Config {
+            database_url: format!("sqlite://{}", database_alias.display()),
+            ..config.clone()
+        };
+
+        assert!(doctor(&config).is_err());
+        assert!(doctor(&alias_config).is_err());
+        assert!(restore(&config, &root.backup()).is_err());
+        assert!(restore(&alias_config, &root.backup()).is_err());
     }
 }

@@ -65,6 +65,12 @@ impl RuntimeLock {
                         actual == location.kind.file_type(),
                         "Photo Backup runtime resource is a symbolic link or has the wrong type"
                     );
+                    if actual == FileType::RegularFile {
+                        ensure!(
+                            metadata.st_nlink == 1,
+                            "Photo Backup SQLite resource has multiple hard links"
+                        );
+                    }
                 }
                 Err(Errno::NOENT) => {}
                 Err(error) => {
@@ -82,8 +88,9 @@ impl RuntimeLock {
             .with_context(|| "open Photo Backup runtime lock")?;
             let metadata = fstat(&fd)?;
             ensure!(
-                FileType::from_raw_mode(metadata.st_mode) == FileType::RegularFile,
-                "runtime lock is not a regular file"
+                FileType::from_raw_mode(metadata.st_mode) == FileType::RegularFile
+                    && metadata.st_nlink == 1,
+                "runtime lock is not a single-link regular file"
             );
             match flock(&fd, FlockOperation::NonBlockingLockExclusive) {
                 Ok(()) => files.push(File::from(fd)),
@@ -258,6 +265,31 @@ mod tests {
 
         assert!(RuntimeLock::acquire(&database_url(&linked_database), &real_data).is_err());
         assert!(RuntimeLock::acquire(&database_url(&real_database), &linked_data).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn runtime_lock_rejects_database_and_lock_file_hardlink_aliases() {
+        let root = std::env::temp_dir().join(format!("photo-runtime-lock-{}", Uuid::new_v4()));
+        let data_a = root.join("data-a");
+        let data_b = root.join("data-b");
+        std::fs::create_dir_all(&data_a).unwrap();
+        std::fs::create_dir_all(&data_b).unwrap();
+        let database = root.join("app.sqlite3");
+        let database_alias = root.join("alias.sqlite3");
+        std::fs::write(&database, b"hardlink-identity-test").unwrap();
+        std::fs::hard_link(&database, &database_alias).unwrap();
+        assert!(RuntimeLock::acquire(&database_url(&database), &data_a).is_err());
+        assert!(RuntimeLock::acquire(&database_url(&database_alias), &data_b).is_err());
+
+        std::fs::remove_file(&database_alias).unwrap();
+        let disposable = root.join("disposable.sqlite3");
+        RuntimeLock::acquire(&database_url(&disposable), &data_a).unwrap();
+        let lock = root.join(".disposable.sqlite3.photo-backup.lock");
+        let aliased_database = root.join("lock-alias.sqlite3");
+        let lock_alias = root.join(".lock-alias.sqlite3.photo-backup.lock");
+        std::fs::hard_link(lock, lock_alias).unwrap();
+        assert!(RuntimeLock::acquire(&database_url(&aliased_database), &data_b).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 }
