@@ -4,7 +4,7 @@ set -euo pipefail
 readonly product="photo-backup-server"
 readonly version="0.2.0"
 readonly target="x86_64-unknown-linux-gnu"
-readonly release_contract_sha256="7d547d8300045b8f1b5d82fa3c8480d25eb9f98e84d41e13e80d92186e26bba8"
+readonly release_contract_sha256="dd92eb4e70da1cdfa58d9d63e566924c71fa38963205dc3480c329077fef46ab"
 readonly service_user="isarmg-photo"
 readonly service_group="isarmg-photo"
 readonly app_dir="/opt/isarmg/photo-backup"
@@ -158,8 +158,8 @@ expected_identity = {
     "server_schema_sha256": "57c9282c425d2fe1baab63bfce2fa9d947b26b5bf3367750b0308aa442ccba0a",
     "mobile_ffi_epoch": "photo-backup-mobile-v0.2-r1",
     "mobile_ffi_header_sha256": "f5402b3d56e4ecefdfea2c3e849cfc05105fac27b5c6006c8215bfb9fde03dd1",
-    "web_assets_sha256": "10bb925cddc93012aee85a02f9e3bb2e724dd75c822247c5a9fb8dfa9699f0dd",
-    "release_contract_sha256": "7d547d8300045b8f1b5d82fa3c8480d25eb9f98e84d41e13e80d92186e26bba8",
+    "web_assets_sha256": "6c1c04b220464b62e227395fe5b9b6e320a90b8d1d85e768505059a0fafecb88",
+    "release_contract_sha256": "dd92eb4e70da1cdfa58d9d63e566924c71fa38963205dc3480c329077fef46ab",
 }
 expected_directories = {
     "bin", "config", "docs", "include", "scripts", "share", "share/web", "systemd",

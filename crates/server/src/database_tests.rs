@@ -53,6 +53,55 @@ impl Drop for TestWorkspace {
     }
 }
 
+fn storage_snapshot(root: &Path) -> Vec<(String, Option<Vec<u8>>)> {
+    fn visit(root: &Path, current: &Path, entries: &mut Vec<(String, Option<Vec<u8>>)>) {
+        let mut children = std::fs::read_dir(current)
+            .expect("read storage directory")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect storage entries");
+        children.sort_by_key(std::fs::DirEntry::file_name);
+        for child in children {
+            let path = child.path();
+            let relative = path
+                .strip_prefix(root)
+                .expect("storage entry below root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let metadata = child.metadata().expect("read storage metadata");
+            if metadata.is_dir() {
+                entries.push((relative, None));
+                visit(root, &path, entries);
+            } else if metadata.is_file() {
+                entries.push((
+                    relative,
+                    Some(std::fs::read(&path).expect("read storage file")),
+                ));
+            } else {
+                panic!(
+                    "unexpected special file in test storage: {}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    let mut entries = Vec::new();
+    visit(root, root, &mut entries);
+    entries
+}
+
+async fn table_counts(pool: &SqlitePool, tables: &[&str]) -> Vec<i64> {
+    let mut counts = Vec::with_capacity(tables.len());
+    for table in tables {
+        let count = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
+            .fetch_one(pool)
+            .await
+            .unwrap_or_else(|error| panic!("count {table}: {error}"));
+        counts.push(count);
+    }
+    counts
+}
+
 fn database_url(path: &Path) -> String {
     format!("sqlite://{}", path.display())
 }
@@ -269,11 +318,30 @@ async fn get_json(app: &Router, uri: impl AsRef<str>, bearer: &str) -> Value {
     json_body(response).await
 }
 
+fn empty_action_request(method: Method, uri: impl AsRef<str>, bearer: &str) -> Request<Body> {
+    json_request(method, uri, json!({}), Some(bearer), None)
+}
+
 #[tokio::test]
-async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
+async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
     let workspace = TestWorkspace::new();
     let (state, pool) = test_state(&workspace.database(), &workspace.data()).await;
     let app = router(state);
+
+    let mutation_tables = [
+        "accounts",
+        "devices",
+        "auth_sessions",
+        "assets",
+        "uploads",
+        "upload_parts",
+        "blobs",
+        "resources",
+        "audit_events",
+        "account_changes",
+    ];
+    let empty_database = table_counts(&pool, &mutation_tables).await;
+    let empty_storage = storage_snapshot(&workspace.data());
 
     send(
         &app,
@@ -293,11 +361,72 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
     )
     .await;
 
+    for (method, path) in [
+        (Method::POST, "/auth/bootstrap"),
+        (Method::POST, "/admin/api/login"),
+        (Method::GET, "/admin/"),
+    ] {
+        send(
+            &app,
+            json_request(
+                method,
+                path,
+                json!({
+                    "username": ADMIN_USERNAME,
+                    "password": ADMIN_PASSWORD,
+                    "device_name": "Legacy Client",
+                    "platform": "test"
+                }),
+                None,
+                None,
+            ),
+            StatusCode::NOT_FOUND,
+        )
+        .await;
+    }
+
+    send(
+        &app,
+        json_request(
+            Method::POST,
+            "/v2/auth/bootstrap",
+            json!({
+                "username": USERNAME,
+                "password": PASSWORD,
+                "device_name": "Loose Client",
+                "platform": "test",
+                "application_version": "0.1.0"
+            }),
+            None,
+            None,
+        ),
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+    send(
+        &app,
+        json_request(
+            Method::POST,
+            "/v2/admin/login",
+            json!({
+                "username": ADMIN_USERNAME,
+                "password": ADMIN_PASSWORD,
+                "legacy_session": true
+            }),
+            None,
+            None,
+        ),
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+    assert_eq!(table_counts(&pool, &mutation_tables).await, empty_database);
+    assert_eq!(storage_snapshot(&workspace.data()), empty_storage);
+
     let login = send(
         &app,
         json_request(
             Method::POST,
-            "/admin/api/login",
+            "/v2/admin/login",
             json!({"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}),
             None,
             None,
@@ -319,6 +448,54 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         .as_str()
         .expect("admin CSRF token")
         .to_owned();
+    sqlx::query(
+        "UPDATE auth_sessions \
+         SET created_at = created_at - 60, last_seen_at = created_at - 60",
+    )
+    .execute(&pool)
+    .await
+    .expect("set admin session observation sentinel");
+    let admin_session_sentinel: i64 = sqlx::query_scalar("SELECT last_seen_at FROM auth_sessions")
+        .fetch_one(&pool)
+        .await
+        .expect("read admin session observation sentinel");
+
+    send(
+        &app,
+        json_request(
+            Method::POST,
+            "/v2/admin/users",
+            json!({
+                "username": "loose-admin-created-user",
+                "password": PASSWORD,
+                "display_name": "Loose Admin DTO",
+                "storage_path": "blobs/loose-admin-dto",
+                "quota_bytes": 1,
+                "enabled": true,
+                "role": "user"
+            }),
+            None,
+            Some((&admin_cookie, &admin_csrf)),
+        ),
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM accounts")
+            .fetch_one(&pool)
+            .await
+            .expect("count accounts after rejected admin DTO"),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT last_seen_at FROM auth_sessions")
+            .fetch_one(&pool)
+            .await
+            .expect("read rejected admin DTO session observation"),
+        admin_session_sentinel,
+        "rejected admin DTO refreshed its session"
+    );
+    assert_eq!(storage_snapshot(&workspace.data()), empty_storage);
 
     for (index, invalid_storage_path) in [
         "/tmp/photo-backup-outside",
@@ -333,7 +510,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
             &app,
             json_request(
                 Method::POST,
-                "/admin/api/users",
+                "/v2/admin/users",
                 json!({
                     "username": format!("invalid-path-{index}"),
                     "password": PASSWORD,
@@ -355,7 +532,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
             &app,
             json_request(
                 Method::POST,
-                "/admin/api/users",
+                "/v2/admin/users",
                 json!({
                     "username": USERNAME,
                     "password": PASSWORD,
@@ -383,7 +560,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         &app,
         json_request(
             Method::POST,
-            "/admin/api/users",
+            "/v2/admin/users",
             json!({
                 "username": "nested-storage-owner",
                 "password": PASSWORD,
@@ -403,7 +580,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         &app,
         json_request(
             Method::POST,
-            "/admin/api/users",
+            "/v2/admin/users",
             json!({
                 "username": USERNAME,
                 "password": PASSWORD,
@@ -422,7 +599,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         &app,
         json_request(
             Method::PUT,
-            format!("/admin/api/users/{account_id}"),
+            format!("/v2/admin/users/{account_id}"),
             json!({
                 "username": USERNAME,
                 "display_name": "Photo Owner Updated",
@@ -462,6 +639,94 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         .as_str()
         .expect("bootstrap bearer token")
         .to_owned();
+    sqlx::query("UPDATE devices SET last_seen_at = '2000-01-01 00:00:00'")
+        .execute(&pool)
+        .await
+        .expect("set device observation sentinel");
+
+    let pre_upload_storage = storage_snapshot(&workspace.data());
+    for rejected_upload in [
+        json!({
+            "source_asset_id": "legacy-asset",
+            "source_resource_id": "legacy-resource",
+            "media_kind": "photo",
+            "role": "primary",
+            "filename": "legacy.jpg",
+            "mime_type": "image/jpeg",
+            "source_created_at_ms": 1_700_000_000_000_i64,
+            "plaintext_size": 1,
+            "dedup_token": "legacy",
+            "wrapped_key": "legacy",
+            "key_nonce": "legacy",
+            "nonce_prefix": "legacy",
+            "metadata_nonce": null,
+            "metadata_ciphertext": null,
+            "parts": [{
+                "index": 0,
+                "ciphertext_size": 1,
+                "ciphertext_blake3": "0".repeat(64)
+            }]
+        }),
+        json!({
+            "source_asset_id": "loose-asset",
+            "source_resource_id": "loose-resource",
+            "media_kind": "photo",
+            "role": "primary",
+            "filename": "loose.jpg",
+            "mime_type": "image/jpeg",
+            "source_created_at_ms": 1_700_000_000_000_i64,
+            "storage_encoding": "plain-v1",
+            "content_size": 1,
+            "content_blake3": "0".repeat(64),
+            "metadata": null,
+            "parts": [{"index": 0, "size": 1, "blake3": "0".repeat(64)}],
+            "dedup_token": "legacy-alias"
+        }),
+    ] {
+        send(
+            &app,
+            json_request(
+                Method::POST,
+                "/v2/uploads",
+                rejected_upload,
+                Some(&bearer),
+                None,
+            ),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        )
+        .await;
+    }
+    send(
+        &app,
+        json_request(
+            Method::POST,
+            "/uploads",
+            json!({"legacy": true}),
+            Some(&bearer),
+            None,
+        ),
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+    for table in ["assets", "uploads", "upload_parts", "blobs", "resources"] {
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("count {table}: {error}")),
+            0,
+            "rejected legacy or loose upload mutated {table}"
+        );
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT last_seen_at FROM devices")
+            .fetch_one(&pool)
+            .await
+            .expect("read rejected upload device observation"),
+        "2000-01-01 00:00:00",
+        "rejected upload DTO recorded device use"
+    );
+    assert_eq!(storage_snapshot(&workspace.data()), pre_upload_storage);
 
     let content = b"photo-backup-sqlite-regression";
     let content_hash = blake3::hash(content).to_hex().to_string();
@@ -515,14 +780,67 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         StatusCode::NO_CONTENT,
     )
     .await;
+    let staged_storage = storage_snapshot(&workspace.data());
+    sqlx::query("UPDATE devices SET last_seen_at = '2000-01-02 00:00:00'")
+        .execute(&pool)
+        .await
+        .expect("reset device observation sentinel");
+    let staged_state: String = sqlx::query_scalar("SELECT commit_state FROM uploads WHERE id = ?")
+        .bind(upload_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read staged upload state");
+    send(
+        &app,
+        authorized_request(
+            Method::POST,
+            format!("/v2/uploads/{upload_id}/complete"),
+            &bearer,
+            Body::empty(),
+        ),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+    )
+    .await;
+    send(
+        &app,
+        json_request(
+            Method::POST,
+            format!("/v2/uploads/{upload_id}/complete"),
+            json!({"legacy": true}),
+            Some(&bearer),
+            None,
+        ),
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT commit_state FROM uploads WHERE id = ?")
+            .bind(upload_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read upload state after rejected complete DTO"),
+        staged_state
+    );
+    assert_eq!(
+        table_counts(&pool, &["blobs", "resources"]).await,
+        vec![0, 0]
+    );
+    assert_eq!(storage_snapshot(&workspace.data()), staged_storage);
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT last_seen_at FROM devices")
+            .fetch_one(&pool)
+            .await
+            .expect("read rejected completion device observation"),
+        "2000-01-02 00:00:00",
+        "rejected completion DTO recorded device use"
+    );
     let completed = json_body(
         send(
             &app,
-            authorized_request(
+            empty_action_request(
                 Method::POST,
                 format!("/v2/uploads/{upload_id}/complete"),
                 &bearer,
-                Body::empty(),
             ),
             StatusCode::OK,
         )
@@ -582,13 +900,60 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
     assert_eq!(updated_asset["favorite"], true);
     assert_eq!(updated_asset["archived"], true);
 
+    sqlx::query("UPDATE devices SET last_seen_at = '2000-01-03 00:00:00'")
+        .execute(&pool)
+        .await
+        .expect("reset device observation sentinel");
+
+    send(
+        &app,
+        json_request(
+            Method::POST,
+            format!("/v2/assets/{asset_id}/trash"),
+            json!({"legacy": true}),
+            Some(&bearer),
+            None,
+        ),
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM assets WHERE id = ? AND deleted_at IS NOT NULL"
+        )
+        .bind(asset_id)
+        .fetch_one(&pool)
+        .await
+        .expect("check rejected trash DTO"),
+        0
+    );
+
     send(
         &app,
         authorized_request(
+            Method::GET,
+            "/v2/timeline?legacy=true",
+            &bearer,
+            Body::empty(),
+        ),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT last_seen_at FROM devices")
+            .fetch_one(&pool)
+            .await
+            .expect("read rejected action device observation"),
+        "2000-01-03 00:00:00",
+        "rejected action or query recorded device use"
+    );
+
+    send(
+        &app,
+        empty_action_request(
             Method::POST,
             format!("/v2/assets/{asset_id}/trash"),
             &bearer,
-            Body::empty(),
         ),
         StatusCode::NO_CONTENT,
     )
@@ -597,11 +962,10 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
     assert_eq!(trashed["items"].as_array().map(Vec::len), Some(1));
     send(
         &app,
-        authorized_request(
+        empty_action_request(
             Method::POST,
             format!("/v2/assets/{asset_id}/restore"),
             &bearer,
-            Body::empty(),
         ),
         StatusCode::NO_CONTENT,
     )
@@ -660,22 +1024,43 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
     .await;
     send(
         &app,
-        authorized_request(
+        json_request(
+            Method::DELETE,
+            format!("/v2/tags/{tag_id}/assets/{asset_id}"),
+            json!({"legacy": true}),
+            Some(&bearer),
+            None,
+        ),
+        StatusCode::UNPROCESSABLE_ENTITY,
+    )
+    .await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM tag_assets WHERE tag_id = ? AND asset_id = ?"
+        )
+        .bind(tag_id)
+        .bind(asset_id)
+        .fetch_one(&pool)
+        .await
+        .expect("check rejected tag removal DTO"),
+        1
+    );
+    send(
+        &app,
+        empty_action_request(
             Method::DELETE,
             format!("/v2/tags/{tag_id}/assets/{asset_id}"),
             &bearer,
-            Body::empty(),
         ),
         StatusCode::NO_CONTENT,
     )
     .await;
     send(
         &app,
-        authorized_request(
+        empty_action_request(
             Method::POST,
             format!("/v2/tags/{tag_id}/assets/{asset_id}"),
             &bearer,
-            Body::empty(),
         ),
         StatusCode::NO_CONTENT,
     )

@@ -142,7 +142,7 @@ async fn login(app: &Router, password: &str) -> (String, String) {
         app,
         browser_request(
             Method::POST,
-            "/admin/api/login",
+            "/v2/admin/login",
             json!({"username": ADMIN_USERNAME, "password": password}),
             None,
             None,
@@ -199,7 +199,7 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         &app,
         browser_request(
             Method::POST,
-            "/admin/api/logout",
+            "/v2/admin/logout",
             json!({}),
             Some(&first_cookie),
             None,
@@ -213,7 +213,7 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         &app,
         browser_request(
             Method::POST,
-            "/admin/api/logout",
+            "/v2/admin/logout",
             json!({}),
             Some(&first_cookie),
             Some(&second_csrf),
@@ -227,7 +227,7 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         &app,
         browser_request(
             Method::POST,
-            "/admin/api/logout",
+            "/v2/admin/logout",
             json!({}),
             Some(&first_cookie),
             Some(&first_csrf),
@@ -239,7 +239,7 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
 
     let mut ambiguous = browser_request(
         Method::GET,
-        "/admin/api/overview",
+        "/v2/admin/overview",
         json!({}),
         Some(&first_cookie),
         None,
@@ -268,7 +268,7 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         &app,
         browser_request(
             Method::POST,
-            "/admin/api/logout",
+            "/v2/admin/logout",
             json!({}),
             Some(&first_cookie),
             Some(&first_csrf),
@@ -281,7 +281,7 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         &app,
         browser_request(
             Method::GET,
-            "/admin/api/overview",
+            "/v2/admin/overview",
             json!({}),
             Some(&first_cookie),
             None,
@@ -295,7 +295,7 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         &app,
         browser_request(
             Method::GET,
-            "/admin/api/session",
+            "/v2/admin/session",
             json!({}),
             Some(&second_cookie),
             None,
@@ -312,7 +312,7 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         &app,
         browser_request(
             Method::POST,
-            "/admin/api/logout",
+            "/v2/admin/logout",
             json!({}),
             Some(&second_cookie),
             Some(&second_csrf),
@@ -338,7 +338,7 @@ async fn sessions_survive_restart_and_security_changes_invalidate_all_sessions()
         &restarted_app,
         browser_request(
             Method::GET,
-            "/admin/api/overview",
+            "/v2/admin/overview",
             json!({}),
             Some(&cookie),
             None,
@@ -352,7 +352,7 @@ async fn sessions_survive_restart_and_security_changes_invalidate_all_sessions()
         &restarted_app,
         browser_request(
             Method::POST,
-            "/admin/api/password",
+            "/v2/admin/password",
             json!({
                 "current_password": ADMIN_PASSWORD,
                 "new_password": NEW_ADMIN_PASSWORD
@@ -369,7 +369,7 @@ async fn sessions_survive_restart_and_security_changes_invalidate_all_sessions()
             &restarted_app,
             browser_request(
                 Method::GET,
-                "/admin/api/overview",
+                "/v2/admin/overview",
                 json!({}),
                 Some(&cookie),
                 None,
@@ -384,7 +384,7 @@ async fn sessions_survive_restart_and_security_changes_invalidate_all_sessions()
         &restarted_app,
         browser_request(
             Method::POST,
-            "/admin/api/login",
+            "/v2/admin/login",
             json!({"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}),
             None,
             None,
@@ -414,7 +414,7 @@ async fn sessions_survive_restart_and_security_changes_invalidate_all_sessions()
             &restarted_app,
             browser_request(
                 Method::GET,
-                "/admin/api/overview",
+                "/v2/admin/overview",
                 json!({}),
                 Some(&role_cookie),
                 None,
@@ -440,7 +440,7 @@ async fn sessions_survive_restart_and_security_changes_invalidate_all_sessions()
             &restarted_app,
             browser_request(
                 Method::GET,
-                "/admin/api/overview",
+                "/v2/admin/overview",
                 json!({}),
                 Some(&active_cookie),
                 None,
@@ -470,7 +470,7 @@ async fn idle_and_absolute_expiry_are_enforced_from_persisted_state() {
         &app,
         browser_request(
             Method::GET,
-            "/admin/api/overview",
+            "/v2/admin/overview",
             json!({}),
             Some(&cookie),
             None,
@@ -491,7 +491,7 @@ async fn production_cookie_uses_host_prefix_and_complete_security_attributes() {
         &app,
         browser_request(
             Method::POST,
-            "/admin/api/login",
+            "/v2/admin/login",
             json!({"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}),
             None,
             None,
@@ -524,7 +524,7 @@ async fn login_body_limit_and_source_and_normalized_account_budgets_are_enforced
 
     let mut oversized = Request::builder()
         .method(Method::POST)
-        .uri("/admin/api/login")
+        .uri("/v2/admin/login")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::HOST, "photos.test")
         .header(header::ORIGIN, "http://photos.test")
@@ -545,7 +545,7 @@ async fn login_body_limit_and_source_and_normalized_account_budgets_are_enforced
         let mut request = browser_request_from(
             "198.51.100.10:43000".parse().unwrap(),
             Method::POST,
-            "/admin/api/login",
+            "/v2/admin/login",
             json!({"username": format!("unknown-{index}"), "password": "incorrect-password"}),
             None,
             None,
@@ -563,7 +563,7 @@ async fn login_body_limit_and_source_and_normalized_account_budgets_are_enforced
     let mut source_limited = browser_request_from(
         "198.51.100.10:43000".parse().unwrap(),
         Method::POST,
-        "/admin/api/login",
+        "/v2/admin/login",
         json!({"username": "another-unknown", "password": "incorrect-password"}),
         None,
         None,
@@ -590,7 +590,7 @@ async fn login_body_limit_and_source_and_normalized_account_budgets_are_enforced
             browser_request_from(
                 peer.parse().unwrap(),
                 Method::POST,
-                "/admin/api/login",
+                "/v2/admin/login",
                 json!({"username": username, "password": "incorrect-password"}),
                 None,
                 None,
@@ -605,7 +605,7 @@ async fn login_body_limit_and_source_and_normalized_account_budgets_are_enforced
         browser_request_from(
             "192.0.2.13:44000".parse().unwrap(),
             Method::POST,
-            "/admin/api/login",
+            "/v2/admin/login",
             json!({"username": "Persisted-Admin", "password": "incorrect-password"}),
             None,
             None,
@@ -629,7 +629,7 @@ async fn trusted_peer_is_required_for_forwarded_https_and_client_identity() {
     let mut spoofed = browser_request_from(
         "198.51.100.20:45000".parse().unwrap(),
         Method::POST,
-        "/admin/api/login",
+        "/v2/admin/login",
         json!({"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}),
         None,
         None,
@@ -649,7 +649,7 @@ async fn trusted_peer_is_required_for_forwarded_https_and_client_identity() {
     let mut trusted = browser_request_from(
         "127.0.0.1:45000".parse().unwrap(),
         Method::POST,
-        "/admin/api/login",
+        "/v2/admin/login",
         json!({"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}),
         None,
         None,

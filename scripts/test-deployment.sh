@@ -4,7 +4,7 @@ set -euo pipefail
 readonly archive_arg="${1:-${PHOTO_BACKUP_RELEASE_ARCHIVE:-}}"
 readonly package="photo-backup-server-0.2.0-x86_64-unknown-linux-gnu"
 readonly version="0.2.0"
-readonly contract="7d547d8300045b8f1b5d82fa3c8480d25eb9f98e84d41e13e80d92186e26bba8"
+readonly contract="dd92eb4e70da1cdfa58d9d63e566924c71fa38963205dc3480c329077fef46ab"
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly project_dir
 
@@ -79,7 +79,7 @@ assert identity["storage_encoding"] == "plain-v1"
 assert identity["server_schema_revision"] == 1
 assert identity["server_schema_sha256"] == "57c9282c425d2fe1baab63bfce2fa9d947b26b5bf3367750b0308aa442ccba0a"
 assert identity["mobile_ffi_epoch"] == "photo-backup-mobile-v0.2-r1"
-assert identity["release_contract_sha256"] == "7d547d8300045b8f1b5d82fa3c8480d25eb9f98e84d41e13e80d92186e26bba8"
+assert identity["release_contract_sha256"] == "dd92eb4e70da1cdfa58d9d63e566924c71fa38963205dc3480c329077fef46ab"
 PY
 source_revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_revision"])' "$identity_file")"
 verification="$($real_binary release-verify "$release_root")"

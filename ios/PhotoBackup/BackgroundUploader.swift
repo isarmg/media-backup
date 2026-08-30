@@ -106,7 +106,9 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate {
     }
 
     private func finish(jobId: String, uploadId: String) async throws {
-        let request = authorized(path: "/v2/uploads/\(uploadId)/complete", method: "POST")
+        var request = authorized(path: "/v2/uploads/\(uploadId)/complete", method: "POST")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response, data: data)
         try agent.markComplete(job: jobId)

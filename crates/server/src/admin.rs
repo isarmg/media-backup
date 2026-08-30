@@ -25,12 +25,14 @@ const DEVELOPMENT_ADMIN_COOKIE: &str = "photo_session";
 const MAX_ADMIN_SESSIONS: i64 = 32;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct LoginRequest {
     username: String,
     password: String,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ChangeAdminPasswordRequest {
     current_password: String,
     new_password: String,
@@ -68,6 +70,7 @@ pub(crate) struct AdminIdentity {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CreateUserRequest {
     username: String,
     password: String,
@@ -78,6 +81,7 @@ pub(crate) struct CreateUserRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct UpdateUserRequest {
     username: String,
     display_name: String,
@@ -87,6 +91,7 @@ pub(crate) struct UpdateUserRequest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ResetPasswordRequest {
     password: String,
 }
@@ -293,6 +298,7 @@ pub(crate) async fn login(
 pub(crate) async fn logout(
     State(state): State<AppState>,
     Extension(identity): Extension<AdminIdentity>,
+    Json(_request): Json<photo_backup_protocol::EmptyRequest>,
 ) -> Result<Response, AppError> {
     sqlx::query("UPDATE auth_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
         .bind(now_seconds()?)
@@ -375,30 +381,34 @@ pub(crate) async fn require_admin(
     .ok_or_else(AppError::unauthorized)?;
     let refreshed_idle = checked_expiry(now, state.config.admin_session_idle_seconds)?
         .min(stored.absolute_expires_at);
-    let updated = sqlx::query(
-        "UPDATE auth_sessions SET last_seen_at = ?, idle_expires_at = ? \
-         WHERE id = ? AND revoked_at IS NULL AND idle_expires_at > ? \
-           AND absolute_expires_at > ?",
-    )
-    .bind(now)
-    .bind(refreshed_idle)
-    .bind(&stored.id)
-    .bind(now)
-    .bind(now)
-    .execute(&state.pool)
-    .await?;
-    if updated.rows_affected() != 1 {
-        return Err(AppError::unauthorized());
-    }
     if is_unsafe_method(request.method()) {
         verify_mutation_request(request.headers(), &stored.csrf_hash)?;
     }
+    let session_id = stored.id.clone();
     request.extensions_mut().insert(AdminIdentity {
         user_id: stored.user_id,
         session_id: stored.id,
         username: stored.username,
     });
-    Ok(next.run(request).await)
+    let response = next.run(request).await;
+    if response.status().is_success() {
+        if let Err(error) = sqlx::query(
+            "UPDATE auth_sessions SET last_seen_at = ?, idle_expires_at = ? \
+             WHERE id = ? AND revoked_at IS NULL AND idle_expires_at > ? \
+               AND absolute_expires_at > ?",
+        )
+        .bind(now)
+        .bind(refreshed_idle)
+        .bind(session_id)
+        .bind(now)
+        .bind(now)
+        .execute(&state.pool)
+        .await
+        {
+            tracing::warn!(?error, "failed to refresh successful admin session use");
+        }
+    }
+    Ok(response)
 }
 
 pub(crate) async fn overview(State(state): State<AppState>) -> Result<Json<Overview>, AppError> {
@@ -787,3 +797,23 @@ fn expire_session_response(state: &AppState, status: StatusCode) -> Response {
 const ADMIN_HTML: &str = include_str!("admin.html");
 const ADMIN_CSS: &str = include_str!("admin.css");
 const ADMIN_DESIGN_CSS: &str = include_str!("../../../vendor/sarmg-design/bundle.css");
+
+#[cfg(test)]
+mod contract_tests {
+    use super::ADMIN_HTML;
+
+    #[test]
+    fn embedded_browser_uses_only_the_current_admin_api_namespace() {
+        for path in [
+            "/v2/admin/login",
+            "/v2/admin/session",
+            "/v2/admin/overview",
+            "/v2/admin/users",
+            "/v2/admin/logout",
+        ] {
+            assert!(ADMIN_HTML.contains(path), "missing browser API path {path}");
+        }
+        assert!(!ADMIN_HTML.contains("/admin/api"));
+        assert!(!ADMIN_HTML.contains("/v1/"));
+    }
+}

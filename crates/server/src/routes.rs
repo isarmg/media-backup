@@ -10,8 +10,8 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use photo_backup_protocol::{
     BootstrapRequest, BootstrapResponse, CompleteUploadResponse, CreateUploadRequest,
-    CreateUploadResponse, MediaKind, ResourceManifest, StorageEncoding, UploadDisposition,
-    UploadPartSpec, UploadStatusResponse,
+    CreateUploadResponse, EmptyRequest, MediaKind, ResourceManifest, StorageEncoding,
+    UploadDisposition, UploadPartSpec, UploadStatusResponse, API_BASE_PATH,
 };
 use rand::{rngs::OsRng, RngCore};
 use serde_json::Value;
@@ -43,84 +43,83 @@ pub struct AppState {
 
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
-        .route("/v2/uploads", post(create_upload))
-        .route("/v2/uploads/{id}", get(upload_status))
-        .route("/v2/uploads/{id}/parts/{index}", put(put_part))
-        .route("/v2/uploads/{id}/complete", post(complete_upload))
-        .route("/v2/resources", get(list_resources))
-        .route("/v2/resources/{id}", get(resource_manifest))
-        .route("/v2/resources/{id}/content", get(resource_content))
-        .route("/v2/timeline", get(library::timeline))
-        .route("/v2/sync", get(library::sync_changes))
+        .route("/uploads", post(create_upload))
+        .route("/uploads/{id}", get(upload_status))
+        .route("/uploads/{id}/parts/{index}", put(put_part))
+        .route("/uploads/{id}/complete", post(complete_upload))
+        .route("/resources", get(list_resources))
+        .route("/resources/{id}", get(resource_manifest))
+        .route("/resources/{id}/content", get(resource_content))
+        .route("/timeline", get(library::timeline))
+        .route("/sync", get(library::sync_changes))
         .route(
-            "/v2/assets/{id}",
+            "/assets/{id}",
             get(library::get_asset)
                 .patch(library::update_asset)
                 .delete(library::delete_asset_permanently),
         )
-        .route("/v2/assets/{id}/trash", post(library::trash_asset))
-        .route("/v2/assets/{id}/restore", post(library::restore_asset))
+        .route("/assets/{id}/trash", post(library::trash_asset))
+        .route("/assets/{id}/restore", post(library::restore_asset))
         .route(
-            "/v2/albums",
+            "/albums",
             get(library::list_albums).post(library::sync_album),
         )
+        .route("/tags", get(library::list_tags).post(library::create_tag))
+        .route("/tags/{id}/assets", put(library::set_tag_assets))
         .route(
-            "/v2/tags",
-            get(library::list_tags).post(library::create_tag),
-        )
-        .route("/v2/tags/{id}/assets", put(library::set_tag_assets))
-        .route(
-            "/v2/tags/{tag_id}/assets/{asset_id}",
+            "/tags/{tag_id}/assets/{asset_id}",
             post(library::add_tag_asset).delete(library::remove_tag_asset),
         )
-        .route("/v2/duplicates", get(library::duplicate_groups))
+        .route("/duplicates", get(library::duplicate_groups))
         .route(
-            "/v2/api-keys",
+            "/api-keys",
             get(api_access::list_api_keys).post(api_access::create_api_key),
         )
         .route(
-            "/v2/api-keys/{id}",
+            "/api-keys/{id}",
             axum::routing::delete(api_access::revoke_api_key),
         )
-        .route("/v2/audit-events", get(api_access::audit_events))
+        .route("/audit-events", get(api_access::audit_events))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let admin_protected = Router::new()
-        .route("/admin/api/session", get(admin::session))
-        .route("/admin/api/overview", get(admin::overview))
-        .route("/admin/api/users", post(admin::create_user))
-        .route("/admin/api/users/{id}", put(admin::update_user))
+        .route("/admin/session", get(admin::session))
+        .route("/admin/overview", get(admin::overview))
+        .route("/admin/users", post(admin::create_user))
+        .route("/admin/users/{id}", put(admin::update_user))
         .route(
-            "/admin/api/users/{id}/reset-password",
+            "/admin/users/{id}/reset-password",
             post(admin::reset_user_password),
         )
-        .route("/admin/api/logout", post(admin::logout))
-        .route("/admin/api/password", post(admin::change_admin_password))
+        .route("/admin/logout", post(admin::logout))
+        .route("/admin/password", post(admin::change_admin_password))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             admin::require_admin,
         ));
 
-    let sensitive = Router::new()
-        .route("/metrics", get(metrics::prometheus))
+    let current_api = Router::new()
         .route(
-            "/v2/auth/bootstrap",
+            "/auth/bootstrap",
             post(bootstrap).layer(DefaultBodyLimit::max(
                 crate::login_admission::LOGIN_BODY_LIMIT_BYTES,
             )),
         )
-        .route("/admin", get(admin::page))
-        .route("/admin/", get(admin::page))
-        .route("/admin/sarmg-design.css", get(admin::design_styles))
-        .route("/admin/admin.css", get(admin::product_styles))
         .route(
-            "/admin/api/login",
+            "/admin/login",
             post(admin::login).layer(DefaultBodyLimit::max(
                 crate::login_admission::LOGIN_BODY_LIMIT_BYTES,
             )),
         )
         .merge(admin_protected)
-        .merge(protected)
+        .merge(protected);
+
+    let sensitive = Router::new()
+        .route("/metrics", get(metrics::prometheus))
+        .route("/admin", get(admin::page))
+        .route("/admin/sarmg-design.css", get(admin::design_styles))
+        .route("/admin/admin.css", get(admin::product_styles))
+        .nest(API_BASE_PATH, current_api)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_secure_transport,
@@ -490,6 +489,7 @@ async fn complete_upload(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(upload_id): Path<Uuid>,
+    Json(_request): Json<EmptyRequest>,
 ) -> Result<Json<CompleteUploadResponse>, AppError> {
     let outcome = upload_commit::complete(&state, upload_id, auth.account_id).await?;
     audit::record(
@@ -713,7 +713,7 @@ async fn load_manifest(
         storage_encoding: StorageEncoding::PlainV1,
         metadata: row.get("metadata"),
         parts: serde_json::from_value(row.get::<Value, _>("part_manifest"))?,
-        content_path: format!("/v2/resources/{resource_id}/content"),
+        content_path: format!("{API_BASE_PATH}/resources/{resource_id}/content"),
     })
 }
 

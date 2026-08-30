@@ -70,13 +70,15 @@ pub async fn require_auth(
     .bind(token_hash)
     .fetch_optional(&state.pool)
     .await?;
-    let (account_id, device_id, actor_kind, actor_id) =
+    let (account_id, device_id, actor_kind, actor_id, usage) =
         if let Some((account_id, device_id)) = device {
-            sqlx::query("UPDATE devices SET last_seen_at = datetime('now') WHERE id = ?")
-                .bind(device_id)
-                .execute(&state.pool)
-                .await?;
-            (account_id, device_id, "device".to_owned(), device_id)
+            (
+                account_id,
+                device_id,
+                "device".to_owned(),
+                device_id,
+                AuthUsage::Device(device_id),
+            )
         } else {
             let api_key: Option<(Uuid, Uuid, Uuid)> = sqlx::query_as(
                 r#"
@@ -90,11 +92,13 @@ pub async fn require_auth(
             .fetch_optional(&state.pool)
             .await?;
             let (account_id, device_id, api_key_id) = api_key.ok_or_else(AppError::unauthorized)?;
-            sqlx::query("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?")
-                .bind(api_key_id)
-                .execute(&state.pool)
-                .await?;
-            (account_id, device_id, "api_key".to_owned(), api_key_id)
+            (
+                account_id,
+                device_id,
+                "api_key".to_owned(),
+                api_key_id,
+                AuthUsage::ApiKey(api_key_id),
+            )
         };
     request.extensions_mut().insert(AuthContext {
         account_id,
@@ -102,5 +106,30 @@ pub async fn require_auth(
         actor_kind,
         actor_id,
     });
-    Ok(next.run(request).await)
+    let response = next.run(request).await;
+    if response.status().is_success() {
+        let update = match usage {
+            AuthUsage::Device(device_id) => {
+                sqlx::query("UPDATE devices SET last_seen_at = datetime('now') WHERE id = ?")
+                    .bind(device_id)
+                    .execute(&state.pool)
+                    .await
+            }
+            AuthUsage::ApiKey(api_key_id) => {
+                sqlx::query("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?")
+                    .bind(api_key_id)
+                    .execute(&state.pool)
+                    .await
+            }
+        };
+        if let Err(error) = update {
+            tracing::warn!(?error, "failed to record successful API authentication use");
+        }
+    }
+    Ok(response)
+}
+
+enum AuthUsage {
+    Device(Uuid),
+    ApiKey(Uuid),
 }

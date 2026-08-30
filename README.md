@@ -126,8 +126,9 @@ open PhotoBackup.xcodeproj
 
 ## API 摘要
 
-当前网络协议固定为 `/v2`，不提供 `/v1` 兼容路由。上传请求必须显式携带 `storage_encoding: "plain-v1"`；服务端及当前 Android/iOS 客户端拒绝缺失、未知或其他存储协议值。
+当前产品 HTTP API 固定在唯一的 `/v2` namespace，设备、API Key 和浏览器管理 JSON 都不提供 `/v1`、未版本化路径、`/admin/api` alias、重定向或 fallback。`/admin` 只是当前管理页面入口，`/health*` 与 `/metrics` 是独立运维端点；`/admin/` 不作为兼容别名。所有 JSON 请求 DTO 与查询参数都拒绝未知字段；无参数的 POST/DELETE 动作显式接收且只接收 `{}`。上传请求必须显式携带 `storage_encoding: "plain-v1"`；服务端及当前 Android/iOS 客户端拒绝缺失、未知或其他存储协议值。
 
+- 浏览器管理：`POST /v2/admin/login`、`GET /v2/admin/session`、`GET /v2/admin/overview`、`POST|PUT /v2/admin/users...`、`POST /v2/admin/logout`。
 - 登录与上传：`POST /v2/auth/bootstrap`、`POST /v2/uploads`、`PUT /v2/uploads/{id}/parts/{index}`、`POST /v2/uploads/{id}/complete`。
 - 恢复：`GET /v2/timeline`、`GET /v2/assets/{id}`、`GET /v2/resources/{id}/content`。
 - 增量同步：`GET /v2/sync?after={sequence}`。

@@ -180,10 +180,10 @@ struct RemoteLibrary {
     }
 
     private func send(path: String, method: String) async throws {
-        let (data, response) = try await URLSession.shared.data(for: authorized(
-            url: serverURL.appending(path: path),
-            method: method
-        ))
+        var request = authorized(url: serverURL.appending(path: path), method: method)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+        let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response, data: data)
     }
 

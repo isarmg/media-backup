@@ -5,9 +5,9 @@ use axum::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use photo_backup_protocol::{
-    AlbumRecord, AssetSummary, CreateTagRequest, DuplicateGroup, MediaKind, ResourceSummary,
-    SetTagAssetsRequest, StorageEncoding, SyncAlbumRequest, SyncEvent, SyncPage, TagRecord,
-    TimelinePage, UpdateAssetRequest,
+    AlbumRecord, AssetSummary, CreateTagRequest, DuplicateGroup, EmptyRequest, MediaKind,
+    ResourceSummary, SetTagAssetsRequest, StorageEncoding, SyncAlbumRequest, SyncEvent, SyncPage,
+    TagRecord, TimelinePage, UpdateAssetRequest, API_BASE_PATH,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
@@ -217,6 +217,7 @@ pub async fn trash_asset(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(asset_id): Path<Uuid>,
+    Json(_request): Json<EmptyRequest>,
 ) -> Result<StatusCode, AppError> {
     set_trashed(&state, &auth, asset_id, true).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -226,6 +227,7 @@ pub async fn restore_asset(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(asset_id): Path<Uuid>,
+    Json(_request): Json<EmptyRequest>,
 ) -> Result<StatusCode, AppError> {
     set_trashed(&state, &auth, asset_id, false).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -280,6 +282,7 @@ pub async fn delete_asset_permanently(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(asset_id): Path<Uuid>,
+    Json(_request): Json<EmptyRequest>,
 ) -> Result<StatusCode, AppError> {
     let mut transaction = state.pool.begin().await?;
     let storage_path: Option<String> =
@@ -581,6 +584,7 @@ pub async fn add_tag_asset(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((tag_id, asset_id)): Path<(Uuid, Uuid)>,
+    Json(_request): Json<EmptyRequest>,
 ) -> Result<StatusCode, AppError> {
     change_tag_asset(&state, &auth, tag_id, asset_id, true).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -590,6 +594,7 @@ pub async fn remove_tag_asset(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path((tag_id, asset_id)): Path<(Uuid, Uuid)>,
+    Json(_request): Json<EmptyRequest>,
 ) -> Result<StatusCode, AppError> {
     change_tag_asset(&state, &auth, tag_id, asset_id, false).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -758,8 +763,8 @@ pub(crate) async fn load_asset_summary(
                 content_size: resource.get::<i64, _>("plaintext_size") as u64,
                 storage_encoding: StorageEncoding::PlainV1,
                 metadata: resource.get("metadata"),
-                manifest_path: format!("/v2/resources/{resource_id}"),
-                content_path: format!("/v2/resources/{resource_id}/content"),
+                manifest_path: format!("{API_BASE_PATH}/resources/{resource_id}"),
+                content_path: format!("{API_BASE_PATH}/resources/{resource_id}/content"),
             }
         })
         .collect();

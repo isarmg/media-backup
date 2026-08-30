@@ -5,7 +5,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use photo_backup_protocol::{
-    ApiKeyCreated, ApiKeyRecord, AuditEvent, AuditPage, CreateApiKeyRequest,
+    ApiKeyCreated, ApiKeyRecord, AuditEvent, AuditPage, CreateApiKeyRequest, EmptyRequest,
 };
 use rand::{rngs::OsRng, RngCore};
 use serde::Deserialize;
@@ -109,6 +109,7 @@ pub async fn revoke_api_key(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
     Path(api_key_id): Path<Uuid>,
+    Json(_request): Json<EmptyRequest>,
 ) -> Result<StatusCode, AppError> {
     let changed = sqlx::query(
         "UPDATE api_keys SET revoked_at = datetime('now') WHERE id = ? AND account_id = ? AND revoked_at IS NULL",
