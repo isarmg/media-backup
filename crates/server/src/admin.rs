@@ -23,6 +23,8 @@ use crate::{error::AppError, password, routes::AppState};
 const SECURE_ADMIN_COOKIE: &str = "__Host-photo_session";
 const DEVELOPMENT_ADMIN_COOKIE: &str = "photo_session";
 const MAX_ADMIN_SESSIONS: i64 = 32;
+const MAX_CSRF_TOKENS_PER_SESSION: i64 = 8;
+const SESSION_TOUCH_INTERVAL_SECONDS: i64 = 60;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,7 +60,6 @@ struct StoredSession {
     id: String,
     user_id: String,
     username: String,
-    csrf_hash: Vec<u8>,
     absolute_expires_at: i64,
 }
 
@@ -262,14 +263,13 @@ pub(crate) async fn login(
     .await?;
     sqlx::query(
         "INSERT INTO auth_sessions(\
-             id, user_id, token_hash, csrf_hash, user_session_version, created_at, last_seen_at,\
+             id, user_id, token_hash, user_session_version, created_at, last_seen_at,\
              idle_expires_at, absolute_expires_at, user_agent, created_ip\
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(session_id)
+    .bind(&session_id)
     .bind(&user.id)
     .bind(token_hash(&token))
-    .bind(token_hash(&csrf_token))
     .bind(user.session_version)
     .bind(now)
     .bind(now)
@@ -277,6 +277,14 @@ pub(crate) async fn login(
     .bind(absolute_expires_at)
     .bind(user_agent)
     .bind(source.to_string())
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "INSERT INTO admin_session_csrf_tokens(session_id, token_hash, created_at) VALUES (?, ?, ?)",
+    )
+    .bind(&session_id)
+    .bind(token_hash(&csrf_token))
+    .bind(now)
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
@@ -313,15 +321,36 @@ pub(crate) async fn session(
     Extension(identity): Extension<AdminIdentity>,
 ) -> Result<Json<SessionResponse>, AppError> {
     let csrf_token = random_token();
-    let changed =
-        sqlx::query("UPDATE auth_sessions SET csrf_hash = ? WHERE id = ? AND revoked_at IS NULL")
-            .bind(token_hash(&csrf_token))
+    let now = now_seconds()?;
+    let mut transaction = state.pool.begin().await?;
+    let active: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM auth_sessions WHERE id = ? AND revoked_at IS NULL")
             .bind(&identity.session_id)
-            .execute(&state.pool)
+            .fetch_optional(&mut *transaction)
             .await?;
-    if changed.rows_affected() != 1 {
+    if active.is_none() {
         return Err(AppError::unauthorized());
     }
+    sqlx::query(
+        "INSERT INTO admin_session_csrf_tokens(session_id, token_hash, created_at) VALUES (?, ?, ?)",
+    )
+    .bind(&identity.session_id)
+    .bind(token_hash(&csrf_token))
+    .bind(now)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "DELETE FROM admin_session_csrf_tokens WHERE session_id = ? AND id IN (\
+             SELECT id FROM admin_session_csrf_tokens WHERE session_id = ? \
+             ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?\
+         )",
+    )
+    .bind(&identity.session_id)
+    .bind(&identity.session_id)
+    .bind(MAX_CSRF_TOKENS_PER_SESSION)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
     Ok(Json(SessionResponse {
         authenticated: true,
         username: identity.username,
@@ -366,7 +395,7 @@ pub(crate) async fn require_admin(
         .ok_or_else(AppError::unauthorized)?;
     let now = now_seconds()?;
     let stored = sqlx::query_as::<_, StoredSession>(
-        "SELECT s.id, s.user_id, u.username, s.csrf_hash, s.absolute_expires_at \
+        "SELECT s.id, s.user_id, u.username, s.absolute_expires_at \
          FROM auth_sessions s JOIN auth_users u ON u.id = s.user_id \
          WHERE s.token_hash = ? AND s.revoked_at IS NULL \
            AND s.idle_expires_at > ? AND s.absolute_expires_at > ? \
@@ -382,7 +411,7 @@ pub(crate) async fn require_admin(
     let refreshed_idle = checked_expiry(now, state.config.admin_session_idle_seconds)?
         .min(stored.absolute_expires_at);
     if is_unsafe_method(request.method()) {
-        verify_mutation_request(request.headers(), &stored.csrf_hash)?;
+        verify_mutation_request(&state, request.headers(), &stored.id).await?;
     }
     let session_id = stored.id.clone();
     request.extensions_mut().insert(AdminIdentity {
@@ -395,13 +424,14 @@ pub(crate) async fn require_admin(
         if let Err(error) = sqlx::query(
             "UPDATE auth_sessions SET last_seen_at = ?, idle_expires_at = ? \
              WHERE id = ? AND revoked_at IS NULL AND idle_expires_at > ? \
-               AND absolute_expires_at > ?",
+               AND absolute_expires_at > ? AND last_seen_at <= ?",
         )
         .bind(now)
         .bind(refreshed_idle)
         .bind(session_id)
         .bind(now)
         .bind(now)
+        .bind(now.saturating_sub(SESSION_TOUCH_INTERVAL_SECONDS))
         .execute(&state.pool)
         .await
         {
@@ -658,16 +688,29 @@ fn is_unsafe_method(method: &Method) -> bool {
     )
 }
 
-fn verify_mutation_request(headers: &HeaderMap, expected_csrf_hash: &[u8]) -> Result<(), AppError> {
+async fn verify_mutation_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    session_id: &str,
+) -> Result<(), AppError> {
     verify_same_origin(headers)?;
     let provided = headers
         .get("x-csrf-token")
         .and_then(|value| value.to_str().ok())
         .ok_or_else(|| AppError::new(StatusCode::FORBIDDEN, "invalid CSRF token"))?;
     let provided_hash = token_hash(provided);
-    if provided_hash.len() != expected_csrf_hash.len()
-        || provided_hash.ct_eq(expected_csrf_hash).unwrap_u8() != 1
-    {
+    let candidates: Vec<Vec<u8>> = sqlx::query_scalar(
+        "SELECT token_hash FROM admin_session_csrf_tokens WHERE session_id = ? \
+         ORDER BY created_at DESC, id DESC LIMIT ?",
+    )
+    .bind(session_id)
+    .bind(MAX_CSRF_TOKENS_PER_SESSION)
+    .fetch_all(&state.pool)
+    .await?;
+    if !candidates.iter().any(|expected| {
+        provided_hash.len() == expected.len()
+            && provided_hash.ct_eq(expected.as_slice()).unwrap_u8() == 1
+    }) {
         return Err(AppError::new(StatusCode::FORBIDDEN, "invalid CSRF token"));
     }
     Ok(())

@@ -579,6 +579,8 @@ mod tests {
             admin_username: "doctor-admin".to_owned(),
             admin_password: "doctor-password".to_owned(),
             max_part_bytes: 1024 * 1024,
+            upload_global_concurrency: 16,
+            upload_per_account_concurrency: 4,
             metrics_token: None,
             require_https: false,
             development: true,

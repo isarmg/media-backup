@@ -22,7 +22,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const CURRENT_SCHEMA: &str = include_str!("current_schema.sql");
 pub(crate) const CURRENT_SCHEMA_REVISION: i64 = 1;
 pub(crate) const CURRENT_SCHEMA_SHA256: &str =
-    "57c9282c425d2fe1baab63bfce2fa9d947b26b5bf3367750b0308aa442ccba0a";
+    "a464584cf7a55f9e50cb85bb539b1f42a9285f707440bb0bcfcd31a6b3a083c0";
 const PRODUCT_METADATA_SQL: &str = "CREATE TABLE product_metadata (
     singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
     application TEXT NOT NULL,

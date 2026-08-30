@@ -47,9 +47,13 @@ impl AppError {
     }
 
     pub fn too_many_requests(retry_after: u64) -> Self {
+        Self::too_many_requests_with_message(retry_after, "too many login attempts")
+    }
+
+    pub fn too_many_requests_with_message(retry_after: u64, message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::TOO_MANY_REQUESTS,
-            message: "too many login attempts".to_owned(),
+            message: message.into(),
             retry_after: Some(retry_after.max(1)),
         }
     }

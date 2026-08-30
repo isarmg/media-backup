@@ -12,6 +12,8 @@ pub struct Config {
     pub admin_username: String,
     pub admin_password: String,
     pub max_part_bytes: usize,
+    pub upload_global_concurrency: usize,
+    pub upload_per_account_concurrency: usize,
     pub metrics_token: Option<String>,
     pub require_https: bool,
     pub development: bool,
@@ -40,6 +42,11 @@ impl Config {
             .unwrap_or_else(|_| (64 * 1024 * 1024).to_string())
             .parse()
             .context("MAX_PART_BYTES must be an integer")?;
+        let upload_global_concurrency = positive_usize("UPLOAD_GLOBAL_CONCURRENCY", 16)?;
+        let upload_per_account_concurrency = positive_usize("UPLOAD_PER_ACCOUNT_CONCURRENCY", 4)?;
+        if upload_per_account_concurrency > upload_global_concurrency {
+            anyhow::bail!("UPLOAD_PER_ACCOUNT_CONCURRENCY cannot exceed UPLOAD_GLOBAL_CONCURRENCY");
+        }
         let metrics_token = env::var("METRICS_TOKEN")
             .ok()
             .filter(|value| !value.trim().is_empty());
@@ -84,6 +91,8 @@ impl Config {
             admin_username,
             admin_password,
             max_part_bytes,
+            upload_global_concurrency,
+            upload_per_account_concurrency,
             metrics_token,
             require_https,
             development,
@@ -92,6 +101,17 @@ impl Config {
             trusted_proxy_cidrs,
         })
     }
+}
+
+fn positive_usize(name: &str, default: usize) -> Result<usize> {
+    let value = env::var(name)
+        .unwrap_or_else(|_| default.to_string())
+        .parse::<usize>()
+        .with_context(|| format!("{name} must be an integer"))?;
+    if value == 0 {
+        anyhow::bail!("{name} must be non-zero");
+    }
+    Ok(value)
 }
 
 fn validate_security_mode(bind: SocketAddr, require_https: bool, development: bool) -> Result<()> {

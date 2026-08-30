@@ -6,7 +6,7 @@ readonly binary="$release/bin/photo-backup-server"
 readonly config="/etc/isarmg/photo-backup.env"
 readonly unit="/etc/systemd/system/photo-backup.service"
 readonly marker="# INITIAL-SECRETS-MUST-BE-REPLACED"
-readonly contract="dd92eb4e70da1cdfa58d9d63e566924c71fa38963205dc3480c329077fef46ab"
+readonly contract="3a65b1a129118beeafe552c42d27812320d08bdde7966cedc9ac1e5476e995e9"
 
 fail() {
   printf 'run error: %s\n' "$*" >&2

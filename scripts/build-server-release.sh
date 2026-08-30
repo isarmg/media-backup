@@ -9,7 +9,7 @@ readonly output_arg="${3:-}"
 readonly version="0.2.0"
 readonly target="x86_64-unknown-linux-gnu"
 readonly package="photo-backup-server-$version-$target"
-readonly release_contract_sha256="dd92eb4e70da1cdfa58d9d63e566924c71fa38963205dc3480c329077fef46ab"
+readonly release_contract_sha256="3a65b1a129118beeafe552c42d27812320d08bdde7966cedc9ac1e5476e995e9"
 
 staging_root=""
 archive_staging=""

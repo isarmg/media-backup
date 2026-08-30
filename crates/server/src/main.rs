@@ -57,12 +57,33 @@ async fn main() -> Result<()> {
             release::verify_runtime(root)?;
         }
         Command::Serve => release::ensure_unbound_development_serve()?,
-        Command::Doctor => {}
+        Command::Doctor | Command::ReconcileScan => {}
     }
     let config = Config::from_env()?;
     match command {
         Command::Doctor => {
             println!("{}", serde_json::to_string(&doctor::run(&config)?)?);
+            return Ok(());
+        }
+        Command::ReconcileScan => {
+            let _runtime_lock =
+                runtime_lock::RuntimeLock::acquire(&config.database_url, &config.data_dir)?;
+            let pool = database::connect(&config.database_url).await?;
+            let storage = LocalStorage::new(config.data_dir.clone()).await?;
+            let state = AppState {
+                pool,
+                storage,
+                config: config.clone(),
+                login_admission: login_admission::LoginAdmission::default(),
+                upload_admission: routes::UploadAdmission::new(
+                    config.upload_global_concurrency,
+                    config.upload_per_account_concurrency,
+                ),
+            };
+            println!(
+                "{}",
+                serde_json::to_string(&upload_commit::reconcile_all(&state).await?)?
+            );
             return Ok(());
         }
         Command::Serve | Command::ServeRelease(_) => {}
@@ -80,6 +101,10 @@ async fn main() -> Result<()> {
         storage,
         config: config.clone(),
         login_admission: login_admission::LoginAdmission::default(),
+        upload_admission: routes::UploadAdmission::new(
+            config.upload_global_concurrency,
+            config.upload_per_account_concurrency,
+        ),
     };
     admin::ensure_admin_user(&state).await?;
     let reconciliation = upload_commit::reconcile_all(&state).await?;
@@ -90,6 +115,25 @@ async fn main() -> Result<()> {
         errors = reconciliation.errors,
         "upload commit reconciliation finished"
     );
+    let reconcile_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            match upload_commit::reconcile_all(&reconcile_state).await {
+                Ok(report) => info!(
+                    recovered = report.recovered,
+                    marked_unknown = report.marked_unknown,
+                    orphan_stages_removed = report.orphan_stages_removed,
+                    errors = report.errors,
+                    "periodic upload reconciliation finished"
+                ),
+                Err(error) => tracing::error!(?error, "periodic upload reconciliation failed"),
+            }
+        }
+    });
     let app = routes::router(state).layer(TraceLayer::new_for_http());
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     info!(address = %config.bind, "photo backup server listening");
@@ -106,6 +150,7 @@ enum Command {
     Serve,
     ServeRelease(PathBuf),
     Doctor,
+    ReconcileScan,
     ReleaseIdentity,
     ReleaseVerify(PathBuf),
     ReleaseVerifyInstalled(PathBuf),
@@ -121,6 +166,9 @@ impl Command {
                 Ok(Self::ServeRelease(PathBuf::from(root)))
             }
             [command] if command == "doctor" => Ok(Self::Doctor),
+            [command, subcommand] if command == "reconcile" && subcommand == "scan" => {
+                Ok(Self::ReconcileScan)
+            }
             [command] if command == "release-identity" => Ok(Self::ReleaseIdentity),
             [command, root] if command == "release-verify" => {
                 Ok(Self::ReleaseVerify(PathBuf::from(root)))
@@ -129,7 +177,7 @@ impl Command {
                 Ok(Self::ReleaseVerifyInstalled(PathBuf::from(root)))
             }
             _ => anyhow::bail!(
-                "usage: photo-backup-server [serve|serve-release RELEASE_ROOT|doctor|release-identity|release-verify RELEASE_ROOT|release-verify-installed RELEASE_ROOT]"
+                "usage: photo-backup-server [serve|serve-release RELEASE_ROOT|doctor|reconcile scan|release-identity|release-verify RELEASE_ROOT|release-verify-installed RELEASE_ROOT]"
             ),
         };
         parsed.context("invalid command")
@@ -155,6 +203,10 @@ mod command_tests {
             Command::ServeRelease(PathBuf::from("/opt/isarmg/photo-backup/releases/0.2.0"))
         );
         assert_eq!(parse(&["doctor"]).unwrap(), Command::Doctor);
+        assert_eq!(
+            parse(&["reconcile", "scan"]).unwrap(),
+            Command::ReconcileScan
+        );
         assert_eq!(
             parse(&["release-identity"]).unwrap(),
             Command::ReleaseIdentity

@@ -110,16 +110,23 @@ pub async fn require_auth(
     if response.status().is_success() {
         let update = match usage {
             AuthUsage::Device(device_id) => {
-                sqlx::query("UPDATE devices SET last_seen_at = datetime('now') WHERE id = ?")
-                    .bind(device_id)
-                    .execute(&state.pool)
-                    .await
+                sqlx::query(
+                    "UPDATE devices SET last_seen_at = datetime('now') \
+                     WHERE id = ? AND last_seen_at <= datetime('now', '-300 seconds')",
+                )
+                .bind(device_id)
+                .execute(&state.pool)
+                .await
             }
             AuthUsage::ApiKey(api_key_id) => {
-                sqlx::query("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?")
-                    .bind(api_key_id)
-                    .execute(&state.pool)
-                    .await
+                sqlx::query(
+                    "UPDATE api_keys SET last_used_at = datetime('now') \
+                     WHERE id = ? AND (last_used_at IS NULL \
+                     OR last_used_at <= datetime('now', '-300 seconds'))",
+                )
+                .bind(api_key_id)
+                .execute(&state.pool)
+                .await
             }
         };
         if let Err(error) = update {

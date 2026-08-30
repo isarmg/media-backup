@@ -18,6 +18,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
 use std::net::SocketAddr;
+use tokio::{
+    sync::{OwnedSemaphorePermit, Semaphore},
+    time::timeout,
+};
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
@@ -39,13 +43,81 @@ pub struct AppState {
     pub storage: LocalStorage,
     pub config: Config,
     pub login_admission: LoginAdmission,
+    pub upload_admission: UploadAdmission,
+}
+
+#[derive(Clone)]
+pub struct UploadAdmission {
+    global: std::sync::Arc<Semaphore>,
+    per_account_limit: usize,
+    accounts: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<Uuid, std::sync::Weak<Semaphore>>>,
+    >,
+}
+
+struct UploadPermit {
+    _global: OwnedSemaphorePermit,
+    _account: OwnedSemaphorePermit,
+}
+
+impl UploadAdmission {
+    pub fn new(global_limit: usize, per_account_limit: usize) -> Self {
+        Self {
+            global: std::sync::Arc::new(Semaphore::new(global_limit)),
+            per_account_limit,
+            accounts: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        }
+    }
+
+    async fn acquire(&self, account_id: Uuid) -> Result<UploadPermit, AppError> {
+        let account = {
+            let mut accounts = self
+                .accounts
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            accounts.retain(|_, semaphore| semaphore.strong_count() > 0);
+            if let Some(semaphore) = accounts.get(&account_id).and_then(std::sync::Weak::upgrade) {
+                semaphore
+            } else {
+                let semaphore = std::sync::Arc::new(Semaphore::new(self.per_account_limit));
+                accounts.insert(account_id, std::sync::Arc::downgrade(&semaphore));
+                semaphore
+            }
+        };
+        let wait = async {
+            let global = self.global.clone().acquire_owned().await;
+            let account = account.acquire_owned().await;
+            match (global, account) {
+                (Ok(global), Ok(account)) => Ok(UploadPermit {
+                    _global: global,
+                    _account: account,
+                }),
+                _ => Err(AppError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "upload admission is unavailable",
+                )),
+            }
+        };
+        timeout(std::time::Duration::from_secs(30), wait)
+            .await
+            .map_err(|_| AppError::too_many_requests_with_message(5, "upload capacity is busy"))?
+    }
 }
 
 pub fn router(state: AppState) -> Router {
+    const JSON_BODY_LIMIT: usize = 256 * 1024;
+    const UPLOAD_MANIFEST_BODY_LIMIT: usize = 64 * 1024;
+    let max_part_bytes = state.config.max_part_bytes;
     let protected = Router::new()
-        .route("/uploads", post(create_upload))
+        .route(
+            "/uploads",
+            post(create_upload).layer(DefaultBodyLimit::max(UPLOAD_MANIFEST_BODY_LIMIT)),
+        )
         .route("/uploads/{id}", get(upload_status))
-        .route("/uploads/{id}/parts/{index}", put(put_part))
+        .route(
+            "/uploads/{id}/parts/{index}",
+            put(put_part).layer(DefaultBodyLimit::max(max_part_bytes)),
+        )
         .route("/uploads/{id}/complete", post(complete_upload))
         .route("/resources", get(list_resources))
         .route("/resources/{id}", get(resource_manifest))
@@ -130,7 +202,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
         .merge(sensitive)
-        .layer(DefaultBodyLimit::max(state.config.max_part_bytes))
+        .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
         .with_state(state)
 }
 
@@ -329,15 +401,15 @@ async fn create_upload(
             "upsert",
         )
         .await?;
-        transaction.commit().await?;
-        audit::record(
-            &state.pool,
+        audit::record_in_transaction(
+            &mut transaction,
             &auth,
             "resource.deduplicate",
             Some("resource"),
             Some(resource_id),
         )
         .await?;
+        transaction.commit().await?;
         return Ok(Json(CreateUploadResponse {
             disposition: UploadDisposition::Complete,
             upload_id: None,
@@ -452,6 +524,7 @@ async fn put_part(
         size: row.get::<i64, _>("expected_size") as u64,
         blake3: row.get("expected_blake3"),
     };
+    let _admission = state.upload_admission.acquire(auth.account_id).await?;
     state
         .storage
         .put_part(upload_id, &spec, body, state.config.max_part_bytes)
@@ -492,14 +565,6 @@ async fn complete_upload(
     Json(_request): Json<EmptyRequest>,
 ) -> Result<Json<CompleteUploadResponse>, AppError> {
     let outcome = upload_commit::complete(&state, upload_id, auth.account_id).await?;
-    audit::record(
-        &state.pool,
-        &auth,
-        "upload.complete",
-        Some("resource"),
-        Some(outcome.resource_id),
-    )
-    .await?;
     Ok(Json(CompleteUploadResponse {
         resource_id: outcome.resource_id,
         asset_id: outcome.asset_id,
@@ -511,10 +576,15 @@ async fn list_resources(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
 ) -> Result<Json<Vec<ResourceManifest>>, AppError> {
-    let ids: Vec<Uuid> = sqlx::query_scalar(
+    let rows = sqlx::query(
         r#"
-        SELECT r.id FROM resources r
+        SELECT r.id AS resource_id, r.asset_id, r.source_resource_id, r.role, r.filename,
+               r.mime_type, r.metadata,
+               a.source_asset_id, a.media_kind, a.source_created_at_ms,
+               b.plaintext_size, b.content_blake3, b.part_manifest
+        FROM resources r
         JOIN assets a ON a.id = r.asset_id
+        JOIN blobs b ON b.id = r.blob_id
         WHERE a.account_id = ? AND a.deleted_at IS NULL
         ORDER BY a.source_created_at_ms DESC, r.created_at DESC
         LIMIT 1000
@@ -523,10 +593,10 @@ async fn list_resources(
     .bind(auth.account_id)
     .fetch_all(&state.pool)
     .await?;
-    let mut resources = Vec::with_capacity(ids.len());
-    for id in ids {
-        resources.push(load_manifest(&state.pool, auth.account_id, id).await?);
-    }
+    let resources = rows
+        .iter()
+        .map(resource_manifest_from_row)
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(resources))
 }
 
@@ -693,6 +763,11 @@ async fn load_manifest(
     .fetch_optional(pool)
     .await?
     .ok_or_else(|| AppError::not_found("resource not found"))?;
+    resource_manifest_from_row(&row)
+}
+
+fn resource_manifest_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ResourceManifest, AppError> {
+    let resource_id: Uuid = row.get("resource_id");
     let media_kind = match row.get::<String, _>("media_kind").as_str() {
         "photo" => MediaKind::Photo,
         "video" => MediaKind::Video,

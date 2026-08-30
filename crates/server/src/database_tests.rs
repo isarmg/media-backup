@@ -121,6 +121,8 @@ async fn test_state(database: &Path, data: &Path) -> (AppState, SqlitePool) {
         admin_username: ADMIN_USERNAME.to_owned(),
         admin_password: ADMIN_PASSWORD.to_owned(),
         max_part_bytes: 1024 * 1024,
+        upload_global_concurrency: 16,
+        upload_per_account_concurrency: 4,
         metrics_token: None,
         require_https: false,
         development: true,
@@ -133,6 +135,7 @@ async fn test_state(database: &Path, data: &Path) -> (AppState, SqlitePool) {
         storage,
         config,
         login_admission: crate::login_admission::LoginAdmission::default(),
+        upload_admission: crate::routes::UploadAdmission::new(16, 4),
     };
     crate::admin::ensure_admin_user(&state)
         .await

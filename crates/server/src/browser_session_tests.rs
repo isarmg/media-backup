@@ -72,6 +72,8 @@ async fn test_state(workspace: &TestWorkspace) -> (AppState, SqlitePool) {
             admin_username: ADMIN_USERNAME.to_owned(),
             admin_password: ADMIN_PASSWORD.to_owned(),
             max_part_bytes: 1024 * 1024,
+            upload_global_concurrency: 16,
+            upload_per_account_concurrency: 4,
             metrics_token: None,
             require_https: false,
             development: true,
@@ -80,6 +82,7 @@ async fn test_state(workspace: &TestWorkspace) -> (AppState, SqlitePool) {
             trusted_proxy_cidrs: Vec::new(),
         },
         login_admission: crate::login_admission::LoginAdmission::default(),
+        upload_admission: crate::routes::UploadAdmission::new(16, 4),
     };
     admin::ensure_admin_user(&state)
         .await
@@ -308,7 +311,7 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         serde_json::from_slice(&to_bytes(session.into_body(), 16 * 1024).await.unwrap()).unwrap();
     let rotated_csrf = body["csrf_token"].as_str().unwrap();
     assert_ne!(rotated_csrf, second_csrf);
-    let stale_csrf = respond(
+    let previous_tab_csrf = respond(
         &app,
         browser_request(
             Method::POST,
@@ -320,7 +323,7 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         ),
     )
     .await;
-    assert_eq!(stale_csrf.status(), StatusCode::FORBIDDEN);
+    assert_eq!(previous_tab_csrf.status(), StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]

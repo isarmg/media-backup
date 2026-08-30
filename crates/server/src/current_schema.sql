@@ -222,7 +222,6 @@ CREATE TABLE auth_sessions (
     id                   TEXT PRIMARY KEY,
     user_id              TEXT NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
     token_hash           BLOB NOT NULL UNIQUE CHECK (length(token_hash) = 32),
-    csrf_hash            BLOB NOT NULL CHECK (length(csrf_hash) = 32),
     user_session_version INTEGER NOT NULL CHECK (user_session_version > 0),
     created_at           INTEGER NOT NULL,
     last_seen_at         INTEGER NOT NULL,
@@ -242,6 +241,17 @@ CREATE INDEX auth_sessions_user_idx
 CREATE INDEX auth_sessions_expiry_idx
     ON auth_sessions(idle_expires_at, absolute_expires_at)
     WHERE revoked_at IS NULL;
+
+CREATE TABLE admin_session_csrf_tokens (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES auth_sessions(id) ON DELETE CASCADE,
+    token_hash BLOB NOT NULL CHECK (length(token_hash) = 32),
+    created_at INTEGER NOT NULL,
+    UNIQUE(session_id, token_hash)
+);
+
+CREATE INDEX admin_session_csrf_tokens_session_idx
+    ON admin_session_csrf_tokens(session_id, created_at DESC, id DESC);
 
 CREATE TRIGGER auth_users_security_version
 AFTER UPDATE OF password_hash, role, active ON auth_users

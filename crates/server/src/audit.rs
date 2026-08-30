@@ -1,10 +1,9 @@
-use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::{auth::AuthContext, error::AppError};
 
-pub async fn record(
-    pool: &SqlitePool,
+pub async fn record_in_transaction(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     auth: &AuthContext,
     action: &str,
     entity_kind: Option<&str>,
@@ -24,7 +23,7 @@ pub async fn record(
     .bind(action)
     .bind(entity_kind)
     .bind(entity_id)
-    .execute(pool)
+    .execute(&mut **transaction)
     .await?;
     Ok(())
 }

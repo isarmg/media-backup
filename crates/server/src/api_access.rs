@@ -38,6 +38,7 @@ pub async fn create_api_key(
     let token = format!("pbk_{}", URL_SAFE_NO_PAD.encode(bytes));
     let prefix = token.chars().take(12).collect::<String>();
     let hash = Sha256::digest(token.as_bytes()).to_vec();
+    let mut transaction = state.pool.begin().await?;
     let row = sqlx::query(
         r#"
         INSERT INTO api_keys(id, account_id, device_id, name, prefix, token_hash, created_at)
@@ -51,17 +52,18 @@ pub async fn create_api_key(
     .bind(name)
     .bind(&prefix)
     .bind(hash)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *transaction)
     .await?;
     let api_key_id = row.get("id");
-    audit::record(
-        &state.pool,
+    audit::record_in_transaction(
+        &mut transaction,
         &auth,
         "api_key.create",
         Some("api_key"),
         Some(api_key_id),
     )
     .await?;
+    transaction.commit().await?;
     Ok((
         StatusCode::CREATED,
         Json(ApiKeyCreated {
@@ -111,24 +113,26 @@ pub async fn revoke_api_key(
     Path(api_key_id): Path<Uuid>,
     Json(_request): Json<EmptyRequest>,
 ) -> Result<StatusCode, AppError> {
+    let mut transaction = state.pool.begin().await?;
     let changed = sqlx::query(
         "UPDATE api_keys SET revoked_at = datetime('now') WHERE id = ? AND account_id = ? AND revoked_at IS NULL",
     )
     .bind(api_key_id)
     .bind(auth.account_id)
-    .execute(&state.pool)
+    .execute(&mut *transaction)
     .await?;
     if changed.rows_affected() == 0 {
         return Err(AppError::not_found("API key not found"));
     }
-    audit::record(
-        &state.pool,
+    audit::record_in_transaction(
+        &mut transaction,
         &auth,
         "api_key.revoke",
         Some("api_key"),
         Some(api_key_id),
     )
     .await?;
+    transaction.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -27,7 +27,7 @@ pub(crate) struct CommitOutcome {
     pub deduplicated: bool,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct ReconcileReport {
     pub recovered: u64,
     pub marked_unknown: u64,

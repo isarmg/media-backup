@@ -93,7 +93,7 @@ Caddy 会自动处理证书并传递 HTTPS 代理信息。必须把直接连接 
 photo-backup-server doctor
 ```
 
-当前服务库必须含且只含一行 `product_metadata`：`application='photo-backup'`、`application_version='0.2.0'`、`schema_revision=1`、`schema_sha256='57c9282c425d2fe1baab63bfce2fa9d947b26b5bf3367750b0308aa442ccba0a'`。移动端 agent 队列库使用同一元数据表契约，值为 `application='photo-backup-agent'`、`application_version='0.2.0'`、`schema_revision=1`、`schema_sha256='fb38736bbf8ac69eb694095e62302f73233e39df42cd2d38e3dd1284e2f02558'`。实际指纹从 `sqlite_schema` 中排除 `sqlite_*` 与 `product_metadata`，按 `type,name,tbl_name` 排序；每行四个 UTF-8 字段依次写入八字节大端长度与原字节后计算 SHA-256。
+当前服务库必须含且只含一行 `product_metadata`：`application='photo-backup'`、`application_version='0.2.0'`、`schema_revision=1`、`schema_sha256='a464584cf7a55f9e50cb85bb539b1f42a9285f707440bb0bcfcd31a6b3a083c0'`。移动端 agent 队列库使用同一元数据表契约，值为 `application='photo-backup-agent'`、`application_version='0.2.0'`、`schema_revision=1`、`schema_sha256='fb38736bbf8ac69eb694095e62302f73233e39df42cd2d38e3dd1284e2f02558'`。实际指纹从 `sqlite_schema` 中排除 `sqlite_*` 与 `product_metadata`，按 `type,name,tbl_name` 排序；每行四个 UTF-8 字段依次写入八字节大端长度与原字节后计算 SHA-256。
 
 服务库和 agent 队列库都只在目标路径不存在时初始化。已存在的空文件、无元数据库、0.1 数据库、其他产品/版本/修订，或任何实际 Schema 漂移都会在业务写入之前被拒绝。验证会把主文件、WAL 和 rollback journal 复制到私有临时代再打开，因此拒绝路径不会改动源库的主文件或 sidecar 字节；符号链接、硬链接别名和路径逃逸会 fail closed。
 

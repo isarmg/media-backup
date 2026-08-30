@@ -189,15 +189,15 @@ pub async fn update_asset(
         "upsert",
     )
     .await?;
-    transaction.commit().await?;
-    audit::record(
-        &state.pool,
+    audit::record_in_transaction(
+        &mut transaction,
         &auth,
         "asset.update",
         Some("asset"),
         Some(asset_id),
     )
     .await?;
+    transaction.commit().await?;
     Ok(Json(
         load_asset_summary(&state.pool, auth.account_id, asset_id).await?,
     ))
@@ -262,9 +262,8 @@ async fn set_trashed(
         "upsert",
     )
     .await?;
-    transaction.commit().await?;
-    audit::record(
-        &state.pool,
+    audit::record_in_transaction(
+        &mut transaction,
         auth,
         if trashed {
             "asset.trash"
@@ -275,6 +274,7 @@ async fn set_trashed(
         Some(asset_id),
     )
     .await?;
+    transaction.commit().await?;
     Ok(())
 }
 
@@ -338,18 +338,18 @@ pub async fn delete_asset_permanently(
         "delete",
     )
     .await?;
-    transaction.commit().await?;
-    for path in orphan_paths {
-        state.storage.remove_blob(&storage_path, &path).await?;
-    }
-    audit::record(
-        &state.pool,
+    audit::record_in_transaction(
+        &mut transaction,
         &auth,
         "asset.delete",
         Some("asset"),
         Some(asset_id),
     )
     .await?;
+    transaction.commit().await?;
+    for path in orphan_paths {
+        state.storage.remove_blob(&storage_path, &path).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -440,15 +440,15 @@ pub async fn sync_album(
         "upsert",
     )
     .await?;
-    transaction.commit().await?;
-    audit::record(
-        &state.pool,
+    audit::record_in_transaction(
+        &mut transaction,
         &auth,
         "album.sync",
         Some("album"),
         Some(album_id),
     )
     .await?;
+    transaction.commit().await?;
     let row = sqlx::query(
         r#"
         SELECT a.id, a.source_album_id, a.name,
@@ -512,15 +512,15 @@ pub async fn create_tag(
         "upsert",
     )
     .await?;
-    transaction.commit().await?;
-    audit::record(
-        &state.pool,
+    audit::record_in_transaction(
+        &mut transaction,
         &auth,
         "tag.create",
         Some("tag"),
         Some(tag.tag_id),
     )
     .await?;
+    transaction.commit().await?;
     Ok((StatusCode::CREATED, Json(tag)))
 }
 
@@ -568,15 +568,15 @@ pub async fn set_tag_assets(
         }
     }
     audit::record_change(&mut transaction, auth.account_id, "tag", tag_id, "upsert").await?;
-    transaction.commit().await?;
-    audit::record(
-        &state.pool,
+    audit::record_in_transaction(
+        &mut transaction,
         &auth,
         "tag.assets.set",
         Some("tag"),
         Some(tag_id),
     )
     .await?;
+    transaction.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -649,9 +649,8 @@ async fn change_tag_asset(
         "upsert",
     )
     .await?;
-    transaction.commit().await?;
-    audit::record(
-        &state.pool,
+    audit::record_in_transaction(
+        &mut transaction,
         auth,
         if add {
             "tag.asset.add"
@@ -662,6 +661,7 @@ async fn change_tag_asset(
         Some(asset_id),
     )
     .await?;
+    transaction.commit().await?;
     Ok(())
 }
 
