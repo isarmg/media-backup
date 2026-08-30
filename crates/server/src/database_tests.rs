@@ -62,10 +62,6 @@ async fn test_state(database: &Path, data: &Path) -> (AppState, SqlitePool) {
     let pool = database::connect(&database_url)
         .await
         .expect("connect test SQLite");
-    sqlx::migrate!("../../migrations")
-        .run(&pool)
-        .await
-        .expect("migrate test SQLite");
     let storage = LocalStorage::new(data.to_path_buf())
         .await
         .expect("create test storage");
@@ -109,10 +105,6 @@ async fn production_pool_applies_pragmas_and_persists_after_reopen() {
         .await
         .expect("connect production SQLite pool");
     assert!(database_path.is_file());
-    sqlx::migrate!("../../migrations")
-        .run(&pool)
-        .await
-        .expect("migrate production SQLite pool");
 
     let mut first = pool.acquire().await.expect("acquire first connection");
     let mut second = pool.acquire().await.expect("acquire second connection");
@@ -183,10 +175,6 @@ async fn production_pool_applies_pragmas_and_persists_after_reopen() {
     let reopened = database::connect(&database_url)
         .await
         .expect("reopen production SQLite pool");
-    sqlx::migrate!("../../migrations")
-        .run(&reopened)
-        .await
-        .expect("rerun migrations after reopen");
     let persisted: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE id = ? AND username = ?")
             .bind(account_id)

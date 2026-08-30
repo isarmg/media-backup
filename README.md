@@ -49,7 +49,7 @@ sudo ./scripts/start-server-wsl.sh
 
 首次安装会以排他创建方式生成 `/etc/isarmg/photo-backup.env`，权限为 `0600`；重复安装只修正权限，不改配置内容。脚本不会把密码或 Token 写入源码树、命令行或日志，也不会启动服务。必须先用 `sudoedit` 替换自动生成且未回显的 `ADMIN_PASSWORD`、`METRICS_TOKEN`，删除 `# INITIAL-SECRETS-MUST-BE-REPLACED` 标记，再手动运行启动脚本。服务以不可登录的 `isarmg-photo` 用户和组运行，不使用 root 或 PostgreSQL；SQLite 位于 `/var/lib/isarmg/photo-backup/db/app.db`，媒体位于与 `db/` 分离的 `/var/lib/isarmg/photo-backup/data/`。systemd 使用严格只读系统视图，仅放行状态和运行目录写入。
 
-服务启动时自动执行 SQLite 迁移。首次启动会把 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 写入独立的管理员认证表；之后由数据库中的 Argon2 密码摘要完成登录。管理页面位于 `https://你的域名/admin`；管理员先创建普通用户，移动端随后用普通用户账号登录。开发机只读健康检查为 `http://127.0.0.1:8080/health`。`sudo ./scripts/run-server-wsl.sh` 可启动已安装的同一 systemd 服务并跟随 Journal 日志；它和启动脚本都不会读取或执行源码树 `.env`。
+服务仅在 SQLite 主文件不存在时以 `0600` 创建 Photo Backup 0.2.0 当前 Schema，不在产品进程内升级旧库。首次启动会把 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 写入独立的管理员认证表；之后由数据库中的 Argon2 密码摘要完成登录。管理页面位于 `https://你的域名/admin`；管理员先创建普通用户，移动端随后用普通用户账号登录。开发机只读健康检查为 `http://127.0.0.1:8080/health`。`sudo ./scripts/run-server-wsl.sh` 可启动已安装的同一 systemd 服务并跟随 Journal 日志；它和启动脚本都不会读取或执行源码树 `.env`。
 
 一个最小 Caddy 配置如下：
 
@@ -72,22 +72,19 @@ Caddy 会自动处理证书并传递 HTTPS 代理信息。必须把直接连接 
 - `ADMIN_SESSION_IDLE_SECONDS` / `ADMIN_SESSION_ABSOLUTE_SECONDS`：管理员 Session 空闲/绝对期限，默认 1800/43200 秒。
 - `METRICS_TOKEN`：启用 `/metrics` 的独立 Bearer Token；不设置则返回 404。
 
-## 一致备份、恢复与诊断
+## 当前 Schema 与诊断
 
-服务器和所有维护命令会按稳定顺序同时取得 SQLite 文件与 `DATA_DIR` 各自相邻的独占运行锁。先停止服务，再以与服务相同的环境变量和系统用户执行命令；如果服务或另一条维护命令复用了任一数据库或数据目录，命令会直接失败。锁目录的任何符号链接组件都会被拒绝。
+服务器和 `doctor` 会按稳定顺序同时取得 SQLite 文件与 `DATA_DIR` 各自相邻的独占运行锁。如果另一进程复用任一数据库或数据目录，新进程会直接失败；锁目录的任何符号链接组件也会被拒绝。
 
 ```bash
-photo-backup-server backup create --output /srv/photo-backups/2026-08-29
-photo-backup-server backup verify --input /srv/photo-backups/2026-08-29
-photo-backup-server restore --input /srv/photo-backups/2026-08-29
 photo-backup-server doctor
 ```
 
-`backup create` 要求输出路径尚不存在并位于 `DATA_DIR` 外。它通过 SQLite Online Backup API 取得包含 WAL 已提交页的一致数据库快照，并把 `DATA_DIR` 内全部常规文件复制到私有暂存目录。`manifest.json` 记录产品、格式、应用版本、Schema、关键表记录数，以及数据库和每个 Blob、上传分块、提交暂存对象等持久文件的大小与 BLAKE3；发布前会完成一次自验证。符号链接、特殊文件、非 UTF-8/逃逸路径和意外文件都会被拒绝。
+当前库必须含且只含一行 `product_metadata`：`application='photo-backup'`、`application_version='0.2.0'`、`schema_revision=1`、`schema_sha256='7851e115db159da4bdd09d58906c2ff2d9a05cb0cc74955c218a776b992313e6'`。实际指纹从 `sqlite_schema` 中排除 `sqlite_*` 与 `product_metadata`，按 `type,name,tbl_name` 排序；每行四个 UTF-8 字段依次写入八字节大端长度与原字节后计算 SHA-256。
 
-`backup verify` 会把数据库复制到私有临时目录，再执行 `integrity_check`、`foreign_key_check`、Migration/Schema、关键记录数、逐文件 Hash，以及 Blob 和未完成上传状态的数据库交叉校验。`restore` 先完成同样的全量预校验，再在数据库和 `DATA_DIR` 各自相邻目录暂存；SQLite sidecar 清理、两侧父目录同步和安装后验证共同构成提交点，提交前任一步失败都会同时回滚数据库与文件。提交后才清理带唯一名的旧代副本；如果命令明确报告“安装已成功但旧代清理未完成”，新代已经提交，不要重试恢复，应在确认服务读取正常后人工处理保留的 rollback 证据。成功恢复会清理 SQLite 的 `-wal`、`-shm` 和 `-journal` sidecar。SQLite 数据库文件必须位于 `DATA_DIR` 外，才能执行联合替换。
+已存在的无元数据库、0.1 数据库、其他产品/版本/修订，或任何实际 Schema 漂移都会在打开生产读写连接池之前被拒绝。验证会把主文件、WAL 和 rollback journal 复制到私有临时代再打开，因此拒绝路径不会改动源库的主文件或 sidecar 字节；符号链接、硬链接别名和路径逃逸会 fail closed。
 
-`doctor` 会检查数据库完整性、外键、Schema、对象 Hash 和上传恢复状态，并执行可回滚的数据库写入探针及可清理的存储写读探针。备份不包含环境配置、管理员明文密码、`DATABASE_URL` 或外部 Token；管理员密码和凭据仍以摘要存在于 SQLite，媒体本身也可能敏感，因此备份目录仍须加密、限制权限并异地保存。不要在服务停止后绕过运行锁直接修改 SQLite 或 `DATA_DIR`。
+`doctor` 会检查精确元数据与 Schema 指纹、`integrity_check`、`foreign_key_check`、对象 Hash 和上传恢复状态，并执行可回滚的数据库写入探针及可清理的存储写读探针。产品二进制不再提供 schema migrate、database backup 或 restore 命令；这些工作必须由独立升级工具在服务停止后，将 SQLite 完整代与 `DATA_DIR` 作为同一一致性单元完成。不要绕过运行锁直接修改 SQLite 或 `DATA_DIR`。
 
 ## Android 与 iOS
 
@@ -131,7 +128,7 @@ open PhotoBackup.xcodeproj
 
 ## 运维与发布
 
-- SQLite 与 `DATA_DIR` 必须通过上述命令作为一个一致性单元备份，并遵循至少 3-2-1 策略和定期恢复演练。
+- SQLite 完整代与 `DATA_DIR` 必须由独立升级/维护工具作为一个一致性单元备份，并遵循至少 3-2-1 策略和定期恢复演练。
 - 指标只提供聚合数量和字节数；审计 API 按序列分页返回设备/API Key 的关键操作。
 - 大规模部署可在 `LocalStorage` 边界后增加 S3/MinIO，但不得改变 `plain-v1` 表示的“原始未加密字节”语义。
 - 推送会运行 Rust、Android 和 iOS CI；版本标签 `vX.Y.Z` 必须与 Cargo 工作区版本一致。

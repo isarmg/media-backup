@@ -95,7 +95,7 @@ impl RuntimeLock {
             match flock(&fd, FlockOperation::NonBlockingLockExclusive) {
                 Ok(()) => files.push(File::from(fd)),
                 Err(Errno::WOULDBLOCK) => {
-                    anyhow::bail!("Photo Backup service or maintenance command is already running")
+                    anyhow::bail!("Photo Backup service or diagnostic command is already running")
                 }
                 Err(error) => {
                     return Err(std::io::Error::from(error)).context("lock Photo Backup runtime")
@@ -187,13 +187,25 @@ pub(crate) fn sqlite_database_path(database_url: &str) -> anyhow::Result<PathBuf
         .context("DATABASE_URL must use the sqlite scheme")?;
     ensure!(
         !value.is_empty() && value != ":memory:",
-        "maintenance commands require a file SQLite database"
+        "Photo Backup requires a file SQLite database"
     );
     ensure!(
         !value.contains(['?', '#', '%', '\0']),
-        "maintenance commands require a plain unescaped SQLite file URL"
+        "Photo Backup requires a plain unescaped SQLite file URL"
     );
-    Ok(PathBuf::from(value))
+    let path = PathBuf::from(value);
+    ensure!(path.is_absolute(), "SQLite database path must be absolute");
+    ensure!(
+        path.file_name().is_some(),
+        "SQLite database path must name a file"
+    );
+    ensure!(
+        !path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir)),
+        "SQLite database path must not contain parent traversal"
+    );
+    Ok(path)
 }
 
 #[cfg(all(test, target_os = "linux"))]

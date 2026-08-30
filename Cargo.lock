@@ -397,6 +397,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
+name = "fastrand"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1105,7 +1111,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "photo-backup-agent-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "photo-backup-crypto",
@@ -1119,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "photo-backup-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "photo-backup-protocol",
@@ -1128,7 +1134,7 @@ dependencies = [
 
 [[package]]
 name = "photo-backup-mobile"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jni",
  "photo-backup-agent-core",
@@ -1137,7 +1143,7 @@ dependencies = [
 
 [[package]]
 name = "photo-backup-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1146,13 +1152,14 @@ dependencies = [
 
 [[package]]
 name = "photo-backup-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "argon2",
  "axum",
  "base64",
  "blake3",
+ "libc",
  "photo-backup-protocol",
  "rand",
  "rusqlite",
@@ -1162,6 +1169,8 @@ dependencies = [
  "sha2",
  "sqlx",
  "subtle",
+ "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-util",
  "tower",
@@ -1810,6 +1819,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.3",
+ "once_cell",
+ "rustix",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

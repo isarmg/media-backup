@@ -60,10 +60,6 @@ async fn test_state(workspace: &TestWorkspace) -> (AppState, SqlitePool) {
     let pool = database::connect(&database_url)
         .await
         .expect("connect browser auth SQLite");
-    sqlx::migrate!("../../migrations")
-        .run(&pool)
-        .await
-        .expect("migrate browser auth SQLite");
     let state = AppState {
         pool: pool.clone(),
         storage: LocalStorage::new(workspace.data())

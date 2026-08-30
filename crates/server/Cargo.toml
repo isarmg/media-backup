@@ -11,6 +11,7 @@ argon2 = "0.5"
 axum.workspace = true
 base64.workspace = true
 blake3.workspace = true
+libc.workspace = true
 photo-backup-protocol = { path = "../protocol" }
 rand.workspace = true
 rusqlite.workspace = true
@@ -20,6 +21,8 @@ serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 subtle.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tower-http.workspace = true
