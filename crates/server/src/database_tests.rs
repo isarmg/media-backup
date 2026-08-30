@@ -221,6 +221,7 @@ fn authorized_request(
 }
 
 async fn send(app: &Router, request: Request<Body>, expected: StatusCode) -> Response<Body> {
+    let request_description = format!("{} {}", request.method(), request.uri());
     let response = app
         .clone()
         .oneshot(request)
@@ -232,7 +233,7 @@ async fn send(app: &Router, request: Request<Body>, expected: StatusCode) -> Res
             .await
             .expect("read error response");
         panic!(
-            "unexpected response status: expected {expected}, got {status}: {}",
+            "unexpected response status for {request_description}: expected {expected}, got {status}: {}",
             String::from_utf8_lossy(&body)
         );
     }
@@ -285,6 +286,36 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         .expect("cookie pair")
         .to_owned();
 
+    for (index, invalid_storage_path) in [
+        "/tmp/photo-backup-outside",
+        "../photo-backup-outside",
+        "blobs//invalid",
+        "uploads/account",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        send(
+            &app,
+            json_request(
+                Method::POST,
+                "/admin/api/users",
+                json!({
+                    "username": format!("invalid-path-{index}"),
+                    "password": PASSWORD,
+                    "display_name": "Invalid Storage Path",
+                    "storage_path": invalid_storage_path,
+                    "quota_bytes": 1,
+                    "enabled": true
+                }),
+                None,
+                Some(&admin_cookie),
+            ),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
+    }
+
     let created_account = json_body(
         send(
             &app,
@@ -313,6 +344,26 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         .as_str()
         .expect("created account storage path")
         .to_owned();
+
+    send(
+        &app,
+        json_request(
+            Method::POST,
+            "/admin/api/users",
+            json!({
+                "username": "nested-storage-owner",
+                "password": PASSWORD,
+                "display_name": "Nested Storage Owner",
+                "storage_path": format!("{storage_path}/nested"),
+                "quota_bytes": 1,
+                "enabled": true
+            }),
+            None,
+            Some(&admin_cookie),
+        ),
+        StatusCode::CONFLICT,
+    )
+    .await;
 
     send(
         &app,
@@ -445,6 +496,35 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
     .await;
     let asset_id = Uuid::from_str(completed["asset_id"].as_str().expect("completed asset id"))
         .expect("valid asset id");
+    let resource_id = Uuid::from_str(
+        completed["resource_id"]
+            .as_str()
+            .expect("completed resource id"),
+    )
+    .expect("valid resource id");
+    let content_response = send(
+        &app,
+        authorized_request(
+            Method::GET,
+            format!("/v1/resources/{resource_id}/content"),
+            &bearer,
+            Body::empty(),
+        ),
+        StatusCode::OK,
+    )
+    .await;
+    let downloaded = to_bytes(content_response.into_body(), 1024 * 1024)
+        .await
+        .expect("read downloaded blob");
+    assert_eq!(downloaded.as_ref(), content);
+    let persisted_blob_key: String =
+        sqlx::query_scalar("SELECT storage_path FROM blobs WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read persisted blob key");
+    assert!(persisted_blob_key.starts_with(&format!("{storage_path}/")));
+    assert!(!Path::new(&persisted_blob_key).is_absolute());
 
     let default_timeline = get_json(&app, "/v1/timeline", &bearer).await;
     assert_eq!(default_timeline["items"].as_array().map(Vec::len), Some(1));

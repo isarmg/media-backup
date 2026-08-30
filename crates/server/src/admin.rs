@@ -395,18 +395,20 @@ async fn ensure_unique_path(
     storage_path: &str,
     except_id: Option<Uuid>,
 ) -> Result<(), AppError> {
-    let existing: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM accounts \
-         WHERE storage_path = ?1 AND (?2 IS NULL OR id <> ?2)",
-    )
-    .bind(storage_path)
-    .bind(except_id)
-    .fetch_optional(&state.pool)
-    .await?;
-    if existing.is_some() {
-        return Err(AppError::conflict(
-            "storage_path is already assigned to another user",
-        ));
+    let existing = sqlx::query("SELECT storage_path FROM accounts WHERE ?1 IS NULL OR id <> ?1")
+        .bind(except_id)
+        .fetch_all(&state.pool)
+        .await?;
+    for row in existing {
+        let assigned: String = row.get("storage_path");
+        if state
+            .storage
+            .account_paths_overlap(storage_path, &assigned)?
+        {
+            return Err(AppError::conflict(
+                "storage_path overlaps another user's directory",
+            ));
+        }
     }
     Ok(())
 }

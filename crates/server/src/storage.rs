@@ -1,6 +1,6 @@
 use std::{
     future::poll_fn,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     pin::Pin,
 };
 
@@ -15,22 +15,30 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::error::AppError;
+use crate::{error::AppError, rooted_fs::RootedFs};
 
 #[derive(Debug, Clone)]
 pub struct LocalStorage {
-    root: PathBuf,
+    files: RootedFs,
+    #[cfg(all(test, target_os = "linux"))]
+    root_path: PathBuf,
 }
 
 impl LocalStorage {
     pub async fn new(root: PathBuf) -> Result<Self, AppError> {
-        fs::create_dir_all(root.join("uploads")).await?;
-        fs::create_dir_all(root.join("blobs")).await?;
-        Ok(Self { root })
+        fs::create_dir_all(&root).await?;
+        let files = RootedFs::new(&root)?;
+        files.ensure_dir(Path::new("uploads"))?;
+        files.ensure_dir(Path::new("blobs"))?;
+        Ok(Self {
+            files,
+            #[cfg(all(test, target_os = "linux"))]
+            root_path: root,
+        })
     }
 
     fn upload_dir(&self, upload_id: Uuid) -> PathBuf {
-        self.root.join("uploads").join(upload_id.to_string())
+        PathBuf::from("uploads").join(upload_id.to_string())
     }
 
     fn part_path(&self, upload_id: Uuid, index: u32) -> PathBuf {
@@ -45,14 +53,14 @@ impl LocalStorage {
         max_part_bytes: usize,
     ) -> Result<(), AppError> {
         let directory = self.upload_dir(upload_id);
-        fs::create_dir_all(&directory).await?;
+        self.files.ensure_dir(&directory)?;
         let final_path = self.part_path(upload_id, spec.index);
         let temporary_path = directory.join(format!(
             ".{index:08}.{request_id}.tmp",
             index = spec.index,
             request_id = Uuid::new_v4()
         ));
-        let (mut temporary, mut file) = TemporaryPart::create(temporary_path)?;
+        let (mut temporary, mut file) = TemporaryPart::create(self.files.clone(), temporary_path)?;
         let max_part_bytes = u64::try_from(max_part_bytes).unwrap_or(u64::MAX);
         let write_result = async {
             let mut total = 0_u64;
@@ -96,34 +104,28 @@ impl LocalStorage {
         drop(file);
 
         if let Err(error) = write_result {
-            cleanup_temporary_best_effort(&mut temporary, &directory).await;
+            cleanup_temporary_best_effort(&mut temporary);
             return Err(error);
         }
 
-        match fs::hard_link(temporary.path(), &final_path).await {
-            Ok(()) => {
-                cleanup_temporary(&mut temporary, &directory).await?;
+        match self.files.link_no_replace(temporary.path(), &final_path)? {
+            true => {
+                cleanup_temporary(&mut temporary)?;
                 Ok(())
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let existing = existing_part_matches(&final_path, spec).await;
-                cleanup_temporary(&mut temporary, &directory).await?;
+            false => {
+                let existing = existing_part_matches(&self.files, &final_path, spec).await;
+                cleanup_temporary(&mut temporary)?;
                 match existing? {
                     Some(true) => Ok(()),
                     Some(false) | None => Err(part_conflict()),
                 }
             }
-            Err(error) => {
-                cleanup_temporary_best_effort(&mut temporary, &directory).await;
-                Err(error.into())
-            }
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn finalize(
         &self,
-        account_id: Uuid,
         configured_path: &str,
         upload_id: Uuid,
         parts: &[UploadPartSpec],
@@ -131,12 +133,8 @@ impl LocalStorage {
         expected_size: u64,
         expected_blake3: &str,
     ) -> Result<(String, u64), AppError> {
-        let account_dir = if configured_path.trim().is_empty() {
-            self.root.join("blobs").join(account_id.to_string())
-        } else {
-            self.resolve_account_root(configured_path)?
-        };
-        fs::create_dir_all(&account_dir).await?;
+        let account_dir = StorageKey::parse(configured_path)?;
+        self.files.ensure_dir(account_dir.as_path())?;
         let extension = Path::new(filename)
             .extension()
             .and_then(|value| value.to_str())
@@ -148,49 +146,86 @@ impl LocalStorage {
                         .all(|character| character.is_ascii_alphanumeric())
             })
             .unwrap_or("media");
-        let final_path = account_dir.join(format!("{upload_id}.{extension}"));
-        if fs::try_exists(&final_path).await? {
-            let size = fs::metadata(&final_path).await?.len();
-            return Ok((storage_reference(&self.root, &final_path), size));
+        let final_path = account_dir.join(&format!("{upload_id}.{extension}"));
+        if let Some(matches) =
+            existing_file_matches(&self.files, &final_path, expected_size, expected_blake3).await?
+        {
+            return if matches {
+                Ok((path_to_key(&final_path)?, expected_size))
+            } else {
+                Err(AppError::conflict(
+                    "stored blob conflicts with upload manifest",
+                ))
+            };
         }
-        let temporary = account_dir.join(format!("{upload_id}.tmp"));
-        let mut output = fs::File::create(&temporary).await?;
-        let mut total = 0_u64;
-        for part in parts {
-            let part_path = self.part_path(upload_id, part.index);
-            let mut input = fs::File::open(&part_path).await.map_err(|_| {
-                AppError::conflict(format!("part {} is missing from storage", part.index))
-            })?;
-            total += tokio::io::copy(&mut input, &mut output).await?;
+        let temporary_path = account_dir.join(&format!(".{upload_id}.{}.tmp", Uuid::new_v4()));
+        let (mut temporary, mut output) =
+            TemporaryPart::create(self.files.clone(), temporary_path)?;
+        let assembly = async {
+            let mut total = 0_u64;
+            for part in parts {
+                let part_path = self.part_path(upload_id, part.index);
+                let mut input = match self.files.open_read(&part_path) {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Err(AppError::conflict(format!(
+                            "part {} is missing from storage",
+                            part.index
+                        )));
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                let copied = tokio::io::copy(&mut input, &mut output).await?;
+                total = total.checked_add(copied).ok_or_else(|| {
+                    AppError::conflict("assembled content size does not match manifest")
+                })?;
+            }
+            output.sync_all().await?;
+            Ok::<u64, AppError>(total)
         }
-        output.sync_all().await?;
+        .await;
         drop(output);
+        let total = match assembly {
+            Ok(total) => total,
+            Err(error) => {
+                cleanup_temporary_best_effort(&mut temporary);
+                return Err(error);
+            }
+        };
         if total != expected_size {
-            let _ = fs::remove_file(&temporary).await;
+            cleanup_temporary_best_effort(&mut temporary);
             return Err(AppError::conflict(
                 "assembled content size does not match manifest",
             ));
         }
-        let actual_hash = hash_file(&temporary).await?;
+        let actual_hash = hash_file(&self.files, temporary.path()).await?;
         if actual_hash != expected_blake3 {
-            let _ = fs::remove_file(&temporary).await;
+            cleanup_temporary_best_effort(&mut temporary);
             return Err(AppError::conflict(
                 "assembled content hash does not match manifest",
             ));
         }
-        fs::rename(&temporary, &final_path).await?;
-        Ok((storage_reference(&self.root, &final_path), total))
+        let published = self.files.link_no_replace(temporary.path(), &final_path)?;
+        cleanup_temporary(&mut temporary)?;
+        if !published
+            && !existing_file_matches(&self.files, &final_path, expected_size, expected_blake3)
+                .await?
+                .unwrap_or(false)
+        {
+            return Err(AppError::conflict(
+                "stored blob conflicts with upload manifest",
+            ));
+        }
+        Ok((path_to_key(&final_path)?, total))
     }
 
-    pub async fn open_blob(&self, relative_path: &str) -> Result<fs::File, AppError> {
-        let path = Path::new(relative_path);
-        let resolved = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            validate_relative(path)?;
-            self.root.join(path)
-        };
-        Ok(fs::File::open(resolved).await?)
+    pub async fn open_blob(
+        &self,
+        configured_account_path: &str,
+        storage_path: &str,
+    ) -> Result<fs::File, AppError> {
+        let key = scoped_blob_key(configured_account_path, storage_path)?;
+        Ok(self.files.open_read(key.as_path())?)
     }
 
     pub async fn remove_blob(
@@ -198,81 +233,66 @@ impl LocalStorage {
         configured_account_path: &str,
         storage_path: &str,
     ) -> Result<(), AppError> {
-        let account_root = self.resolve_account_root(configured_account_path)?;
-        let stored = PathBuf::from(storage_path);
-        let resolved = if stored.is_absolute() {
-            stored
-        } else {
-            validate_relative(&stored)?;
-            self.root.join(stored)
-        };
-        if !resolved.starts_with(&account_root) {
-            return Err(AppError::bad_request(
-                "blob path escapes the account storage root",
-            ));
-        }
-        match fs::remove_file(resolved).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+        let key = scoped_blob_key(configured_account_path, storage_path)?;
+        self.files.remove_file(key.as_path())?;
+        Ok(())
     }
 
     pub async fn validate_account_path(&self, configured_path: &str) -> Result<(), AppError> {
-        let directory = self.resolve_account_root(configured_path)?;
-        fs::create_dir_all(&directory).await?;
-        let probe = directory.join(format!(".photo-backup-write-test-{}", Uuid::new_v4()));
-        let mut file = fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&probe)
-            .await?;
+        let directory = StorageKey::parse(configured_path)?;
+        if directory.first_component() == Some("uploads") {
+            return Err(AppError::bad_request(
+                "storage_path uses a reserved server directory",
+            ));
+        }
+        self.files.ensure_dir(directory.as_path())?;
+        let probe = directory.join(&format!(".photo-backup-write-test-{}", Uuid::new_v4()));
+        let (mut temporary, mut file) = TemporaryPart::create(self.files.clone(), probe)?;
         file.write_all(b"ok").await?;
+        file.sync_all().await?;
         drop(file);
-        fs::remove_file(probe).await?;
+        cleanup_temporary(&mut temporary)?;
         Ok(())
+    }
+
+    pub fn account_paths_overlap(&self, first: &str, second: &str) -> Result<bool, AppError> {
+        let first = StorageKey::parse(first)?;
+        let second = StorageKey::parse(second)?;
+        Ok(first.0 == second.0
+            || first.is_strict_descendant_of(&second)
+            || second.is_strict_descendant_of(&first))
     }
 
     /// Exercise the same local create/write/fsync/remove path required by uploads.
     pub async fn probe_readiness(&self) -> Result<(), AppError> {
-        let probe = self
-            .root
-            .join(format!(".photo-backup-readiness-{}", Uuid::new_v4()));
+        let probe = PathBuf::from(format!(".photo-backup-readiness-{}", Uuid::new_v4()));
+        let (mut temporary, mut file) = TemporaryPart::create(self.files.clone(), probe)?;
         let operation = async {
-            let mut file = fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&probe)
-                .await?;
             file.write_all(b"photo-backup-readiness-v1").await?;
             file.sync_all().await?;
-            drop(file);
             Ok::<(), AppError>(())
         }
         .await;
-        let cleanup = fs::remove_file(&probe).await;
+        drop(file);
+        let cleanup = cleanup_temporary(&mut temporary);
         operation?;
         cleanup?;
-        fs::File::open(&self.root).await?.sync_all().await?;
         Ok(())
     }
 
-    fn resolve_account_root(&self, configured_path: &str) -> Result<PathBuf, AppError> {
-        let value = configured_path.trim();
-        if value.is_empty() {
-            return Err(AppError::bad_request("storage_path is required"));
-        }
-        let path = PathBuf::from(value);
-        if path.is_absolute() {
-            return Ok(path);
-        }
-        validate_relative(&path)?;
-        Ok(self.root.join(path))
+    #[cfg(all(test, target_os = "linux"))]
+    fn test_path(&self, relative: &Path) -> PathBuf {
+        self.root_path.join(relative)
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    fn inject_before_rooted_operation_once(&self, hook: impl FnOnce() + Send + 'static) {
+        self.files.inject_before_operation_once(hook);
     }
 }
 
-async fn hash_file(path: &Path) -> Result<String, AppError> {
-    let mut file = fs::File::open(path).await?;
+async fn hash_file(files: &RootedFs, path: &Path) -> Result<String, AppError> {
+    let mut file = files.open_read(path)?;
     let mut hasher = blake3::Hasher::new();
     let mut buffer = vec![0_u8; 1024 * 1024];
     loop {
@@ -286,10 +306,20 @@ async fn hash_file(path: &Path) -> Result<String, AppError> {
 }
 
 async fn existing_part_matches(
+    files: &RootedFs,
     path: &Path,
     spec: &UploadPartSpec,
 ) -> Result<Option<bool>, AppError> {
-    let mut file = match fs::File::open(path).await {
+    existing_file_matches(files, path, spec.size, &spec.blake3).await
+}
+
+async fn existing_file_matches(
+    files: &RootedFs,
+    path: &Path,
+    expected_size: u64,
+    expected_blake3: &str,
+) -> Result<Option<bool>, AppError> {
+    let mut file = match files.open_read(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
@@ -303,13 +333,13 @@ async fn existing_part_matches(
             break;
         }
         total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
-        if total > spec.size {
+        if total > expected_size {
             return Ok(Some(false));
         }
         hasher.update(&buffer[..read]);
     }
     Ok(Some(
-        total == spec.size && hasher.finalize().to_hex().as_str() == spec.blake3,
+        total == expected_size && hasher.finalize().to_hex().as_str() == expected_blake3,
     ))
 }
 
@@ -318,22 +348,21 @@ fn part_conflict() -> AppError {
 }
 
 struct TemporaryPart {
+    files: RootedFs,
     path: PathBuf,
     remove_on_drop: bool,
 }
 
 impl TemporaryPart {
-    fn create(path: PathBuf) -> Result<(Self, fs::File), AppError> {
-        let file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&path)?;
+    fn create(files: RootedFs, path: PathBuf) -> Result<(Self, fs::File), AppError> {
+        let file = files.create_new(&path)?;
         Ok((
             Self {
+                files,
                 path,
                 remove_on_drop: true,
             },
-            fs::File::from_std(file),
+            file,
         ))
     }
 
@@ -341,12 +370,8 @@ impl TemporaryPart {
         &self.path
     }
 
-    async fn remove(&mut self) -> Result<(), AppError> {
-        match fs::remove_file(&self.path).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
+    fn remove(&mut self) -> Result<(), AppError> {
+        self.files.remove_file(&self.path)?;
         self.remove_on_drop = false;
         Ok(())
     }
@@ -355,71 +380,102 @@ impl TemporaryPart {
 impl Drop for TemporaryPart {
     fn drop(&mut self) {
         if self.remove_on_drop {
-            match std::fs::remove_file(&self.path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => tracing::warn!(
+            if let Err(error) = self.files.remove_file(&self.path) {
+                tracing::warn!(
                     ?error,
                     path = %self.path.display(),
                     "failed to clean temporary upload part"
-                ),
+                );
             }
         }
     }
 }
 
-async fn cleanup_temporary(
-    temporary: &mut TemporaryPart,
-    directory: &Path,
-) -> Result<(), AppError> {
-    let cleanup = temporary.remove().await;
-    let sync = sync_directory(directory).await;
-    cleanup?;
-    sync
+fn cleanup_temporary(temporary: &mut TemporaryPart) -> Result<(), AppError> {
+    temporary.remove()
 }
 
-async fn cleanup_temporary_best_effort(temporary: &mut TemporaryPart, directory: &Path) {
-    if let Err(error) = cleanup_temporary(temporary, directory).await {
+fn cleanup_temporary_best_effort(temporary: &mut TemporaryPart) {
+    if let Err(error) = cleanup_temporary(temporary) {
         tracing::warn!(?error, "failed to durably clean temporary upload part");
     }
 }
 
-async fn sync_directory(directory: &Path) -> Result<(), AppError> {
-    fs::File::open(directory).await?.sync_all().await?;
-    Ok(())
-}
+#[derive(Debug, Clone)]
+struct StorageKey(String);
 
-fn validate_relative(path: &Path) -> Result<(), AppError> {
-    if path.components().any(|component| {
-        matches!(
-            component,
-            Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    }) {
-        return Err(AppError::bad_request("invalid relative storage path"));
+impl StorageKey {
+    fn parse(raw: &str) -> Result<Self, AppError> {
+        if raw.is_empty()
+            || raw.len() > 4096
+            || raw.trim() != raw
+            || raw.starts_with('/')
+            || raw.contains(['\\', ':', '\0'])
+            || raw.chars().any(char::is_control)
+        {
+            return Err(invalid_storage_key());
+        }
+        for component in raw.split('/') {
+            if component.is_empty()
+                || component == "."
+                || component == ".."
+                || component.starts_with('.')
+                || component.trim() != component
+            {
+                return Err(invalid_storage_key());
+            }
+        }
+        let path = Path::new(raw);
+        if path.is_absolute() {
+            return Err(invalid_storage_key());
+        }
+        Ok(Self(raw.to_owned()))
     }
-    Ok(())
-}
 
-fn storage_reference(root: &Path, path: &Path) -> String {
-    if path.starts_with(root) {
-        relative_to(root, path)
-    } else {
-        path.to_string_lossy().to_string()
+    fn as_path(&self) -> &Path {
+        Path::new(&self.0)
+    }
+
+    fn join(&self, component: &str) -> PathBuf {
+        self.as_path().join(component)
+    }
+
+    fn first_component(&self) -> Option<&str> {
+        self.0.split('/').next()
+    }
+
+    fn is_strict_descendant_of(&self, parent: &Self) -> bool {
+        self.as_path()
+            .strip_prefix(parent.as_path())
+            .is_ok_and(|relative| !relative.as_os_str().is_empty())
     }
 }
 
-fn relative_to(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
+fn scoped_blob_key(account_path: &str, storage_path: &str) -> Result<StorageKey, AppError> {
+    let account = StorageKey::parse(account_path)?;
+    let storage = StorageKey::parse(storage_path)?;
+    if !storage.is_strict_descendant_of(&account) {
+        return Err(AppError::bad_request(
+            "blob key is outside the account storage directory",
+        ));
+    }
+    Ok(storage)
 }
 
-#[cfg(test)]
+fn path_to_key(path: &Path) -> Result<String, AppError> {
+    let value = path.to_str().ok_or_else(invalid_storage_key)?.to_owned();
+    StorageKey::parse(&value)?;
+    Ok(value)
+}
+
+fn invalid_storage_key() -> AppError {
+    AppError::bad_request("storage key must use normal relative components under DATA_DIR")
+}
+
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::{os::unix::fs::symlink, time::Duration};
     use tokio::{io::AsyncReadExt, task::JoinSet};
     use tokio_util::io::ReaderStream;
 
@@ -468,7 +524,7 @@ mod tests {
     }
 
     async fn assert_no_temporary_parts(storage: &LocalStorage, upload_id: Uuid) {
-        let names = entry_names(&storage.upload_dir(upload_id)).await;
+        let names = entry_names(&storage.test_path(&storage.upload_dir(upload_id))).await;
         assert!(
             names.iter().all(|name| !name.ends_with(".tmp")),
             "temporary parts were not cleaned: {names:?}"
@@ -491,14 +547,14 @@ mod tests {
             .await
             .expect("store multi-frame part");
         assert_eq!(
-            fs::metadata(storage.part_path(upload_id, spec.index))
+            fs::metadata(storage.test_path(&storage.part_path(upload_id, spec.index)))
                 .await
                 .expect("read stored part metadata")
                 .len(),
             size as u64
         );
         assert_eq!(
-            hash_file(&storage.part_path(upload_id, spec.index))
+            hash_file(&storage.files, &storage.part_path(upload_id, spec.index),)
                 .await
                 .expect("hash stored multi-frame part"),
             spec.blake3
@@ -516,11 +572,11 @@ mod tests {
             .await
             .expect_err("reject part with mismatched hash");
         assert_eq!(rejected.status, StatusCode::BAD_REQUEST);
-        assert!(
-            !fs::try_exists(storage.part_path(rejected_upload_id, spec.index))
-                .await
-                .expect("check rejected final part")
-        );
+        assert!(!fs::try_exists(
+            storage.test_path(&storage.part_path(rejected_upload_id, spec.index))
+        )
+        .await
+        .expect("check rejected final part"));
         assert_no_temporary_parts(&storage, rejected_upload_id).await;
 
         let limited_upload_id = Uuid::new_v4();
@@ -534,11 +590,11 @@ mod tests {
             .await
             .expect_err("reject part above server limit");
         assert_eq!(limited.status, StatusCode::PAYLOAD_TOO_LARGE);
-        assert!(
-            !fs::try_exists(storage.part_path(limited_upload_id, spec.index))
-                .await
-                .expect("check limited final part")
-        );
+        assert!(!fs::try_exists(
+            storage.test_path(&storage.part_path(limited_upload_id, spec.index))
+        )
+        .await
+        .expect("check limited final part"));
         assert_no_temporary_parts(&storage, limited_upload_id).await;
     }
 
@@ -569,13 +625,13 @@ mod tests {
         }
 
         assert_eq!(
-            hash_file(&storage.part_path(upload_id, spec.index))
+            hash_file(&storage.files, &storage.part_path(upload_id, spec.index),)
                 .await
                 .expect("hash concurrently stored part"),
             spec.blake3
         );
         assert_eq!(
-            entry_names(&storage.upload_dir(upload_id)).await,
+            entry_names(&storage.test_path(&storage.upload_dir(upload_id))).await,
             vec![format!("{:08}.part", spec.index)]
         );
     }
@@ -616,7 +672,8 @@ mod tests {
             1
         );
 
-        let final_path = storage.part_path(upload_id, first_spec.index);
+        let final_key = storage.part_path(upload_id, first_spec.index);
+        let final_path = storage.test_path(&final_key);
         let winner = fs::read(&final_path).await.expect("read winning part");
         let (losing_spec, losing_content) = if winner == first_content {
             (&second_spec, second_content)
@@ -639,7 +696,7 @@ mod tests {
             winner
         );
         assert_eq!(
-            entry_names(&storage.upload_dir(upload_id)).await,
+            entry_names(&storage.test_path(&storage.upload_dir(upload_id))).await,
             vec![format!("{:08}.part", first_spec.index)]
         );
     }
@@ -665,7 +722,7 @@ mod tests {
                 .await
         });
 
-        let directory = storage.upload_dir(upload_id);
+        let directory = storage.test_path(&storage.upload_dir(upload_id));
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if entry_names(&directory)
@@ -684,8 +741,247 @@ mod tests {
         let _ = upload.await;
         drop(sender);
         assert_no_temporary_parts(&storage, upload_id).await;
-        assert!(!fs::try_exists(storage.part_path(upload_id, 9))
+        assert!(
+            !fs::try_exists(storage.test_path(&storage.part_path(upload_id, 9)))
+                .await
+                .expect("check cancelled final part")
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_non_relative_and_special_storage_keys() {
+        let root = TestRoot::new();
+        let storage = LocalStorage::new(root.path.clone())
             .await
-            .expect("check cancelled final part"));
+            .expect("create test storage");
+        for invalid in [
+            "/tmp/outside",
+            "../outside",
+            "blobs/../outside",
+            "blobs/./account",
+            "blobs//account",
+            "blobs/account/",
+            "C:/outside",
+            "blobs\\outside",
+            "blobs/.hidden",
+        ] {
+            let error = storage
+                .validate_account_path(invalid)
+                .await
+                .expect_err("reject invalid storage key");
+            assert_eq!(error.status, StatusCode::BAD_REQUEST, "key {invalid:?}");
+        }
+        storage
+            .validate_account_path("blobs/account-a")
+            .await
+            .expect("accept normal relative account directory");
+        for invalid_object in [
+            "/tmp/outside.bin",
+            "blobs/account-a/../outside.bin",
+            "blobs/account-a//outside.bin",
+        ] {
+            let open_error = storage
+                .open_blob("blobs/account-a", invalid_object)
+                .await
+                .expect_err("reject invalid object key on open");
+            assert_eq!(open_error.status, StatusCode::BAD_REQUEST);
+            let remove_error = storage
+                .remove_blob("blobs/account-a", invalid_object)
+                .await
+                .expect_err("reject invalid object key on remove");
+            assert_eq!(remove_error.status, StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[tokio::test]
+    async fn symlinks_and_parent_swaps_never_reach_outside_data_dir() {
+        let root = TestRoot::new();
+        let outside = TestRoot::new();
+        let storage = LocalStorage::new(root.path.clone())
+            .await
+            .expect("create test storage");
+        storage
+            .validate_account_path("blobs/account-a")
+            .await
+            .expect("create account directory");
+        std::fs::create_dir_all(&outside.path).expect("create outside directory");
+        std::fs::write(outside.path.join("secret.bin"), b"outside-secret")
+            .expect("write outside secret");
+        symlink(&outside.path, root.path.join("blobs/linked-account"))
+            .expect("create account directory symlink");
+        assert!(
+            storage
+                .validate_account_path("blobs/linked-account")
+                .await
+                .is_err(),
+            "account creation followed a directory symlink"
+        );
+        symlink(
+            outside.path.join("secret.bin"),
+            root.path.join("blobs/account-a/direct-link"),
+        )
+        .expect("create direct object symlink");
+
+        assert!(
+            storage
+                .open_blob("blobs/account-a", "blobs/account-a/direct-link")
+                .await
+                .is_err(),
+            "direct blob symlink was opened"
+        );
+        assert!(
+            storage
+                .remove_blob("blobs/account-a", "blobs/account-a/direct-link")
+                .await
+                .is_err(),
+            "direct blob symlink was accepted for deletion"
+        );
+        assert_eq!(
+            std::fs::read(outside.path.join("secret.bin")).expect("read outside secret"),
+            b"outside-secret"
+        );
+
+        let original_account = root.path.join("blobs/account-a");
+        let displaced_account = root.path.join("blobs/account-a-displaced");
+        std::fs::write(original_account.join("inside.bin"), b"inside")
+            .expect("write original account object");
+        let outside_for_swap = outside.path.clone();
+        storage.inject_before_rooted_operation_once(move || {
+            std::fs::rename(&original_account, &displaced_account)
+                .expect("displace account directory");
+            symlink(&outside_for_swap, &original_account)
+                .expect("swap account for outside symlink");
+        });
+        assert!(
+            storage
+                .open_blob("blobs/account-a", "blobs/account-a/secret.bin")
+                .await
+                .is_err(),
+            "symlink swap escaped DATA_DIR"
+        );
+        assert_eq!(
+            std::fs::read(outside.path.join("secret.bin")).expect("reread outside secret"),
+            b"outside-secret"
+        );
+
+        storage
+            .validate_account_path("blobs/account-b")
+            .await
+            .expect("create second account directory");
+        let second_account = root.path.join("blobs/account-b");
+        let displaced_second = root.path.join("blobs/account-b-displaced");
+        std::fs::write(second_account.join("secret.bin"), b"inside-delete")
+            .expect("write second account object");
+        let outside_for_delete = outside.path.clone();
+        storage.inject_before_rooted_operation_once(move || {
+            std::fs::rename(&second_account, &displaced_second)
+                .expect("displace second account directory");
+            symlink(&outside_for_delete, &second_account)
+                .expect("swap second account for outside symlink");
+        });
+        assert!(
+            storage
+                .remove_blob("blobs/account-b", "blobs/account-b/secret.bin")
+                .await
+                .is_err(),
+            "delete followed a swapped account directory"
+        );
+        assert_eq!(
+            std::fs::read(outside.path.join("secret.bin"))
+                .expect("outside secret survives delete swap"),
+            b"outside-secret"
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_account_delete_is_component_scoped() {
+        let root = TestRoot::new();
+        let storage = LocalStorage::new(root.path.clone())
+            .await
+            .expect("create test storage");
+        storage
+            .validate_account_path("blobs/account")
+            .await
+            .expect("create first account directory");
+        storage
+            .validate_account_path("blobs/account-other")
+            .await
+            .expect("create second account directory");
+        let other_blob = root.path.join("blobs/account-other/blob.bin");
+        std::fs::write(&other_blob, b"other-account").expect("write other account blob");
+
+        let error = storage
+            .remove_blob("blobs/account", "blobs/account-other/blob.bin")
+            .await
+            .expect_err("cross-account delete must fail");
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(
+            storage
+                .open_blob("blobs/account", "blobs/account-other/blob.bin")
+                .await
+                .is_err(),
+            "cross-account read must fail"
+        );
+        assert_eq!(
+            std::fs::read(other_blob).expect("other account blob survives"),
+            b"other-account"
+        );
+    }
+
+    #[tokio::test]
+    async fn normal_relative_blob_round_trip_uses_object_keys() {
+        let root = TestRoot::new();
+        let storage = LocalStorage::new(root.path.clone())
+            .await
+            .expect("create test storage");
+        let account_path = "blobs/account-a";
+        storage
+            .validate_account_path(account_path)
+            .await
+            .expect("create account directory");
+        let upload_id = Uuid::new_v4();
+        let content = b"rooted storage round trip";
+        let spec = part_spec(0, content);
+        storage
+            .put_part(
+                upload_id,
+                &spec,
+                Body::from(content.as_slice()),
+                content.len(),
+            )
+            .await
+            .expect("write rooted part");
+        let (object_key, stored_size) = storage
+            .finalize(
+                account_path,
+                upload_id,
+                std::slice::from_ref(&spec),
+                "photo.jpg",
+                content.len() as u64,
+                &spec.blake3,
+            )
+            .await
+            .expect("finalize rooted blob");
+        assert!(object_key.starts_with("blobs/account-a/"));
+        assert!(!Path::new(&object_key).is_absolute());
+        assert_eq!(stored_size, content.len() as u64);
+
+        let mut blob = storage
+            .open_blob(account_path, &object_key)
+            .await
+            .expect("open rooted blob");
+        let mut restored = Vec::new();
+        blob.read_to_end(&mut restored)
+            .await
+            .expect("read rooted blob");
+        assert_eq!(restored, content);
+        storage
+            .remove_blob(account_path, &object_key)
+            .await
+            .expect("remove rooted blob");
+        assert!(
+            storage.open_blob(account_path, &object_key).await.is_err(),
+            "removed blob remained readable"
+        );
     }
 }

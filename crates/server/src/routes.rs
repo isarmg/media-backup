@@ -470,7 +470,6 @@ async fn complete_upload(
         let (storage_path, stored_size) = state
             .storage
             .finalize(
-                auth.account_id,
                 &policy.storage_path,
                 upload_id,
                 &request.parts,
@@ -572,9 +571,11 @@ async fn resource_content(
 ) -> Result<Response, AppError> {
     let row = sqlx::query(
         r#"
-        SELECT b.storage_path, b.stored_size, b.storage_encoding, r.mime_type
+        SELECT ac.storage_path AS account_storage_path, b.storage_path,
+               b.stored_size, b.storage_encoding, r.mime_type
         FROM resources r
         JOIN assets a ON a.id = r.asset_id
+        JOIN accounts ac ON ac.id = a.account_id
         JOIN blobs b ON b.id = r.blob_id
         WHERE r.id = ? AND a.account_id = ?
         "#,
@@ -584,7 +585,10 @@ async fn resource_content(
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::not_found("resource not found"))?;
-    let file = state.storage.open_blob(row.get("storage_path")).await?;
+    let file = state
+        .storage
+        .open_blob(row.get("account_storage_path"), row.get("storage_path"))
+        .await?;
     let stream = ReaderStream::new(file);
     let mut response = Body::from_stream(stream).into_response();
     response.headers_mut().insert(

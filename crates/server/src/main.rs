@@ -8,6 +8,7 @@ mod error;
 mod library;
 mod metrics;
 mod password;
+mod rooted_fs;
 mod routes;
 mod storage;
 
