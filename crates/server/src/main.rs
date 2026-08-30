@@ -10,6 +10,7 @@ mod library;
 mod login_admission;
 mod metrics;
 mod password;
+mod release;
 mod rooted_fs;
 mod routes;
 mod runtime_lock;
@@ -25,6 +26,7 @@ mod database_tests;
 use anyhow::{Context, Result};
 use config::Config;
 use routes::AppState;
+use std::path::PathBuf;
 use storage::LocalStorage;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -36,6 +38,23 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
     let command = Command::parse(std::env::args().skip(1))?;
+    match &command {
+        Command::ReleaseIdentity => {
+            println!("{}", release::identity_json()?);
+            return Ok(());
+        }
+        Command::ReleaseVerify(root) => {
+            let identity = release::verify(root)?;
+            println!("{}", release::verification_line(&identity));
+            return Ok(());
+        }
+        Command::ReleaseVerifyInstalled(root) => {
+            let identity = release::verify_installed(root)?;
+            println!("{}", release::verification_line(&identity));
+            return Ok(());
+        }
+        Command::Serve | Command::Doctor => {}
+    }
     let config = Config::from_env()?;
     match command {
         Command::Doctor => {
@@ -43,6 +62,11 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Command::Serve => {}
+        Command::ReleaseIdentity
+        | Command::ReleaseVerify(_)
+        | Command::ReleaseVerifyInstalled(_) => {
+            unreachable!("release commands return before configuration is loaded")
+        }
     }
     let _runtime_lock = runtime_lock::RuntimeLock::acquire(&config.database_url, &config.data_dir)?;
     let pool = database::connect(&config.database_url).await?;
@@ -77,6 +101,9 @@ async fn main() -> Result<()> {
 enum Command {
     Serve,
     Doctor,
+    ReleaseIdentity,
+    ReleaseVerify(PathBuf),
+    ReleaseVerifyInstalled(PathBuf),
 }
 
 impl Command {
@@ -86,7 +113,16 @@ impl Command {
             [] => Ok(Self::Serve),
             [command] if command == "serve" => Ok(Self::Serve),
             [command] if command == "doctor" => Ok(Self::Doctor),
-            _ => anyhow::bail!("usage: photo-backup-server [serve|doctor]"),
+            [command] if command == "release-identity" => Ok(Self::ReleaseIdentity),
+            [command, root] if command == "release-verify" => {
+                Ok(Self::ReleaseVerify(PathBuf::from(root)))
+            }
+            [command, root] if command == "release-verify-installed" => {
+                Ok(Self::ReleaseVerifyInstalled(PathBuf::from(root)))
+            }
+            _ => anyhow::bail!(
+                "usage: photo-backup-server [serve|doctor|release-identity|release-verify RELEASE_ROOT|release-verify-installed RELEASE_ROOT]"
+            ),
         };
         parsed.context("invalid command")
     }
@@ -94,6 +130,8 @@ impl Command {
 
 #[cfg(test)]
 mod command_tests {
+    use std::path::PathBuf;
+
     use super::Command;
 
     fn parse(arguments: &[&str]) -> anyhow::Result<Command> {
@@ -105,6 +143,22 @@ mod command_tests {
         assert_eq!(parse(&[]).unwrap(), Command::Serve);
         assert_eq!(parse(&["serve"]).unwrap(), Command::Serve);
         assert_eq!(parse(&["doctor"]).unwrap(), Command::Doctor);
+        assert_eq!(
+            parse(&["release-identity"]).unwrap(),
+            Command::ReleaseIdentity
+        );
+        assert_eq!(
+            parse(&["release-verify", "/opt/isarmg/photo-backup/current"]).unwrap(),
+            Command::ReleaseVerify(PathBuf::from("/opt/isarmg/photo-backup/current"))
+        );
+        assert_eq!(
+            parse(&[
+                "release-verify-installed",
+                "/opt/isarmg/photo-backup/current"
+            ])
+            .unwrap(),
+            Command::ReleaseVerifyInstalled(PathBuf::from("/opt/isarmg/photo-backup/current"))
+        );
         assert!(parse(&["backup", "create"]).is_err());
         assert!(parse(&["backup", "create", "--output", "/tmp/new"]).is_err());
         assert!(parse(&["restore", "--input", "/tmp/snapshot"]).is_err());

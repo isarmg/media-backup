@@ -10,6 +10,7 @@ Group=isarmg-photo
 UMask=0077
 WorkingDirectory=/var/lib/isarmg/photo-backup
 EnvironmentFile=/etc/isarmg/photo-backup.env
+ExecStartPre=/opt/isarmg/photo-backup/current/bin/photo-backup-server release-verify-installed /opt/isarmg/photo-backup/current
 ExecStart=/opt/isarmg/photo-backup/current/bin/photo-backup-server serve
 Restart=on-failure
 RestartSec=3s

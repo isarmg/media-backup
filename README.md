@@ -31,25 +31,38 @@
 
 基础备份能力还包括 SQLite 持久化队列、缺失分块续传、幂等资源提交、账户内内容去重、配额、Android WorkManager 和 iOS 后台 URLSession。手机本地删除默认不会删除服务器副本。
 
-## 服务端启动
+## 服务端发行与启动
 
-在 Debian/Ubuntu/WSL 安装 Rust 和编译依赖后，先构建带锁定依赖的 release 制品，再安装：
+服务器只从完整的 `photo-backup-server-0.2.0-x86_64-unknown-linux-gnu.tar.gz` 发行归档安装，不从 Git checkout、Cargo.toml 或 `PHOTO_BACKUP_BINARY` 推断发行身份。目标机需要 systemd、Python 3 及 GNU coreutils/tar。下载归档及发布页的 `SHA256SUMS` 后，在 Debian/Ubuntu/WSL 解包并执行归档内入口：
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y rustup pkg-config libssl-dev build-essential
-rustup default stable
-cargo build --release --locked -p photo-backup-server
+grep ' photo-backup-server-0.2.0-x86_64-unknown-linux-gnu.tar.gz$' SHA256SUMS | sha256sum --check -
+tar -xzf photo-backup-server-0.2.0-x86_64-unknown-linux-gnu.tar.gz
+cd photo-backup-server-0.2.0-x86_64-unknown-linux-gnu
+./bin/photo-backup-server release-identity
+./bin/photo-backup-server release-verify "$PWD"
 sudo ./scripts/setup-wsl.sh
 sudoedit /etc/isarmg/photo-backup.env
-sudo ./scripts/start-server-wsl.sh
+sudo /opt/isarmg/photo-backup/current/scripts/start-server-wsl.sh
 ```
 
-`setup-wsl.sh` 从 Cargo workspace 读取并校验 `MAJOR.MINOR.PATCH` 版本，把制品安装到不可变的 `/opt/isarmg/photo-backup/releases/<version>/bin`，再通过同目录临时链接和原子重命名切换 `/opt/isarmg/photo-backup/current`。同版本重复安装内容相同时是幂等的；内容不同会直接失败，不会覆盖既有制品。安装器只接受自己管理的 `current` 符号链接，其他安装目标及其父链出现符号链接或特殊文件时都会拒绝。
+`release-identity` 无需数据库、数据目录、管理员密码或其他运行配置，输出机器可读 JSON。严格 manifest 拒绝未知字段，并固定核对 `product=photo-backup-server`、`version=0.2.0`、40 位源码 revision、构建 target、`v2` API、`plain-v1` 存储、服务端 Schema revision/fingerprint、移动 FFI epoch/header fingerprint、内嵌 Web fingerprint 和总契约 fingerprint；它还记录每个 payload 文件的权限、大小与 SHA-256。归档的文件与目录集合必须完全相等，额外/缺失文件、内容或模式变化、符号链接、特殊文件和硬链接别名都会失败。归档同时携带实际运行脚本、systemd unit、配置模板、公开 FFI 头文件、文档和与二进制内嵌内容逐字匹配的管理 Web 资源。
+
+安装器先独立解析并哈希整个归档，再由归档内真实二进制复核 manifest 与自身摘要；因此替换成返回成功的假二进制也不能通过安装预检。验证后，完整发行代安装到不可变的 `/opt/isarmg/photo-backup/releases/0.2.0`，再通过同目录临时链接和原子重命名切换 `/opt/isarmg/photo-backup/current`。同版本重复安装内容相同时是幂等的；内容不同会直接失败，不会覆盖既有制品。安装器只接受固定的 0.2 `current` 链接，其他安装目标及其父链出现符号链接或特殊文件时都会拒绝；生产代由 root 持有，不能由服务用户写入。systemd 的 `ExecStartPre`、手动启动脚本和跟随日志脚本都会在启动前重新验证已安装 manifest、二进制身份和精确文件清单。
+
+维护者从干净的 0.2.0 checkout 生成同一归档时，必须把精确提交注入真实二进制，再运行唯一的归档构建器；输出路径已存在时构建器拒绝覆盖：
+
+```bash
+revision="$(git rev-parse HEAD)"
+PHOTO_BACKUP_SOURCE_REVISION="$revision" cargo build --release --locked -p photo-backup-server
+mkdir -p "$PWD/dist"
+./scripts/build-server-release.sh "$PWD/target/release/photo-backup-server" "$revision" "$PWD/dist"
+./scripts/test-deployment.sh "$PWD/dist/photo-backup-server-0.2.0-x86_64-unknown-linux-gnu.tar.gz"
+```
 
 首次安装会以排他创建方式生成 `/etc/isarmg/photo-backup.env`，权限为 `0600`；重复安装只修正权限，不改配置内容。脚本不会把密码或 Token 写入源码树、命令行或日志，也不会启动服务。必须先用 `sudoedit` 替换自动生成且未回显的 `ADMIN_PASSWORD`、`METRICS_TOKEN`，删除 `# INITIAL-SECRETS-MUST-BE-REPLACED` 标记，再手动运行启动脚本。服务以不可登录的 `isarmg-photo` 用户和组运行，不使用 root 或 PostgreSQL；SQLite 位于 `/var/lib/isarmg/photo-backup/db/app.db`，媒体位于与 `db/` 分离的 `/var/lib/isarmg/photo-backup/data/`。systemd 使用严格只读系统视图，仅放行状态和运行目录写入。
 
-服务仅在 SQLite 主文件不存在时以 `0600` 创建 Photo Backup 0.2.0 当前 Schema，不在产品进程内升级旧库。首次启动会把 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 写入独立的管理员认证表；之后由数据库中的 Argon2 密码摘要完成登录。管理页面位于 `https://你的域名/admin`；管理员先创建普通用户，移动端随后用普通用户账号登录。开发机只读健康检查为 `http://127.0.0.1:8080/health`。`sudo ./scripts/run-server-wsl.sh` 可启动已安装的同一 systemd 服务并跟随 Journal 日志；它和启动脚本都不会读取或执行源码树 `.env`。
+服务仅在 SQLite 主文件不存在时以 `0600` 创建 Photo Backup 0.2.0 当前 Schema，不在产品进程内升级旧库。首次启动会把 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 写入独立的管理员认证表；之后由数据库中的 Argon2 密码摘要完成登录。管理页面位于 `https://你的域名/admin`；管理员先创建普通用户，移动端随后用普通用户账号登录。开发机只读健康检查为 `http://127.0.0.1:8080/health`。`sudo /opt/isarmg/photo-backup/current/scripts/run-server-wsl.sh` 可启动已安装的同一 systemd 服务并跟随 Journal 日志；它和启动脚本都不会读取或执行源码树 `.env`。
 
 一个最小 Caddy 配置如下：
 
@@ -61,7 +74,7 @@ photos.example.com {
 
 Caddy 会自动处理证书并传递 HTTPS 代理信息。必须把直接连接 Axum 的代理 IP/CIDR 精确写入 `TRUSTED_PROXY_CIDRS`，并让代理覆盖或追加 `X-Forwarded-For` 与 `X-Forwarded-Proto`。服务从 Axum 提供的真实 socket peer 开始，由右向左逐跳解析代理链；未受信 peer 的所有转发头都会被忽略。仍应通过防火墙或回环绑定阻止绕过代理。
 
-开发环境变量示例见 [.env.example](.env.example)；生产值只保存在 `/etc/isarmg/photo-backup.env`：
+开发 checkout 的环境变量示例是 `.env.example`，发行归档内的同一模板是 `config/photo-backup.env.example`；生产值只保存在 `/etc/isarmg/photo-backup.env`：
 
 - `DATABASE_URL`：SQLite 连接串，例如 `sqlite:///var/lib/isarmg/photo-backup/db/app.db`。
 - `DATA_DIR`：原始媒体和临时分块根目录。
@@ -131,7 +144,7 @@ open PhotoBackup.xcodeproj
 - SQLite 完整代与 `DATA_DIR` 必须由独立升级/维护工具作为一个一致性单元备份，并遵循至少 3-2-1 策略和定期恢复演练。
 - 指标只提供聚合数量和字节数；审计 API 按序列分页返回设备/API Key 的关键操作。
 - 大规模部署可在 `LocalStorage` 边界后增加 S3/MinIO，但不得改变 `plain-v1` 表示的“原始未加密字节”语义。
-- 推送会运行 Rust、Android 和 iOS CI；版本标签 `vX.Y.Z` 必须与 Cargo 工作区版本一致。
+- 推送会运行 Rust、Android 和 iOS CI，并从真实 server binary 构建、解包和 smoke 测试完整归档。当前发行 workflow 只接受与 Cargo/iOS 版本及精确 checkout 提交一致的不可变 `v0.2.0` tag；若同名 GitHub Release 已存在会直接失败，不复用 tag、不覆盖资产，也不使用 `--clobber`。
 
 ## 许可证与参考边界
 

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+readonly product="photo-backup-server"
+readonly version="0.2.0"
+readonly target="x86_64-unknown-linux-gnu"
+readonly release_contract_sha256="7d547d8300045b8f1b5d82fa3c8480d25eb9f98e84d41e13e80d92186e26bba8"
 readonly service_user="isarmg-photo"
 readonly service_group="isarmg-photo"
 readonly app_dir="/opt/isarmg/photo-backup"
@@ -11,8 +15,6 @@ readonly config_file="/etc/isarmg/photo-backup.env"
 readonly unit_file="/etc/systemd/system/photo-backup.service"
 readonly initial_secret_marker="# INITIAL-SECRETS-MUST-BE-REPLACED"
 
-project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-source_binary="${PHOTO_BACKUP_BINARY:-$project_dir/target/release/photo-backup-server}"
 setup_root="${PHOTO_BACKUP_SETUP_ROOT:-/}"
 test_mode="${PHOTO_BACKUP_SETUP_TEST:-0}"
 release_staging=""
@@ -21,6 +23,14 @@ current_staging=""
 die() {
   printf 'setup error: %s\n' "$*" >&2
   exit 1
+}
+
+rooted() {
+  if [[ "$setup_root" == "/" ]]; then
+    printf '%s\n' "$1"
+  else
+    printf '%s%s\n' "$setup_root" "$1"
+  fi
 }
 
 cleanup() {
@@ -36,44 +46,27 @@ cleanup() {
 }
 trap cleanup EXIT
 
+[[ "$test_mode" == "0" || "$test_mode" == "1" ]] ||
+  die "PHOTO_BACKUP_SETUP_TEST must be 0 or 1"
 if [[ "$test_mode" == "1" ]]; then
   [[ "$setup_root" != "/" ]] || die "test mode refuses the real filesystem root"
-elif [[ "$test_mode" == "0" ]]; then
+else
   [[ "$setup_root" == "/" ]] || die "an alternate root is allowed only in test mode"
   [[ "$EUID" -eq 0 ]] || die "run this setup script as root (or with sudo)"
-else
-  die "PHOTO_BACKUP_SETUP_TEST must be 0 or 1"
 fi
 
 [[ "$setup_root" = /* ]] || die "PHOTO_BACKUP_SETUP_ROOT must be absolute"
 [[ -d "$setup_root" && ! -L "$setup_root" ]] || die "setup root must be a real directory"
 setup_root="$(cd "$setup_root" && pwd -P)"
-[[ -f "$source_binary" && -x "$source_binary" && ! -L "$source_binary" ]] ||
-  die "missing regular release binary: $source_binary"
-[[ -f "$project_dir/scripts/photo-backup.service" &&
-  ! -L "$project_dir/scripts/photo-backup.service" ]] || die "service unit source is invalid"
 
-cargo_version="$({
-  awk '
-    /^\[workspace\.package\]$/ { in_workspace_package = 1; next }
-    /^\[/ { in_workspace_package = 0 }
-    in_workspace_package && /^version[[:space:]]*=/ {
-      gsub(/^[^"]*"|".*$/, "")
-      print
-      exit
-    }
-  ' "$project_dir/Cargo.toml"
-})"
-[[ "$cargo_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
-  die "Cargo workspace version must be a validated MAJOR.MINOR.PATCH value"
-
-rooted() {
-  if [[ "$setup_root" == "/" ]]; then
-    printf '%s\n' "$1"
-  else
-    printf '%s%s\n' "$setup_root" "$1"
-  fi
-}
+invoked_script="${BASH_SOURCE[0]}"
+[[ "$invoked_script" = /* ]] || invoked_script="$PWD/$invoked_script"
+[[ -f "$invoked_script" && ! -L "$invoked_script" ]] ||
+  die "setup must be run from a regular file in an extracted release"
+script_dir="$(cd "$(dirname "$invoked_script")" && pwd -P)"
+release_source_dir="$(cd "$script_dir/.." && pwd -P)"
+[[ "$script_dir" == "$release_source_dir/scripts" ]] ||
+  die "setup is not located in the release scripts directory"
 
 ensure_directory_chain() {
   local logical_path="$1"
@@ -98,6 +91,26 @@ ensure_directory_chain() {
   done
 }
 
+validate_existing_directory_chain() {
+  local logical_path="$1"
+  local prefix=""
+  local actual
+  local component
+  local -a components
+  [[ "$logical_path" = /* && "$logical_path" != *".."* ]] ||
+    die "invalid installation directory path"
+  IFS='/' read -r -a components <<<"${logical_path#/}"
+  for component in "${components[@]}"; do
+    prefix="$prefix/$component"
+    actual="$(rooted "$prefix")"
+    if [[ ! -e "$actual" && ! -L "$actual" ]]; then
+      return
+    fi
+    [[ -d "$actual" && ! -L "$actual" ]] ||
+      die "installation directory chain contains a symlink or special entry: $prefix"
+  done
+}
+
 ensure_single_link_regular_file() {
   local path="$1"
   local label="$2"
@@ -114,56 +127,205 @@ ensure_root_owned_directory() {
   (( (8#$mode & 0022) == 0 )) || die "$label must not be writable by group or other"
 }
 
-validate_release_layout() {
+# Run this independent pass before any payload binary. It rejects replaced fake
+# binaries, extended manifests, and every missing, extra, linked, special, mode-
+# changed, size-changed, or hash-changed payload entry.
+validate_manifest_and_payload() {
   local release_path="$1"
-  local release_bin="$release_path/bin"
-  local installed_binary="$release_bin/photo-backup-server"
-  local -a release_entries
-  local -a bin_entries
-  [[ -d "$release_path" && ! -L "$release_path" ]] ||
-    die "release target is not a real directory"
-  [[ -d "$release_bin" && ! -L "$release_bin" ]] || die "release bin is not a real directory"
-  ensure_single_link_regular_file "$installed_binary" "installed release binary"
-  [[ -x "$installed_binary" ]] || die "installed release binary is not executable"
-  release_entries=("$release_path"/*)
-  bin_entries=("$release_bin"/*)
-  [[ "${#release_entries[@]}" == "1" && "${release_entries[0]}" == "$release_bin" ]] ||
-    die "release directory contains unexpected entries"
-  [[ "${#bin_entries[@]}" == "1" && "${bin_entries[0]}" == "$installed_binary" ]] ||
-    die "release bin contains unexpected entries"
-  [[ "$(stat -c '%a' -- "$release_path")" == "755" &&
-    "$(stat -c '%a' -- "$release_bin")" == "755" &&
-    "$(stat -c '%a' -- "$installed_binary")" == "755" ]] ||
-    die "release permissions differ from the immutable layout"
-  if [[ "$test_mode" == "0" ]]; then
-    [[ "$(stat -c '%u:%g' -- "$release_path")" == "0:0" &&
-      "$(stat -c '%u:%g' -- "$release_bin")" == "0:0" &&
-      "$(stat -c '%u:%g' -- "$installed_binary")" == "0:0" ]] ||
-      die "release layout must be owned by root"
-  fi
+  python3 - "$release_path" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+root = Path(sys.argv[1])
+expected_identity_keys = {
+    "product", "version", "source_revision", "target", "api_version",
+    "storage_encoding", "server_schema_revision", "server_schema_sha256",
+    "mobile_ffi_epoch", "mobile_ffi_header_sha256", "web_assets_sha256",
+    "release_contract_sha256",
+}
+expected_identity = {
+    "product": "photo-backup-server",
+    "version": "0.2.0",
+    "target": "x86_64-unknown-linux-gnu",
+    "api_version": "v2",
+    "storage_encoding": "plain-v1",
+    "server_schema_revision": 1,
+    "server_schema_sha256": "57c9282c425d2fe1baab63bfce2fa9d947b26b5bf3367750b0308aa442ccba0a",
+    "mobile_ffi_epoch": "photo-backup-mobile-v0.2-r1",
+    "mobile_ffi_header_sha256": "f5402b3d56e4ecefdfea2c3e849cfc05105fac27b5c6006c8215bfb9fde03dd1",
+    "web_assets_sha256": "10bb925cddc93012aee85a02f9e3bb2e724dd75c822247c5a9fb8dfa9699f0dd",
+    "release_contract_sha256": "7d547d8300045b8f1b5d82fa3c8480d25eb9f98e84d41e13e80d92186e26bba8",
+}
+expected_directories = {
+    "bin", "config", "docs", "include", "scripts", "share", "share/web", "systemd",
+}
+expected_files = {
+    "LICENSE": 0o644,
+    "bin/photo-backup-server": 0o755,
+    "config/photo-backup.env.example": 0o644,
+    "docs/IMMICH_COMPARISON.md": 0o644,
+    "README.md": 0o644,
+    "include/photo_backup_v0_2_r1.h": 0o644,
+    "scripts/run-server-wsl.sh": 0o755,
+    "scripts/setup-wsl.sh": 0o755,
+    "scripts/start-server-wsl.sh": 0o755,
+    "scripts/verify-server-wsl.sh": 0o755,
+    "share/web/admin.css": 0o644,
+    "share/web/admin.html": 0o644,
+    "share/web/sarmg-design.css": 0o644,
+    "systemd/photo-backup.service": 0o644,
 }
 
-validate_release() {
+def fail(message):
+    raise SystemExit("independent release verification failed: " + message)
+
+def metadata(path, mode, label):
+    try:
+        value = path.lstat()
+    except OSError as error:
+        fail(f"cannot inspect {label}: {error}")
+    if not stat.S_ISREG(value.st_mode) or path.is_symlink():
+        fail(f"{label} is not a regular non-symlink file")
+    if value.st_nlink != 1:
+        fail(f"{label} has a hard-link alias")
+    if stat.S_IMODE(value.st_mode) != mode:
+        fail(f"{label} has the wrong mode")
+    return value
+
+try:
+    root_metadata = root.lstat()
+except OSError as error:
+    fail(f"cannot inspect release root: {error}")
+if not root.is_absolute() or root.is_symlink() or not stat.S_ISDIR(root_metadata.st_mode):
+    fail("release root must be an absolute real directory")
+if stat.S_IMODE(root_metadata.st_mode) != 0o755:
+    fail("release root has the wrong mode")
+
+manifest_path = root / "release-manifest.json"
+manifest_metadata = metadata(manifest_path, 0o644, "release manifest")
+if manifest_metadata.st_size > 1024 * 1024:
+    fail("release manifest exceeds its size limit")
+try:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    fail(f"cannot parse release manifest: {error}")
+if not isinstance(manifest, dict) or set(manifest) != {"manifest_version", "identity", "files"}:
+    fail("release manifest has an unknown or missing field")
+if type(manifest["manifest_version"]) is not int or manifest["manifest_version"] != 1:
+    fail("release manifest version is not 1")
+identity = manifest["identity"]
+if not isinstance(identity, dict) or set(identity) != expected_identity_keys:
+    fail("release identity has an unknown or missing field")
+for field, expected in expected_identity.items():
+    if identity.get(field) != expected or type(identity.get(field)) is not type(expected):
+        fail(f"release identity mismatch for {field}")
+revision = identity.get("source_revision")
+if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+    fail("source revision is not 40 lowercase hexadecimal characters")
+for field in ("server_schema_sha256", "mobile_ffi_header_sha256", "web_assets_sha256", "release_contract_sha256"):
+    if re.fullmatch(r"[0-9a-f]{64}", identity[field]) is None:
+        fail(f"invalid SHA-256 identity field {field}")
+
+files = manifest["files"]
+if not isinstance(files, list) or len(files) != len(expected_files):
+    fail("manifest file count differs from the current contract")
+declared = []
+for entry in files:
+    if not isinstance(entry, dict) or set(entry) != {"path", "mode", "size", "sha256"}:
+        fail("manifest file entry has an unknown or missing field")
+    relative = entry["path"]
+    if not isinstance(relative, str) or relative not in expected_files:
+        fail("manifest contains an unexpected file")
+    if type(entry["mode"]) is not int or entry["mode"] != expected_files[relative]:
+        fail(f"manifest mode mismatch for {relative}")
+    if type(entry["size"]) is not int or entry["size"] < 0:
+        fail(f"manifest size is invalid for {relative}")
+    digest = entry["sha256"]
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        fail(f"manifest SHA-256 is invalid for {relative}")
+    value = metadata(root / relative, expected_files[relative], relative)
+    hasher = hashlib.sha256()
+    with (root / relative).open("rb") as source:
+        while chunk := source.read(65536):
+            hasher.update(chunk)
+    if value.st_size != entry["size"] or hasher.hexdigest() != digest:
+        fail(f"payload size or SHA-256 mismatch for {relative}")
+    declared.append(relative)
+if declared != sorted(expected_files):
+    fail("manifest files are not the exact sorted current file set")
+
+actual_directories = set()
+actual_files = set()
+for directory, directory_names, file_names in os.walk(root, topdown=True, followlinks=False):
+    relative_directory = Path(directory).relative_to(root)
+    for name in directory_names:
+        child = Path(directory) / name
+        value = child.lstat()
+        relative = (relative_directory / name).as_posix()
+        if child.is_symlink() or not stat.S_ISDIR(value.st_mode):
+            fail(f"release contains a linked or special directory: {relative}")
+        if stat.S_IMODE(value.st_mode) != 0o755:
+            fail(f"release directory has the wrong mode: {relative}")
+        actual_directories.add(relative)
+    for name in file_names:
+        child = Path(directory) / name
+        value = child.lstat()
+        relative = (relative_directory / name).as_posix()
+        if child.is_symlink() or not stat.S_ISREG(value.st_mode):
+            fail(f"release contains a linked or special file: {relative}")
+        actual_files.add(relative)
+if actual_directories != expected_directories:
+    fail("release has missing or extra directories")
+if actual_files != set(expected_files) | {"release-manifest.json"}:
+    fail("release has missing or extra files")
+PY
+}
+
+verified_revision=""
+verify_release() {
   local release_path="$1"
-  local installed_binary="$release_path/bin/photo-backup-server"
-  validate_release_layout "$release_path"
-  cmp --silent -- "$source_binary" "$installed_binary" ||
-    die "release $cargo_version already exists with different binary content"
+  local ownership_mode="$2"
+  local binary="$release_path/bin/photo-backup-server"
+  local command="release-verify"
+  local output
+  local marker
+  local output_product
+  local output_version
+  local output_revision
+  local output_target
+  local output_contract
+  local extra
+
+  validate_manifest_and_payload "$release_path" || die "release manifest or payload is invalid"
+  if [[ "$ownership_mode" == "installed" ]]; then
+    command="release-verify-installed"
+  fi
+  output="$("$binary" "$command" "$release_path")" || die "release binary rejected its manifest"
+  [[ "$output" != *$'\n'* ]] || die "release verifier returned multiple lines"
+  IFS=$'\t' read -r marker output_product output_version output_revision output_target output_contract extra <<<"$output"
+  [[ -z "${extra:-}" && "$marker" == "PHOTO_BACKUP_RELEASE_VERIFIED_V1" &&
+    "$output_product" == "$product" && "$output_version" == "$version" &&
+    "$output_revision" =~ ^[0-9a-f]{40}$ && "$output_target" == "$target" &&
+    "$output_contract" == "$release_contract_sha256" ]] ||
+    die "release verifier returned an unexpected 0.2 identity"
+  verified_revision="$output_revision"
 }
 
 validate_current_link() {
   local current_path="$1"
-  local target
-  local target_version
+  local expected_target="releases/$version"
   if [[ ! -e "$current_path" && ! -L "$current_path" ]]; then
     return
   fi
   [[ -L "$current_path" ]] || die "current must be an installer-managed symbolic link"
-  target="$(readlink -- "$current_path")"
-  [[ "$target" =~ ^releases/([0-9]+\.[0-9]+\.[0-9]+)$ ]] ||
-    die "current points outside the managed releases directory"
-  target_version="${BASH_REMATCH[1]}"
-  validate_release_layout "$(rooted "$releases_dir/$target_version")"
+  [[ "$(readlink -- "$current_path")" == "$expected_target" ]] ||
+    die "current is not the Photo Backup 0.2 release link"
+  [[ -d "$(rooted "$releases_dir/$version")" ]] || die "current points to a missing release"
 }
 
 random_hex_256() {
@@ -173,8 +335,42 @@ random_hex_256() {
   printf '%s\n' "$value"
 }
 
-shopt -s nullglob dotglob
+verify_release "$release_source_dir" archive
+source_revision="$verified_revision"
 
+# Reject incompatible or unsafe pre-existing targets before creating any install,
+# state, configuration, or systemd directory.
+for logical_directory in "$releases_dir" "/etc/isarmg" "/etc/systemd/system" \
+  "$state_dir/db" "$state_dir/data"; do
+  validate_existing_directory_chain "$logical_directory"
+done
+preflight_release_path="$(rooted "$releases_dir/$version")"
+preflight_current_path="$(rooted "$current_link")"
+preflight_config_path="$(rooted "$config_file")"
+preflight_unit_path="$(rooted "$unit_file")"
+validate_current_link "$preflight_current_path"
+if [[ -e "$preflight_release_path" || -L "$preflight_release_path" ]]; then
+  [[ -d "$preflight_release_path" && ! -L "$preflight_release_path" ]] ||
+    die "release target is not a real directory"
+  if [[ "$test_mode" == "0" ]]; then
+    verify_release "$preflight_release_path" installed
+  else
+    verify_release "$preflight_release_path" archive
+  fi
+  [[ "$verified_revision" == "$source_revision" ]] ||
+    die "release 0.2.0 already exists with a different source revision"
+  cmp --silent -- "$release_source_dir/release-manifest.json" \
+    "$preflight_release_path/release-manifest.json" ||
+    die "release 0.2.0 already exists with different immutable content"
+fi
+if [[ -e "$preflight_config_path" || -L "$preflight_config_path" ]]; then
+  ensure_single_link_regular_file "$preflight_config_path" "configuration"
+fi
+if [[ -e "$preflight_unit_path" || -L "$preflight_unit_path" ]]; then
+  ensure_single_link_regular_file "$preflight_unit_path" "systemd unit"
+fi
+
+shopt -s nullglob dotglob
 ensure_directory_chain "$releases_dir"
 ensure_directory_chain "/etc/isarmg"
 ensure_directory_chain "/etc/systemd/system"
@@ -182,7 +378,7 @@ ensure_directory_chain "$state_dir/db"
 ensure_directory_chain "$state_dir/data"
 
 releases_path="$(rooted "$releases_dir")"
-release_path="$(rooted "$releases_dir/$cargo_version")"
+release_path="$(rooted "$releases_dir/$version")"
 current_path="$(rooted "$current_link")"
 state_path="$(rooted "$state_dir")"
 config_path="$(rooted "$config_file")"
@@ -201,7 +397,14 @@ fi
 
 validate_current_link "$current_path"
 if [[ -e "$release_path" || -L "$release_path" ]]; then
-  validate_release "$release_path"
+  [[ -d "$release_path" && ! -L "$release_path" ]] || die "release target is not a real directory"
+  if [[ "$test_mode" == "0" ]]; then
+    verify_release "$release_path" installed
+  else
+    verify_release "$release_path" archive
+  fi
+  cmp --silent -- "$release_source_dir/release-manifest.json" "$release_path/release-manifest.json" ||
+    die "release 0.2.0 already exists with different immutable content"
 fi
 if [[ -e "$config_path" || -L "$config_path" ]]; then
   ensure_single_link_regular_file "$config_path" "configuration"
@@ -217,12 +420,8 @@ if [[ "$test_mode" == "0" ]]; then
     groupadd --system "$service_group"
   fi
   if ! id -u "$service_user" >/dev/null 2>&1; then
-    useradd --system \
-      --gid "$service_group" \
-      --home-dir "$state_dir" \
-      --no-create-home \
-      --shell /usr/sbin/nologin \
-      "$service_user"
+    useradd --system --gid "$service_group" --home-dir "$state_dir" --no-create-home \
+      --shell /usr/sbin/nologin "$service_user"
   fi
   [[ "$(id -u "$service_user")" != "0" ]] || die "service account must not be root"
   [[ "$(id -g "$service_user")" == "$(getent group "$service_group" | cut -d: -f3)" ]] ||
@@ -234,18 +433,30 @@ if [[ "$test_mode" == "0" ]]; then
 fi
 
 chmod 0755 "$(rooted "$app_dir")" "$releases_path"
-if [[ ! -e "$release_path" ]]; then
-  release_staging="$(mktemp -d -- "$releases_path/.install-$cargo_version.XXXXXX")"
+if [[ ! -e "$release_path" && ! -L "$release_path" ]]; then
+  release_staging="$(mktemp -d -- "$releases_path/.install-$version.XXXXXX")"
   chmod 0755 "$release_staging"
-  mkdir -m 0755 -- "$release_staging/bin"
-  install -m 0755 "$source_binary" "$release_staging/bin/photo-backup-server"
-  if mv -T -n -- "$release_staging" "$release_path"; then
-    if [[ ! -e "$release_staging" ]]; then
-      release_staging=""
-    fi
+  cp -a --no-preserve=ownership -- "$release_source_dir/." "$release_staging/"
+  if [[ "$test_mode" == "0" ]]; then
+    chown -R root:root "$release_staging"
+    verify_release "$release_staging" installed
+  else
+    verify_release "$release_staging" archive
+  fi
+  mv -T -n -- "$release_staging" "$release_path"
+  if [[ ! -e "$release_staging" ]]; then
+    release_staging=""
   fi
 fi
-validate_release "$release_path"
+[[ -d "$release_path" && ! -L "$release_path" ]] || die "could not install immutable release"
+if [[ "$test_mode" == "0" ]]; then
+  verify_release "$release_path" installed
+else
+  verify_release "$release_path" archive
+fi
+[[ "$verified_revision" == "$source_revision" ]] || die "installed release revision changed during setup"
+cmp --silent -- "$release_source_dir/release-manifest.json" "$release_path/release-manifest.json" ||
+  die "installed release differs from the supplied immutable archive"
 
 chmod 0750 "$state_path" "$state_path/db" "$state_path/data"
 if [[ "$test_mode" == "0" ]]; then
@@ -290,10 +501,13 @@ if [[ "$test_mode" == "0" ]]; then
   chown root:root "$config_path"
 fi
 
-install -m 0644 "$project_dir/scripts/photo-backup.service" "$unit_path"
+install -m 0644 "$release_path/systemd/photo-backup.service" "$unit_path"
 ensure_single_link_regular_file "$unit_path" "systemd unit"
+if [[ "$test_mode" == "0" ]]; then
+  chown root:root "$unit_path"
+fi
 
-desired_target="releases/$cargo_version"
+desired_target="releases/$version"
 if [[ ! -L "$current_path" || "$(readlink -- "$current_path")" != "$desired_target" ]]; then
   for attempt in {1..20}; do
     candidate="$(rooted "$app_dir/.current-$BASHPID-$RANDOM-$attempt")"
@@ -308,6 +522,7 @@ if [[ ! -L "$current_path" || "$(readlink -- "$current_path")" != "$desired_targ
 fi
 
 if [[ "$test_mode" == "0" ]]; then
+  "$release_path/bin/photo-backup-server" release-verify-installed "$current_path" >/dev/null
   systemctl daemon-reload
 fi
 
@@ -318,4 +533,5 @@ else
 fi
 printf 'Before first start, use sudoedit %s to replace both generated secrets and remove %s.\n' \
   "$config_file" "$initial_secret_marker"
-printf 'Installed Photo Backup %s; the service was not started.\n' "$cargo_version"
+printf 'Installed Photo Backup %s from source revision %s; the service was not started.\n' \
+  "$version" "$source_revision"

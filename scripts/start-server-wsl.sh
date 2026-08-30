@@ -1,29 +1,54 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly binary="/opt/isarmg/photo-backup/current/bin/photo-backup-server"
+readonly release="/opt/isarmg/photo-backup/releases/0.2.0"
+readonly current="/opt/isarmg/photo-backup/current"
+readonly binary="$current/bin/photo-backup-server"
 readonly config="/etc/isarmg/photo-backup.env"
+readonly unit="/etc/systemd/system/photo-backup.service"
 readonly marker="# INITIAL-SECRETS-MUST-BE-REPLACED"
+readonly contract="7d547d8300045b8f1b5d82fa3c8480d25eb9f98e84d41e13e80d92186e26bba8"
 
-[[ "$EUID" -eq 0 ]] || {
-  echo "Run this script as root (or with sudo)." >&2
+fail() {
+  printf 'start error: %s\n' "$*" >&2
   exit 1
 }
-[[ -x "$binary" ]] || {
-  echo "Missing installed release binary; run scripts/setup-wsl.sh after building it." >&2
-  exit 1
+
+verify_installed_release() {
+  local output line_marker product version revision target fingerprint extra directory mode
+  for directory in /opt /opt/isarmg /opt/isarmg/photo-backup \
+    /opt/isarmg/photo-backup/releases "$release"; do
+    [[ -d "$directory" && ! -L "$directory" ]] || fail "invalid release directory: $directory"
+    [[ "$(stat -c '%u:%g' -- "$directory")" == "0:0" ]] ||
+      fail "release directory is not root-owned: $directory"
+    mode="$(stat -c '%a' -- "$directory")"
+    (( (8#$mode & 0022) == 0 )) || fail "release directory is group/other writable: $directory"
+  done
+  [[ -L "$current" && "$(readlink -- "$current")" == "releases/0.2.0" ]] ||
+    fail "current is not the managed Photo Backup 0.2 link"
+  [[ "$(readlink -f -- "$current")" == "$release" ]] || fail "current resolves outside the release"
+  [[ -x "$binary" ]] || fail "missing installed Photo Backup 0.2 binary"
+  output="$("$binary" release-verify-installed "$current")" ||
+    fail "installed release manifest, identity, or payload verification failed"
+  [[ "$output" != *$'\n'* ]] || fail "release verifier returned multiple lines"
+  IFS=$'\t' read -r line_marker product version revision target fingerprint extra <<<"$output"
+  [[ -z "${extra:-}" && "$line_marker" == "PHOTO_BACKUP_RELEASE_VERIFIED_V1" &&
+    "$product" == "photo-backup-server" && "$version" == "0.2.0" &&
+    "$revision" =~ ^[0-9a-f]{40}$ && "$target" == "x86_64-unknown-linux-gnu" &&
+    "$fingerprint" == "$contract" ]] || fail "installed release returned an unexpected identity"
+  [[ -f "$unit" && ! -L "$unit" && "$(stat -c '%a:%u:%g:%h' -- "$unit")" == "644:0:0:1" ]] ||
+    fail "installed systemd unit is not immutable root-owned release content"
+  cmp --silent -- "$release/systemd/photo-backup.service" "$unit" ||
+    fail "installed systemd unit differs from the verified release"
 }
-[[ -f "$config" && ! -L "$config" ]] || {
-  echo "Missing regular production configuration: $config" >&2
-  exit 1
-}
-[[ "$(stat -c '%a:%u:%g:%h' "$config")" == "600:0:0:1" ]] || {
-  echo "Production configuration must be root-owned, mode 0600, and have one hard link." >&2
-  exit 1
-}
+
+[[ "$EUID" -eq 0 ]] || fail "run this script as root (or with sudo)"
+verify_installed_release
+[[ -f "$config" && ! -L "$config" ]] || fail "missing regular production configuration: $config"
+[[ "$(stat -c '%a:%u:%g:%h' -- "$config")" == "600:0:0:1" ]] ||
+  fail "production configuration must be root-owned, mode 0600, and have one hard link"
 if grep -Fqx "$marker" "$config"; then
-  echo "Replace the generated secrets in $config and remove the initial-secret marker first." >&2
-  exit 1
+  fail "replace the generated secrets in $config and remove the initial-secret marker first"
 fi
 
 systemctl enable --now photo-backup.service
