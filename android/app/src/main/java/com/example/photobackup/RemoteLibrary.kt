@@ -12,7 +12,6 @@ data class RemoteResource(
     val filename: String,
     val mimeType: String,
     val contentPath: String,
-    val storageEncoding: String,
 )
 
 data class RemoteAsset(
@@ -55,9 +54,6 @@ object RemoteLibrary {
         val resource = asset.resources.firstOrNull { it.role == "primary" }
             ?: asset.resources.firstOrNull { it.role != "thumbnail" }
             ?: error("该资产没有可恢复的原始资源")
-        if (resource.storageEncoding != "plain-v1") {
-            error("旧版端到端加密资源需要使用旧客户端解密并重新上传")
-        }
         val collection = if (resource.mimeType.startsWith("video/")) {
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         } else {
@@ -86,7 +82,7 @@ object RemoteLibrary {
     }
 
     fun thumbnail(api: BackupApi, asset: RemoteAsset): ByteArray? {
-        val resource = asset.resources.firstOrNull { it.role == "thumbnail" && it.storageEncoding == "plain-v1" }
+        val resource = asset.resources.firstOrNull { it.role == "thumbnail" }
             ?: return null
         return api.downloadBytes(resource.contentPath)
     }
@@ -106,6 +102,9 @@ object RemoteLibrary {
             resources = buildList {
                 for (position in 0 until resources.length()) {
                     val resource = resources.getJSONObject(position)
+                    check(resource.getString("storage_encoding") == "plain-v1") {
+                        "服务器返回了非当前存储协议"
+                    }
                     add(
                         RemoteResource(
                             id = resource.getString("resource_id"),
@@ -113,7 +112,6 @@ object RemoteLibrary {
                             filename = resource.getString("filename"),
                             mimeType = resource.getString("mime_type"),
                             contentPath = resource.getString("content_path"),
-                            storageEncoding = resource.getString("storage_encoding"),
                         ),
                     )
                 }

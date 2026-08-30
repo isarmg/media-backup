@@ -31,7 +31,7 @@ pub async fn prometheus(
           (SELECT COUNT(*) FROM assets WHERE deleted_at IS NULL) AS assets,
           (SELECT COUNT(*) FROM assets WHERE deleted_at IS NOT NULL) AS trashed_assets,
           (SELECT COUNT(*) FROM uploads WHERE state = 'uploading') AS active_uploads,
-          (SELECT COALESCE(SUM(stored_size), 0) FROM blobs WHERE storage_encoding = 'plain-v1') AS stored_bytes,
+          (SELECT COALESCE(SUM(stored_size), 0) FROM blobs) AS stored_bytes,
           (SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL) AS api_keys
         "#,
     )

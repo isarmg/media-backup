@@ -48,23 +48,16 @@ CREATE TABLE assets (
 CREATE TABLE blobs (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    dedup_token TEXT NOT NULL,
     plaintext_size INTEGER NOT NULL,
-    ciphertext_size INTEGER,
     stored_size INTEGER NOT NULL,
     storage_path TEXT NOT NULL,
-    wrapped_key TEXT,
-    key_nonce TEXT,
-    nonce_prefix TEXT,
     part_manifest TEXT NOT NULL,
-    content_blake3 TEXT,
-    storage_encoding TEXT NOT NULL DEFAULT 'legacy-e2ee-v1',
-    created_at TEXT NOT NULL,
-    UNIQUE(account_id, dedup_token)
+    content_blake3 TEXT NOT NULL,
+    storage_encoding TEXT NOT NULL CHECK (storage_encoding = 'plain-v1'),
+    created_at TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX blobs_plain_content_unique_idx
-    ON blobs(account_id, content_blake3) WHERE storage_encoding = 'plain-v1';
+CREATE UNIQUE INDEX blobs_content_unique_idx ON blobs(account_id, content_blake3);
 
 CREATE TABLE resources (
     id TEXT PRIMARY KEY,
@@ -74,8 +67,6 @@ CREATE TABLE resources (
     role TEXT NOT NULL,
     filename TEXT NOT NULL,
     mime_type TEXT NOT NULL,
-    metadata_nonce TEXT,
-    metadata_ciphertext TEXT,
     metadata TEXT,
     created_at TEXT NOT NULL,
     UNIQUE(asset_id, source_resource_id)
@@ -87,7 +78,7 @@ CREATE TABLE uploads (
     device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
     asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
     source_resource_id TEXT NOT NULL,
-    dedup_token TEXT NOT NULL,
+    content_blake3 TEXT NOT NULL,
     request TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'uploading',
     error TEXT,
@@ -118,7 +109,7 @@ CREATE TABLE uploads (
 );
 
 CREATE INDEX uploads_lookup_idx
-    ON uploads(account_id, device_id, source_resource_id, dedup_token, state);
+    ON uploads(account_id, device_id, source_resource_id, content_blake3, state);
 CREATE INDEX uploads_commit_reconcile_idx
     ON uploads(commit_state, updated_at);
 

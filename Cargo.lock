@@ -1113,12 +1113,16 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 name = "photo-backup-agent-core"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "blake3",
+ "libc",
  "photo-backup-crypto",
  "photo-backup-protocol",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror 2.0.20",
  "uuid",
 ]

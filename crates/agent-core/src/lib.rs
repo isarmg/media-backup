@@ -5,8 +5,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod database;
+
 use photo_backup_crypto::prepare_file;
-use photo_backup_protocol::{CreateUploadRequest, MediaKind};
+use photo_backup_protocol::{CreateUploadRequest, MediaKind, StorageEncoding};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -22,6 +24,8 @@ pub enum AgentError {
     Content(#[from] photo_backup_crypto::ContentError),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("agent database is not exactly current: {0}")]
+    CurrentState(#[from] anyhow::Error),
     #[error("job not found")]
     NotFound,
     #[error("invalid media kind: {0}")]
@@ -85,58 +89,7 @@ pub struct Agent {
 
 impl Agent {
     pub fn open(path: impl AsRef<Path>, config: AgentConfig) -> Result<Self, AgentError> {
-        let connection = Connection::open(path)?;
-        connection.pragma_update(None, "journal_mode", "WAL")?;
-        connection.pragma_update(None, "foreign_keys", "ON")?;
-        connection.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS jobs (
-                id TEXT PRIMARY KEY,
-                source_asset_id TEXT NOT NULL,
-                source_resource_id TEXT NOT NULL,
-                media_kind TEXT NOT NULL,
-                role TEXT NOT NULL,
-                file_path TEXT NOT NULL,
-                filename TEXT NOT NULL,
-                mime_type TEXT NOT NULL,
-                source_created_at_ms INTEGER NOT NULL,
-                modified_ms INTEGER NOT NULL,
-                source_size INTEGER NOT NULL,
-                metadata_json TEXT,
-                remove_source_after_prepare INTEGER NOT NULL DEFAULT 0,
-                state TEXT NOT NULL,
-                prepared_json TEXT,
-                upload_id TEXT,
-                retry_count INTEGER NOT NULL DEFAULT 0,
-                next_retry_ms INTEGER NOT NULL DEFAULT 0,
-                error TEXT,
-                updated_at_ms INTEGER NOT NULL,
-                UNIQUE(source_asset_id, source_resource_id)
-            );
-            CREATE TABLE IF NOT EXISTS job_parts (
-                job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-                part_index INTEGER NOT NULL,
-                uploaded INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY(job_id, part_index)
-            );
-            "#,
-        )?;
-        connection.execute_batch(
-            r#"
-            DELETE FROM job_parts
-            WHERE job_id IN (
-                SELECT id FROM jobs
-                WHERE prepared_json IS NOT NULL
-                  AND prepared_json NOT LIKE '%"content_blake3"%'
-            );
-            UPDATE jobs SET
-                state = 'discovered', prepared_json = NULL, upload_id = NULL,
-                retry_count = 0, next_retry_ms = 0,
-                error = 'legacy encrypted job must be prepared from the original file'
-            WHERE prepared_json IS NOT NULL
-              AND prepared_json NOT LIKE '%"content_blake3"%';
-            "#,
-        )?;
+        let connection = database::open_current(path.as_ref())?;
         connection.execute(
             "UPDATE jobs SET state = 'ready', upload_id = NULL WHERE state IN ('preparing', 'uploading') AND prepared_json IS NOT NULL",
             [],
@@ -350,6 +303,7 @@ impl Agent {
             filename: input.filename.clone(),
             mime_type: input.mime_type.clone(),
             source_created_at_ms: input.source_created_at_ms,
+            storage_encoding: StorageEncoding::PlainV1,
             content_size: content.content_size,
             content_blake3: content.content_blake3,
             metadata: input
@@ -514,6 +468,11 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeMap, fs::File};
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
 
     #[test]
@@ -541,6 +500,7 @@ mod tests {
             })
             .unwrap();
         let prepared = agent.next_prepared(&root).unwrap().unwrap();
+        assert_eq!(prepared.request.storage_encoding, StorageEncoding::PlainV1);
         assert_eq!(prepared.request.content_size, original.len() as u64);
         assert_eq!(
             prepared.request.content_blake3,
@@ -558,63 +518,289 @@ mod tests {
     }
 
     #[test]
-    fn legacy_encrypted_jobs_are_requeued_from_the_original_library() {
-        let root = std::env::temp_dir().join(format!("photo-backup-legacy-{}", Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-        let database = root.join("agent.sqlite");
-        let agent = Agent::open(&database, AgentConfig { part_size: 16 }).unwrap();
-        agent
-            .connection
-            .lock()
-            .unwrap()
-            .execute(
-                r#"
-                INSERT INTO jobs(
-                    id, source_asset_id, source_resource_id, media_kind, role, file_path,
-                    filename, mime_type, source_created_at_ms, modified_ms, source_size,
-                    remove_source_after_prepare, state, prepared_json, updated_at_ms
-                ) VALUES (?1, ?2, ?3, 'photo', 'primary', ?4, 'old.jpg', 'image/jpeg',
-                          1, 7, 3, 1, 'complete', ?5, 1)
-                "#,
-                params![
-                    "legacy-job",
-                    "legacy-asset",
-                    "legacy-resource",
-                    root.join("removed-source").to_string_lossy(),
-                    r#"{"request":{"wrapped_key":"legacy"}}"#,
-                ],
+    fn fresh_agent_database_has_exact_current_metadata_and_schema() {
+        let root = tempfile::tempdir().unwrap();
+        let database_path = root.path().join("agent.sqlite3");
+        drop(Agent::open(&database_path, AgentConfig { part_size: 16 }).unwrap());
+
+        #[cfg(unix)]
+        assert_eq!(
+            fs::metadata(&database_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let connection = Connection::open(&database_path).unwrap();
+        let metadata: (String, String, i64, String) = connection
+            .query_row(
+                "SELECT application, application_version, schema_revision, schema_sha256
+                 FROM product_metadata WHERE singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
-        drop(agent);
+        assert_eq!(metadata.0, database::tests_support::APPLICATION);
+        assert_eq!(metadata.1, env!("CARGO_PKG_VERSION"));
+        assert_eq!(metadata.2, database::CURRENT_SCHEMA_REVISION);
+        assert_eq!(metadata.3, database::CURRENT_SCHEMA_SHA256);
+        assert_eq!(
+            database::tests_support::fingerprint(&connection).unwrap(),
+            database::CURRENT_SCHEMA_SHA256
+        );
+    }
 
-        let agent = Agent::open(&database, AgentConfig { part_size: 16 }).unwrap();
-        assert!(agent
-            .needs_resource("legacy-asset", "legacy-resource", 7)
+    #[test]
+    fn old_or_empty_agent_databases_are_rejected_without_byte_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("old.sqlite3");
+        let connection = Connection::open(&old).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE jobs(
+                    id TEXT PRIMARY KEY,
+                    prepared_json TEXT,
+                    state TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+        drop(connection);
+        secure_permissions(&old);
+        assert_rejected_without_byte_changes(&old);
+
+        let empty = root.path().join("empty.sqlite3");
+        File::create(&empty).unwrap();
+        secure_permissions(&empty);
+        assert_rejected_without_byte_changes(&empty);
+        assert_eq!(fs::metadata(empty).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn nonexact_agent_metadata_and_schema_are_read_only_rejections() {
+        for (name, statement) in [
+            (
+                "wrong-application",
+                "UPDATE product_metadata SET application = 'photo-backup'",
+            ),
+            (
+                "old-version",
+                "UPDATE product_metadata SET application_version = '0.1.0'",
+            ),
+            (
+                "wrong-revision",
+                "UPDATE product_metadata SET schema_revision = 2",
+            ),
+            (
+                "wrong-fingerprint",
+                "UPDATE product_metadata SET schema_sha256 = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'",
+            ),
+            (
+                "schema-drift",
+                "CREATE TABLE unexpected_agent_table(id INTEGER)",
+            ),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join(format!("{name}.sqlite3"));
+            database::tests_support::initialize(&path).unwrap();
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch("PRAGMA journal_mode=DELETE;").unwrap();
+            connection.execute_batch(statement).unwrap();
+            drop(connection);
+            assert_rejected_without_byte_changes(&path);
+        }
+    }
+
+    #[test]
+    fn agent_metadata_table_contract_is_exact_and_rejection_is_read_only() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("metadata-contract.sqlite3");
+        database::tests_support::initialize(&path).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("PRAGMA journal_mode=DELETE;")
+            .unwrap();
+        connection
+            .execute_batch(&format!(
+                "DROP TABLE product_metadata;
+                 CREATE TABLE product_metadata (
+                     singleton INTEGER PRIMARY KEY,
+                     application TEXT NOT NULL,
+                     application_version TEXT NOT NULL,
+                     schema_revision INTEGER NOT NULL,
+                     schema_sha256 TEXT NOT NULL
+                 );
+                 INSERT INTO product_metadata VALUES (
+                     1, '{}', '{}', {}, '{}'
+                 );",
+                database::tests_support::APPLICATION,
+                env!("CARGO_PKG_VERSION"),
+                database::CURRENT_SCHEMA_REVISION,
+                database::CURRENT_SCHEMA_SHA256,
+            ))
+            .unwrap();
+        drop(connection);
+        assert_rejected_without_byte_changes(&path);
+    }
+
+    #[test]
+    fn absent_main_with_sidecar_and_file_aliases_fail_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("missing.sqlite3");
+        let orphan = sidecar(&missing, "-wal");
+        fs::write(&orphan, b"orphan-generation-evidence").unwrap();
+        let before = fs::read(&orphan).unwrap();
+        let result = Agent::open(&missing, AgentConfig { part_size: 16 });
+        assert!(result.is_err());
+        assert!(!missing.exists());
+        assert!(fs::read(orphan).unwrap() == before);
+
+        let current = root.path().join("current.sqlite3");
+        database::tests_support::initialize(&current).unwrap();
+        let before = generation_bytes(&current);
+        let symbolic = root.path().join("symbolic.sqlite3");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&current, &symbolic).unwrap();
+            assert!(Agent::open(&symbolic, AgentConfig { part_size: 16 }).is_err());
+            assert!(generation_bytes(&current) == before);
+
+            let hard = root.path().join("hard.sqlite3");
+            fs::hard_link(&current, &hard).unwrap();
+            assert!(Agent::open(&hard, AgentConfig { part_size: 16 }).is_err());
+            assert!(generation_bytes(&current) == before);
+        }
+    }
+
+    #[test]
+    fn noncurrent_schema_in_wal_is_rejected_without_byte_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("drift-wal.sqlite3");
+        database::tests_support::initialize(&path).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA wal_autocheckpoint=0;
+                 CREATE TABLE unexpected_wal_table(id INTEGER);",
+            )
+            .unwrap();
+        assert!(sidecar(&path, "-wal").exists());
+        assert_rejected_without_byte_changes(&path);
+        drop(connection);
+    }
+
+    #[test]
+    fn current_schema_committed_in_wal_is_accepted() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("current-wal.sqlite3");
+        database::tests_support::initialize(&path).unwrap();
+        let writer = Connection::open(&path).unwrap();
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA wal_autocheckpoint=0;
+                 INSERT INTO jobs(
+                     id, source_asset_id, source_resource_id, media_kind, role, file_path,
+                     filename, mime_type, source_created_at_ms, modified_ms, source_size,
+                     state, updated_at_ms
+                 ) VALUES (
+                     'wal-job', 'wal-asset', 'wal-resource', 'photo', 'primary', '/tmp/source',
+                     'source.jpg', 'image/jpeg', 1, 1, 1, 'complete', 1
+                 );",
+            )
+            .unwrap();
+        assert!(sidecar(&path, "-wal").exists());
+        let agent = Agent::open(&path, AgentConfig { part_size: 16 }).unwrap();
+        assert!(!agent
+            .needs_resource("wal-asset", "wal-resource", 1)
             .unwrap());
-        let source = root.join("fresh-export.jpg");
-        fs::write(&source, b"new").unwrap();
-        agent
+        drop(agent);
+        drop(writer);
+    }
+
+    #[test]
+    fn current_crash_recovery_does_not_use_persisted_json_heuristics() {
+        let root = tempfile::tempdir().unwrap();
+        let database_path = root.path().join("agent.sqlite3");
+        let source = root.path().join("source.jpg");
+        fs::write(&source, b"current-content").unwrap();
+        let agent = Agent::open(&database_path, AgentConfig { part_size: 16 }).unwrap();
+        let job_id = agent
             .enqueue(EnqueueResource {
-                source_asset_id: "legacy-asset".to_owned(),
-                source_resource_id: "legacy-resource".to_owned(),
+                source_asset_id: "asset".to_owned(),
+                source_resource_id: "resource".to_owned(),
                 media_kind: "photo".to_owned(),
                 role: "primary".to_owned(),
                 file_path: source.to_string_lossy().into_owned(),
-                filename: "new.jpg".to_owned(),
+                filename: "source.jpg".to_owned(),
                 mime_type: "image/jpeg".to_owned(),
                 source_created_at_ms: 1,
-                modified_ms: 7,
-                source_size: 3,
+                modified_ms: 1,
+                source_size: 15,
                 metadata_json: None,
-                remove_source_after_prepare: true,
+                remove_source_after_prepare: false,
             })
             .unwrap();
-        let prepared = agent.next_prepared(&root).unwrap().unwrap();
-        assert_eq!(
-            prepared.request.content_blake3,
-            blake3::hash(b"new").to_hex().to_string()
-        );
+        agent.next_prepared(root.path()).unwrap().unwrap();
+        agent
+            .mark_upload(&job_id, &Uuid::new_v4().to_string())
+            .unwrap();
         drop(agent);
-        fs::remove_dir_all(root).unwrap();
+
+        let agent = Agent::open(&database_path, AgentConfig { part_size: 16 }).unwrap();
+        let state: String = agent
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT state FROM jobs WHERE id = ?1", [&job_id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(state, "ready");
+    }
+
+    fn assert_rejected_without_byte_changes(path: &Path) {
+        let before = generation_bytes(path);
+        let result = Agent::open(path, AgentConfig { part_size: 16 });
+        let error = match result {
+            Ok(_) => panic!("non-current agent database was accepted"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("current")
+                || error.to_string().contains("product_metadata")
+                || error.to_string().contains("schema")
+                || error.to_string().contains("database"),
+            "rejection did not identify the current-state boundary: {error}"
+        );
+        assert!(
+            generation_bytes(path) == before,
+            "rejecting a non-current agent database changed its SQLite generation"
+        );
+    }
+
+    fn generation_bytes(path: &Path) -> BTreeMap<String, Vec<u8>> {
+        database::tests_support::generation_paths(path)
+            .into_iter()
+            .filter(|candidate| candidate.exists())
+            .map(|candidate| {
+                (
+                    candidate
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                    fs::read(candidate).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    fn sidecar(path: &Path, suffix: &str) -> std::path::PathBuf {
+        let mut value = path.as_os_str().to_os_string();
+        value.push(suffix);
+        value.into()
+    }
+
+    fn secure_permissions(path: &Path) {
+        #[cfg(unix)]
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
     }
 }

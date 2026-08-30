@@ -53,6 +53,7 @@ struct CreateUpload: Codable {
     let filename: String
     let mimeType: String
     let sourceCreatedAtMs: Int64
+    let storageEncoding: StorageEncoding
     let contentSize: UInt64
     let contentBlake3: String
     let metadata: JSONValue?

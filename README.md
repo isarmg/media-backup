@@ -23,7 +23,7 @@
 2. Android MediaStore 与 iOS PhotoKit 均可选择或排除设备相册，允许明确选择零个相册。
 3. 选中相册向服务器单向同步；完整扫描会精确替换成员，分批扫描不会误删尚未遍历的成员。
 4. 缩略图在设备侧生成并作为独立资源上传，Android/iOS 时间线使用鉴权下载并展示。
-5. 时间线使用不透明游标分页；`/v1/sync` 提供单调序列的增量变更流，两端持久化同步游标。
+5. 时间线使用不透明游标分页；`/v2/sync` 提供单调序列的增量变更流，两端持久化同步游标。
 6. 收藏、归档和标签已进入 SQLite 模型、筛选 API 和移动端操作；标签支持创建、批量设置、单项添加/移除。
 7. 软删除进入回收站，可撤销；只有已进入回收站的资产才能永久删除。
 8. 服务端按原始内容 BLAKE3/大小列出重复组，移动端显示重复组数量，可将多余副本移入回收站。
@@ -80,9 +80,9 @@ Caddy 会自动处理证书并传递 HTTPS 代理信息。必须把直接连接 
 photo-backup-server doctor
 ```
 
-当前库必须含且只含一行 `product_metadata`：`application='photo-backup'`、`application_version='0.2.0'`、`schema_revision=1`、`schema_sha256='7851e115db159da4bdd09d58906c2ff2d9a05cb0cc74955c218a776b992313e6'`。实际指纹从 `sqlite_schema` 中排除 `sqlite_*` 与 `product_metadata`，按 `type,name,tbl_name` 排序；每行四个 UTF-8 字段依次写入八字节大端长度与原字节后计算 SHA-256。
+当前服务库必须含且只含一行 `product_metadata`：`application='photo-backup'`、`application_version='0.2.0'`、`schema_revision=1`、`schema_sha256='57c9282c425d2fe1baab63bfce2fa9d947b26b5bf3367750b0308aa442ccba0a'`。移动端 agent 队列库使用同一元数据表契约，值为 `application='photo-backup-agent'`、`application_version='0.2.0'`、`schema_revision=1`、`schema_sha256='fb38736bbf8ac69eb694095e62302f73233e39df42cd2d38e3dd1284e2f02558'`。实际指纹从 `sqlite_schema` 中排除 `sqlite_*` 与 `product_metadata`，按 `type,name,tbl_name` 排序；每行四个 UTF-8 字段依次写入八字节大端长度与原字节后计算 SHA-256。
 
-已存在的无元数据库、0.1 数据库、其他产品/版本/修订，或任何实际 Schema 漂移都会在打开生产读写连接池之前被拒绝。验证会把主文件、WAL 和 rollback journal 复制到私有临时代再打开，因此拒绝路径不会改动源库的主文件或 sidecar 字节；符号链接、硬链接别名和路径逃逸会 fail closed。
+服务库和 agent 队列库都只在目标路径不存在时初始化。已存在的空文件、无元数据库、0.1 数据库、其他产品/版本/修订，或任何实际 Schema 漂移都会在业务写入之前被拒绝。验证会把主文件、WAL 和 rollback journal 复制到私有临时代再打开，因此拒绝路径不会改动源库的主文件或 sidecar 字节；符号链接、硬链接别名和路径逃逸会 fail closed。
 
 `doctor` 会检查精确元数据与 Schema 指纹、`integrity_check`、`foreign_key_check`、对象 Hash 和上传恢复状态，并执行可回滚的数据库写入探针及可清理的存储写读探针。产品二进制不再提供 schema migrate、database backup 或 restore 命令；这些工作必须由独立升级工具在服务停止后，将 SQLite 完整代与 `DATA_DIR` 作为同一一致性单元完成。不要绕过运行锁直接修改 SQLite 或 `DATA_DIR`。
 
@@ -109,22 +109,18 @@ open PhotoBackup.xcodeproj
 
 ## API 摘要
 
-- 登录与上传：`POST /v1/auth/bootstrap`、`POST /v1/uploads`、`PUT /v1/uploads/{id}/parts/{index}`、`POST /v1/uploads/{id}/complete`。
-- 恢复：`GET /v1/timeline`、`GET /v1/assets/{id}`、`GET /v1/resources/{id}/content`。
-- 增量同步：`GET /v1/sync?after={sequence}`。
-- 组织：`PATCH /v1/assets/{id}`、`GET|POST /v1/albums`、`GET|POST /v1/tags`、`POST|DELETE /v1/tags/{tag}/assets/{asset}`。
-- 删除：`POST /v1/assets/{id}/trash`、`POST /v1/assets/{id}/restore`、`DELETE /v1/assets/{id}`。
-- 重复项：`GET /v1/duplicates`；结合回收站接口处理多余副本。
-- 自动化：`GET|POST /v1/api-keys`、`DELETE /v1/api-keys/{id}`、`GET /v1/audit-events`。
+当前网络协议固定为 `/v2`，不提供 `/v1` 兼容路由。上传请求必须显式携带 `storage_encoding: "plain-v1"`；服务端及当前 Android/iOS 客户端拒绝缺失、未知或其他存储协议值。
+
+- 登录与上传：`POST /v2/auth/bootstrap`、`POST /v2/uploads`、`PUT /v2/uploads/{id}/parts/{index}`、`POST /v2/uploads/{id}/complete`。
+- 恢复：`GET /v2/timeline`、`GET /v2/assets/{id}`、`GET /v2/resources/{id}/content`。
+- 增量同步：`GET /v2/sync?after={sequence}`。
+- 组织：`PATCH /v2/assets/{id}`、`GET|POST /v2/albums`、`GET|POST /v2/tags`、`POST|DELETE /v2/tags/{tag}/assets/{asset}`。
+- 删除：`POST /v2/assets/{id}/trash`、`POST /v2/assets/{id}/restore`、`DELETE /v2/assets/{id}`。
+- 重复项：`GET /v2/duplicates`；结合回收站接口处理多余副本。
+- 自动化：`GET|POST /v2/api-keys`、`DELETE /v2/api-keys/{id}`、`GET /v2/audit-events`。
 - 监控：`GET /metrics`，使用 `METRICS_TOKEN` 而不是用户或 API Key。
 
-`GET /v1/timeline` 支持 `cursor`、`limit`、`trashed`、`favorite`、`archived`、`album_id` 和 `tag_id`。API Key 明文只在创建响应中出现一次。
-
-## 从旧加密格式迁移
-
-迁移会把既有对象标记为 `legacy-e2ee-v1`，新对象使用 `plain-v1`。服务器没有旧客户端的主密钥，因此不能自动把旧对象转换成原文件：必须用仍持有旧密钥的客户端下载解密，再用当前客户端重新上传。迁移会将未完成的旧加密上传标记失败，客户端会重新准备原始文件。
-
-在确认所有旧对象已重传且可恢复之前，不要删除旧客户端、旧密钥或旧数据卷备份。
+`GET /v2/timeline` 支持 `cursor`、`limit`、`trashed`、`favorite`、`archived`、`album_id` 和 `tag_id`。API Key 明文只在创建响应中出现一次。
 
 ## 运维与发布
 

@@ -6,11 +6,15 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+libc.workspace = true
 photo-backup-crypto = { path = "../crypto" }
 photo-backup-protocol = { path = "../protocol" }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 

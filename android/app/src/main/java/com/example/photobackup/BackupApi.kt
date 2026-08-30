@@ -38,7 +38,7 @@ class BackupApi(private val serverUrl: String, private var bearerToken: String) 
             .put("platform", "android")
             .toString()
             .toRequestBody(jsonType)
-        val request = Request.Builder().url("$serverUrl/v1/auth/bootstrap").post(body).build()
+        val request = Request.Builder().url("$serverUrl/v2/auth/bootstrap").post(body).build()
         val response = client.newCall(request).execute()
         response.use {
             val text = it.body.string()
@@ -48,10 +48,10 @@ class BackupApi(private val serverUrl: String, private var bearerToken: String) 
         }
     }
 
-    fun createUpload(requestJson: String): JSONObject = jsonRequest("$serverUrl/v1/uploads", "POST", requestJson)
+    fun createUpload(requestJson: String): JSONObject = jsonRequest("$serverUrl/v2/uploads", "POST", requestJson)
 
     fun uploadPart(uploadId: String, index: Int, file: File) {
-        val request = authenticated(Request.Builder().url("$serverUrl/v1/uploads/$uploadId/parts/$index"))
+        val request = authenticated(Request.Builder().url("$serverUrl/v2/uploads/$uploadId/parts/$index"))
             .put(file.asRequestBody(binaryType))
             .build()
         client.newCall(request).execute().use {
@@ -60,7 +60,7 @@ class BackupApi(private val serverUrl: String, private var bearerToken: String) 
     }
 
     fun complete(uploadId: String): JSONObject =
-        jsonRequest("$serverUrl/v1/uploads/$uploadId/complete", "POST", "{}")
+        jsonRequest("$serverUrl/v2/uploads/$uploadId/complete", "POST", "{}")
 
     fun syncAlbum(
         sourceAlbumId: String,
@@ -75,7 +75,7 @@ class BackupApi(private val serverUrl: String, private var bearerToken: String) 
             .put("name", name)
             .put("source_asset_ids", assets)
             .put("replace_members", replaceMembers)
-        return jsonRequest("$serverUrl/v1/albums", "POST", body.toString())
+        return jsonRequest("$serverUrl/v2/albums", "POST", body.toString())
     }
 
     fun timeline(cursor: String? = null, trashed: Boolean = false): JSONObject {
@@ -83,40 +83,40 @@ class BackupApi(private val serverUrl: String, private var bearerToken: String) 
             append("?limit=100&trashed=").append(trashed)
             if (!cursor.isNullOrBlank()) append("&cursor=").append(java.net.URLEncoder.encode(cursor, "UTF-8"))
         }
-        return jsonRequest("$serverUrl/v1/timeline$suffix", "GET", null)
+        return jsonRequest("$serverUrl/v2/timeline$suffix", "GET", null)
     }
 
     fun sync(after: Long): JSONObject =
-        jsonRequest("$serverUrl/v1/sync?after=$after&limit=1000", "GET", null)
+        jsonRequest("$serverUrl/v2/sync?after=$after&limit=1000", "GET", null)
 
     fun updateAsset(assetId: String, favorite: Boolean? = null, archived: Boolean? = null): JSONObject {
         val body = JSONObject()
         favorite?.let { body.put("favorite", it) }
         archived?.let { body.put("archived", it) }
-        return jsonRequest("$serverUrl/v1/assets/$assetId", "PATCH", body.toString())
+        return jsonRequest("$serverUrl/v2/assets/$assetId", "PATCH", body.toString())
     }
 
     fun trashAsset(assetId: String) {
-        jsonRequest("$serverUrl/v1/assets/$assetId/trash", "POST", "{}", expectJson = false)
+        jsonRequest("$serverUrl/v2/assets/$assetId/trash", "POST", "{}", expectJson = false)
     }
 
     fun restoreAsset(assetId: String) {
-        jsonRequest("$serverUrl/v1/assets/$assetId/restore", "POST", "{}", expectJson = false)
+        jsonRequest("$serverUrl/v2/assets/$assetId/restore", "POST", "{}", expectJson = false)
     }
 
     fun duplicateGroups(): org.json.JSONArray =
-        jsonArrayRequest("$serverUrl/v1/duplicates?limit=50")
+        jsonArrayRequest("$serverUrl/v2/duplicates?limit=50")
 
-    fun listTags(): org.json.JSONArray = jsonArrayRequest("$serverUrl/v1/tags")
+    fun listTags(): org.json.JSONArray = jsonArrayRequest("$serverUrl/v2/tags")
 
     fun createTag(name: String): JSONObject = jsonRequest(
-        "$serverUrl/v1/tags",
+        "$serverUrl/v2/tags",
         "POST",
         JSONObject().put("name", name).toString(),
     )
 
     fun addTagAsset(tagId: String, assetId: String) {
-        jsonRequest("$serverUrl/v1/tags/$tagId/assets/$assetId", "POST", "{}", expectJson = false)
+        jsonRequest("$serverUrl/v2/tags/$tagId/assets/$assetId", "POST", "{}", expectJson = false)
     }
 
     fun download(path: String, output: OutputStream) {

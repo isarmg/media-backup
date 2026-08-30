@@ -99,7 +99,7 @@ fn validate_database_files(database: &Path, files: &FileIndex) -> anyhow::Result
     );
 
     let mut blobs = connection.prepare(
-        "SELECT a.storage_path, b.storage_path, b.stored_size, b.content_blake3, b.storage_encoding
+        "SELECT a.storage_path, b.storage_path, b.stored_size, b.content_blake3
          FROM blobs b JOIN accounts a ON a.id = b.account_id ORDER BY b.id",
     )?;
     let rows = blobs.query_map([], |row| {
@@ -107,12 +107,11 @@ fn validate_database_files(database: &Path, files: &FileIndex) -> anyhow::Result
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, i64>(2)?,
-            row.get::<_, Option<String>>(3)?,
-            row.get::<_, String>(4)?,
+            row.get::<_, String>(3)?,
         ))
     })?;
     for row in rows {
-        let (account_path, storage_path, stored_size, content_hash, encoding) = row?;
+        let (account_path, storage_path, stored_size, content_hash) = row?;
         ensure_scoped_key(&account_path, &storage_path)?;
         let entry = files
             .get(&storage_path)
@@ -121,13 +120,10 @@ fn validate_database_files(database: &Path, files: &FileIndex) -> anyhow::Result
             entry.size == u64::try_from(stored_size)?,
             "a database blob size does not match DATA_DIR"
         );
-        if encoding == "plain-v1" {
-            let content_hash = content_hash.context("plain blob is missing its content hash")?;
-            ensure!(
-                valid_blake3(&content_hash) && entry.blake3 == content_hash.to_ascii_lowercase(),
-                "a database blob hash does not match DATA_DIR"
-            );
-        }
+        ensure!(
+            valid_blake3(&content_hash) && entry.blake3 == content_hash.to_ascii_lowercase(),
+            "a database blob hash does not match DATA_DIR"
+        );
     }
 
     validate_active_commits(&connection, files)?;
@@ -248,7 +244,7 @@ fn validate_account_storage_paths(connection: &Connection) -> anyhow::Result<()>
 fn validate_upload_manifests(connection: &Connection, files: &FileIndex) -> anyhow::Result<()> {
     let mut expected_parts = BTreeMap::new();
     let mut uploads = connection.prepare(
-        "SELECT u.id, u.request, u.source_resource_id, u.dedup_token,
+        "SELECT u.id, u.request, u.source_resource_id, u.content_blake3,
                 a.source_asset_id, a.media_kind
          FROM uploads u JOIN assets a ON a.id = u.asset_id ORDER BY u.id",
     )?;
@@ -263,7 +259,7 @@ fn validate_upload_manifests(connection: &Connection, files: &FileIndex) -> anyh
         ))
     })?;
     for row in rows {
-        let (upload_id, request, source_resource_id, dedup_token, source_asset_id, media_kind) =
+        let (upload_id, request, source_resource_id, content_blake3, source_asset_id, media_kind) =
             row?;
         ensure!(Uuid::parse_str(&upload_id).is_ok(), "upload ID is invalid");
         let request: CreateUploadRequest =
@@ -277,7 +273,7 @@ fn validate_upload_manifests(connection: &Connection, files: &FileIndex) -> anyh
                 && !request.parts.is_empty()
                 && request.source_asset_id == source_asset_id
                 && request.source_resource_id == source_resource_id
-                && request.content_blake3 == dedup_token
+                && request.content_blake3 == content_blake3
                 && request.media_kind.as_str() == media_kind,
             "an upload request conflicts with its database metadata"
         );

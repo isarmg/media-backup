@@ -10,8 +10,8 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use photo_backup_protocol::{
     BootstrapRequest, BootstrapResponse, CompleteUploadResponse, CreateUploadRequest,
-    CreateUploadResponse, MediaKind, ResourceManifest, UploadDisposition, UploadPartSpec,
-    UploadStatusResponse,
+    CreateUploadResponse, MediaKind, ResourceManifest, StorageEncoding, UploadDisposition,
+    UploadPartSpec, UploadStatusResponse,
 };
 use rand::{rngs::OsRng, RngCore};
 use serde_json::Value;
@@ -43,46 +43,46 @@ pub struct AppState {
 
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
-        .route("/v1/uploads", post(create_upload))
-        .route("/v1/uploads/{id}", get(upload_status))
-        .route("/v1/uploads/{id}/parts/{index}", put(put_part))
-        .route("/v1/uploads/{id}/complete", post(complete_upload))
-        .route("/v1/resources", get(list_resources))
-        .route("/v1/resources/{id}", get(resource_manifest))
-        .route("/v1/resources/{id}/content", get(resource_content))
-        .route("/v1/timeline", get(library::timeline))
-        .route("/v1/sync", get(library::sync_changes))
+        .route("/v2/uploads", post(create_upload))
+        .route("/v2/uploads/{id}", get(upload_status))
+        .route("/v2/uploads/{id}/parts/{index}", put(put_part))
+        .route("/v2/uploads/{id}/complete", post(complete_upload))
+        .route("/v2/resources", get(list_resources))
+        .route("/v2/resources/{id}", get(resource_manifest))
+        .route("/v2/resources/{id}/content", get(resource_content))
+        .route("/v2/timeline", get(library::timeline))
+        .route("/v2/sync", get(library::sync_changes))
         .route(
-            "/v1/assets/{id}",
+            "/v2/assets/{id}",
             get(library::get_asset)
                 .patch(library::update_asset)
                 .delete(library::delete_asset_permanently),
         )
-        .route("/v1/assets/{id}/trash", post(library::trash_asset))
-        .route("/v1/assets/{id}/restore", post(library::restore_asset))
+        .route("/v2/assets/{id}/trash", post(library::trash_asset))
+        .route("/v2/assets/{id}/restore", post(library::restore_asset))
         .route(
-            "/v1/albums",
+            "/v2/albums",
             get(library::list_albums).post(library::sync_album),
         )
         .route(
-            "/v1/tags",
+            "/v2/tags",
             get(library::list_tags).post(library::create_tag),
         )
-        .route("/v1/tags/{id}/assets", put(library::set_tag_assets))
+        .route("/v2/tags/{id}/assets", put(library::set_tag_assets))
         .route(
-            "/v1/tags/{tag_id}/assets/{asset_id}",
+            "/v2/tags/{tag_id}/assets/{asset_id}",
             post(library::add_tag_asset).delete(library::remove_tag_asset),
         )
-        .route("/v1/duplicates", get(library::duplicate_groups))
+        .route("/v2/duplicates", get(library::duplicate_groups))
         .route(
-            "/v1/api-keys",
+            "/v2/api-keys",
             get(api_access::list_api_keys).post(api_access::create_api_key),
         )
         .route(
-            "/v1/api-keys/{id}",
+            "/v2/api-keys/{id}",
             axum::routing::delete(api_access::revoke_api_key),
         )
-        .route("/v1/audit-events", get(api_access::audit_events))
+        .route("/v2/audit-events", get(api_access::audit_events))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let admin_protected = Router::new()
@@ -104,7 +104,7 @@ pub fn router(state: AppState) -> Router {
     let sensitive = Router::new()
         .route("/metrics", get(metrics::prometheus))
         .route(
-            "/v1/auth/bootstrap",
+            "/v2/auth/bootstrap",
             post(bootstrap).layer(DefaultBodyLimit::max(
                 crate::login_admission::LOGIN_BODY_LIMIT_BYTES,
             )),
@@ -292,7 +292,7 @@ async fn create_upload(
     .await?;
 
     let existing_blob = sqlx::query(
-        "SELECT id, storage_path, stored_size FROM blobs WHERE account_id = ? AND content_blake3 = ? AND storage_encoding = 'plain-v1'",
+        "SELECT id, storage_path, stored_size FROM blobs WHERE account_id = ? AND content_blake3 = ?",
     )
     .bind(auth.account_id)
     .bind(&request.content_blake3)
@@ -351,7 +351,7 @@ async fn create_upload(
         r#"
         SELECT id FROM uploads
         WHERE account_id = ? AND device_id = ? AND source_resource_id = ?
-          AND dedup_token = ? AND state = 'uploading'
+          AND content_blake3 = ? AND state = 'uploading'
           AND commit_state IN ('receiving', 'commit_started', 'finalizing')
         ORDER BY created_at DESC LIMIT 1
         "#,
@@ -385,7 +385,7 @@ async fn create_upload(
     let upload_id: Uuid = sqlx::query_scalar(
         r#"
         INSERT INTO uploads(
-            id, account_id, device_id, asset_id, source_resource_id, dedup_token, request,
+            id, account_id, device_id, asset_id, source_resource_id, content_blake3, request,
             created_at, updated_at
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
@@ -548,7 +548,7 @@ async fn resource_content(
     let row = sqlx::query(
         r#"
         SELECT ac.storage_path AS account_storage_path, b.storage_path,
-               b.stored_size, b.storage_encoding, r.mime_type
+               b.stored_size, r.mime_type
         FROM resources r
         JOIN assets a ON a.id = r.asset_id
         JOIN accounts ac ON ac.id = a.account_id
@@ -579,8 +579,7 @@ async fn resource_content(
     );
     response.headers_mut().insert(
         "x-photo-backup-storage-encoding",
-        HeaderValue::from_str(&row.get::<String, _>("storage_encoding"))
-            .map_err(|_| AppError::bad_request("invalid storage encoding"))?,
+        HeaderValue::from_static("plain-v1"),
     );
     Ok(response)
 }
@@ -682,7 +681,7 @@ async fn load_manifest(
         SELECT r.id AS resource_id, r.asset_id, r.source_resource_id, r.role, r.filename,
                r.mime_type, r.metadata,
                a.source_asset_id, a.media_kind, a.source_created_at_ms,
-               b.plaintext_size, b.content_blake3, b.storage_encoding, b.part_manifest
+               b.plaintext_size, b.content_blake3, b.part_manifest
         FROM resources r
         JOIN assets a ON a.id = r.asset_id
         JOIN blobs b ON b.id = r.blob_id
@@ -710,13 +709,11 @@ async fn load_manifest(
         mime_type: row.get("mime_type"),
         source_created_at_ms: row.get("source_created_at_ms"),
         content_size: row.get::<i64, _>("plaintext_size") as u64,
-        content_blake3: row
-            .get::<Option<String>, _>("content_blake3")
-            .unwrap_or_default(),
-        storage_encoding: row.get("storage_encoding"),
+        content_blake3: row.get("content_blake3"),
+        storage_encoding: StorageEncoding::PlainV1,
         metadata: row.get("metadata"),
         parts: serde_json::from_value(row.get::<Value, _>("part_manifest"))?,
-        content_path: format!("/v1/resources/{resource_id}/content"),
+        content_path: format!("/v2/resources/{resource_id}/content"),
     })
 }
 

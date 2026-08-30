@@ -255,7 +255,7 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
     );
 
     let machine_with_cookie = Request::builder()
-        .uri("/v1/timeline")
+        .uri("/v2/timeline")
         .header(header::COOKIE, &first_cookie)
         .body(Body::empty())
         .unwrap();
@@ -683,7 +683,7 @@ async fn device_bootstrap_shares_the_bounded_password_admission_and_body_limit()
         browser_request_from(
             "192.0.2.30:46000".parse().unwrap(),
             Method::POST,
-            "/v1/auth/bootstrap",
+            "/v2/auth/bootstrap",
             json!({
                 "username": "unknown-device-user",
                 "password": "incorrect-password",
@@ -702,7 +702,7 @@ async fn device_bootstrap_shares_the_bounded_password_admission_and_body_limit()
         browser_request_from(
             "192.0.2.30:46000".parse().unwrap(),
             Method::POST,
-            "/v1/auth/bootstrap",
+            "/v2/auth/bootstrap",
             json!({
                 "username": "different-device-user",
                 "password": "incorrect-password",
@@ -723,7 +723,7 @@ async fn device_bootstrap_shares_the_bounded_password_admission_and_body_limit()
     let app = router(state);
     let mut oversized = Request::builder()
         .method(Method::POST)
-        .uri("/v1/auth/bootstrap")
+        .uri("/v2/auth/bootstrap")
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(format!(
             "{{\"username\":\"u\",\"password\":\"{}\",\"device_name\":\"p\",\"platform\":\"t\"}}",

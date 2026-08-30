@@ -40,7 +40,7 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate {
     }
 
     func submit(_ job: PreparedJob) async throws {
-        var request = authorized(path: "/v1/uploads", method: "POST")
+        var request = authorized(path: "/v2/uploads", method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(job.request)
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -59,7 +59,7 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate {
         }
         for index in created.missingParts {
             guard let path = localParts[index] else { throw UploadFailure.missingPart(index) }
-            var partRequest = authorized(path: "/v1/uploads/\(uploadId)/parts/\(index)", method: "PUT")
+            var partRequest = authorized(path: "/v2/uploads/\(uploadId)/parts/\(index)", method: "PUT")
             partRequest.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
             let task = session.uploadTask(with: partRequest, fromFile: URL(fileURLWithPath: path))
             task.taskDescription = "\(job.jobId)|\(uploadId)|\(index)"
@@ -68,7 +68,7 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate {
     }
 
     func syncAlbum(id: String, name: String, assetIds: Set<String>) async throws {
-        var request = authorized(path: "/v1/albums", method: "POST")
+        var request = authorized(path: "/v2/albums", method: "POST")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "source_album_id": id,
@@ -106,7 +106,7 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate {
     }
 
     private func finish(jobId: String, uploadId: String) async throws {
-        let request = authorized(path: "/v1/uploads/\(uploadId)/complete", method: "POST")
+        let request = authorized(path: "/v2/uploads/\(uploadId)/complete", method: "POST")
         let (data, response) = try await URLSession.shared.data(for: request)
         try requireSuccess(response, data: data)
         try agent.markComplete(job: jobId)
@@ -126,7 +126,7 @@ final class BackgroundUploader: NSObject, URLSessionTaskDelegate {
     }
 
     static func bootstrap(serverURL: URL, username: String, password: String) async throws -> String {
-        var request = URLRequest(url: serverURL.appending(path: "/v1/auth/bootstrap"))
+        var request = URLRequest(url: serverURL.appending(path: "/v2/auth/bootstrap"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: [

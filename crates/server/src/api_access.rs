@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::{audit, auth::AuthContext, error::AppError, routes::AppState};
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuditQuery {
     before: Option<i64>,
     limit: Option<u32>,

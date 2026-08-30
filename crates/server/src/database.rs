@@ -22,7 +22,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const CURRENT_SCHEMA: &str = include_str!("current_schema.sql");
 pub(crate) const CURRENT_SCHEMA_REVISION: i64 = 1;
 pub(crate) const CURRENT_SCHEMA_SHA256: &str =
-    "7851e115db159da4bdd09d58906c2ff2d9a05cb0cc74955c218a776b992313e6";
+    "57c9282c425d2fe1baab63bfce2fa9d947b26b5bf3367750b0308aa442ccba0a";
 const PRODUCT_METADATA_SQL: &str = "CREATE TABLE product_metadata (
     singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
     application TEXT NOT NULL,
@@ -655,7 +655,7 @@ mod tests {
                 "PRAGMA journal_mode=WAL;
                  PRAGMA wal_autocheckpoint=0;
                  CREATE TABLE accounts(id TEXT PRIMARY KEY, username TEXT NOT NULL);
-                 INSERT INTO accounts VALUES('old-user', 'legacy');",
+                 INSERT INTO accounts VALUES('old-user', 'old-format');",
             )
             .unwrap();
         assert!(sqlite_sidecar(&database, "-wal").exists());

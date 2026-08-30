@@ -6,8 +6,8 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use photo_backup_protocol::{
     AlbumRecord, AssetSummary, CreateTagRequest, DuplicateGroup, MediaKind, ResourceSummary,
-    SetTagAssetsRequest, SyncAlbumRequest, SyncEvent, SyncPage, TagRecord, TimelinePage,
-    UpdateAssetRequest,
+    SetTagAssetsRequest, StorageEncoding, SyncAlbumRequest, SyncEvent, SyncPage, TagRecord,
+    TimelinePage, UpdateAssetRequest,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
@@ -16,6 +16,7 @@ use uuid::Uuid;
 use crate::{audit, auth::AuthContext, error::AppError, routes::AppState};
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TimelineQuery {
     cursor: Option<String>,
     limit: Option<u32>,
@@ -28,12 +29,14 @@ pub struct TimelineQuery {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TimelineCursor {
     created_at_ms: i64,
     asset_id: Uuid,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SyncQuery {
     #[serde(default)]
     after: i64,
@@ -41,6 +44,7 @@ pub struct SyncQuery {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DuplicateQuery {
     limit: Option<u32>,
 }
@@ -669,8 +673,7 @@ pub async fn duplicate_groups(
         FROM blobs b
         JOIN resources r ON r.blob_id = b.id
         JOIN assets a ON a.id = r.asset_id
-        WHERE b.account_id = ? AND b.storage_encoding = 'plain-v1'
-          AND b.content_blake3 IS NOT NULL AND a.deleted_at IS NULL AND r.role = 'primary'
+        WHERE b.account_id = ? AND a.deleted_at IS NULL AND r.role = 'primary'
         GROUP BY b.id, b.content_blake3, b.plaintext_size
         HAVING COUNT(DISTINCT a.id) > 1
         ORDER BY COUNT(DISTINCT a.id) DESC, b.created_at
@@ -726,8 +729,7 @@ pub(crate) async fn load_asset_summary(
     .ok_or_else(|| AppError::not_found("asset not found"))?;
     let resource_rows = sqlx::query(
         r#"
-        SELECT r.id, r.role, r.filename, r.mime_type, r.metadata,
-               b.plaintext_size, b.storage_encoding
+        SELECT r.id, r.role, r.filename, r.mime_type, r.metadata, b.plaintext_size
         FROM resources r JOIN blobs b ON b.id = r.blob_id
         WHERE r.asset_id = ? ORDER BY r.created_at, r.id
         "#,
@@ -754,10 +756,10 @@ pub(crate) async fn load_asset_summary(
                 filename: resource.get("filename"),
                 mime_type: resource.get("mime_type"),
                 content_size: resource.get::<i64, _>("plaintext_size") as u64,
-                storage_encoding: resource.get("storage_encoding"),
+                storage_encoding: StorageEncoding::PlainV1,
                 metadata: resource.get("metadata"),
-                manifest_path: format!("/v1/resources/{resource_id}"),
-                content_path: format!("/v1/resources/{resource_id}/content"),
+                manifest_path: format!("/v2/resources/{resource_id}"),
+                content_path: format!("/v2/resources/{resource_id}/content"),
             }
         })
         .collect();

@@ -82,8 +82,7 @@ struct BlobCandidate {
     id: Uuid,
     storage_path: String,
     stored_size: i64,
-    content_blake3: Option<String>,
-    storage_encoding: String,
+    content_blake3: String,
 }
 
 enum MetadataResult {
@@ -450,16 +449,14 @@ async fn commit_metadata(
     sqlx::query(
         r#"
         INSERT INTO blobs(
-            id, account_id, dedup_token, content_blake3, plaintext_size, stored_size,
-            storage_path, wrapped_key, key_nonce, nonce_prefix, part_manifest, storage_encoding,
-            created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, 'plain-v1', datetime('now'))
+            id, account_id, content_blake3, plaintext_size, stored_size, storage_path,
+            part_manifest, storage_encoding, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'plain-v1', datetime('now'))
         ON CONFLICT DO NOTHING
         "#,
     )
     .bind(ready.proposed_blob_id)
     .bind(ready.account_id)
-    .bind(&ready.expected_blake3)
     .bind(&ready.expected_blake3)
     .bind(
         i64::try_from(ready.request.content_size).map_err(|_| {
@@ -546,8 +543,7 @@ async fn validate_blob_candidate(
 ) -> Result<(), AppError> {
     if candidate.stored_size < 0
         || u64::try_from(candidate.stored_size).ok() != Some(ready.expected_size)
-        || candidate.content_blake3.as_deref() != Some(ready.expected_blake3.as_str())
-        || candidate.storage_encoding != "plain-v1"
+        || candidate.content_blake3 != ready.expected_blake3
     {
         return mark_unknown_message(
             &state.pool,
@@ -590,13 +586,6 @@ async fn validate_committed(
     state: &AppState,
     record: &CommitRecord,
 ) -> Result<CommitOutcome, AppError> {
-    // Rows completed before the commit-state migration have no proof metadata.
-    if record.final_key.is_none()
-        && record.expected_size.is_none()
-        && record.expected_blake3.is_none()
-    {
-        return validate_and_hydrate_legacy_commit(state, record).await;
-    }
     let ready = match ready_commit(record) {
         Ok(ready) => ready,
         Err(message) => return mark_unknown(state, record, message).await,
@@ -607,7 +596,7 @@ async fn validate_committed(
     };
     let metadata = sqlx::query(
         r#"
-        SELECT b.storage_path, b.stored_size, b.content_blake3, b.storage_encoding
+        SELECT b.storage_path, b.stored_size, b.content_blake3
         FROM resources r
         JOIN blobs b ON b.id = r.blob_id
         WHERE r.id = ? AND r.asset_id = ? AND b.id = ? AND b.account_id = ?
@@ -624,11 +613,7 @@ async fn validate_committed(
     };
     if metadata.get::<String, _>("storage_path") != ready.final_key
         || u64::try_from(metadata.get::<i64, _>("stored_size")).ok() != Some(ready.expected_size)
-        || metadata
-            .get::<Option<String>, _>("content_blake3")
-            .as_deref()
-            != Some(ready.expected_blake3.as_str())
-        || metadata.get::<String, _>("storage_encoding") != "plain-v1"
+        || metadata.get::<String, _>("content_blake3") != ready.expected_blake3
     {
         return mark_unknown(state, record, "committed blob/resource metadata conflicts").await;
     }
@@ -664,93 +649,6 @@ async fn validate_committed(
         resource_id,
         asset_id: ready.asset_id,
         deduplicated: record.deduplicated,
-    })
-}
-
-async fn validate_and_hydrate_legacy_commit(
-    state: &AppState,
-    record: &CommitRecord,
-) -> Result<CommitOutcome, AppError> {
-    let row = sqlx::query(
-        r#"
-        SELECT r.id AS resource_id, b.id AS blob_id, b.storage_path, b.stored_size,
-               b.content_blake3, b.storage_encoding
-        FROM resources r
-        JOIN blobs b ON b.id = r.blob_id
-        WHERE r.asset_id = ? AND r.source_resource_id = ? AND b.account_id = ?
-        "#,
-    )
-    .bind(record.asset_id)
-    .bind(&record.request.source_resource_id)
-    .bind(record.account_id)
-    .fetch_optional(&state.pool)
-    .await?;
-    let Some(row) = row else {
-        return mark_unknown(
-            state,
-            record,
-            "legacy committed upload has no resource metadata",
-        )
-        .await;
-    };
-    let resource_id: Uuid = row.get("resource_id");
-    let blob_id: Uuid = row.get("blob_id");
-    let storage_path: String = row.get("storage_path");
-    let stored_size: i64 = row.get("stored_size");
-    let content_blake3: Option<String> = row.get("content_blake3");
-    let storage_encoding: String = row.get("storage_encoding");
-    if u64::try_from(stored_size).ok() != Some(record.request.content_size)
-        || content_blake3.as_deref() != Some(record.request.content_blake3.as_str())
-        || storage_encoding != "plain-v1"
-    {
-        return mark_unknown(state, record, "legacy blob metadata conflicts with upload").await;
-    }
-    match state
-        .storage
-        .inspect_object(
-            &record.current_account_path,
-            &storage_path,
-            record.request.content_size,
-            &record.request.content_blake3,
-        )
-        .await
-    {
-        Ok(ObjectState::Matches) => {}
-        Ok(ObjectState::Missing | ObjectState::Mismatch) => {
-            return mark_unknown(state, record, "legacy committed blob is missing or corrupt")
-                .await;
-        }
-        Err(error) => {
-            return mark_unknown(
-                state,
-                record,
-                &format!("cannot safely validate legacy committed blob: {error}"),
-            )
-            .await;
-        }
-    }
-    sqlx::query(
-        r#"
-        UPDATE uploads
-        SET commit_final_key = ?, commit_account_path = ?, commit_expected_size = ?,
-            commit_expected_blake3 = ?, commit_blob_id = ?, commit_resource_id = ?,
-            commit_deduplicated = 0, commit_error = NULL, updated_at = datetime('now')
-        WHERE id = ? AND commit_state = 'committed' AND commit_final_key IS NULL
-        "#,
-    )
-    .bind(storage_path)
-    .bind(&record.current_account_path)
-    .bind(stored_size)
-    .bind(&record.request.content_blake3)
-    .bind(blob_id)
-    .bind(resource_id)
-    .bind(record.upload_id)
-    .execute(&state.pool)
-    .await?;
-    Ok(CommitOutcome {
-        resource_id,
-        asset_id: record.asset_id,
-        deduplicated: false,
     })
 }
 
@@ -839,9 +737,9 @@ async fn load_blob_candidate(
 ) -> Result<Option<BlobCandidate>, AppError> {
     let row = sqlx::query(
         r#"
-        SELECT id, storage_path, stored_size, content_blake3, storage_encoding
+        SELECT id, storage_path, stored_size, content_blake3
         FROM blobs
-        WHERE account_id = ? AND content_blake3 = ? AND storage_encoding = 'plain-v1'
+        WHERE account_id = ? AND content_blake3 = ?
         "#,
     )
     .bind(account_id)
@@ -858,9 +756,9 @@ async fn load_blob_candidate_in(
 ) -> Result<Option<BlobCandidate>, AppError> {
     let row = sqlx::query(
         r#"
-        SELECT id, storage_path, stored_size, content_blake3, storage_encoding
+        SELECT id, storage_path, stored_size, content_blake3
         FROM blobs
-        WHERE account_id = ? AND content_blake3 = ? AND storage_encoding = 'plain-v1'
+        WHERE account_id = ? AND content_blake3 = ?
         "#,
     )
     .bind(account_id)
@@ -876,7 +774,6 @@ fn blob_candidate_from_row(row: sqlx::sqlite::SqliteRow) -> BlobCandidate {
         storage_path: row.get("storage_path"),
         stored_size: row.get("stored_size"),
         content_blake3: row.get("content_blake3"),
-        storage_encoding: row.get("storage_encoding"),
     }
 }
 

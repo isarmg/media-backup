@@ -1,13 +1,17 @@
 import Foundation
 import Photos
 
+enum StorageEncoding: String, Codable {
+    case plainV1 = "plain-v1"
+}
+
 struct RemoteResource: Decodable, Identifiable {
     let resourceId: UUID
     let role: String
     let filename: String
     let mimeType: String
     let contentSize: UInt64
-    let storageEncoding: String
+    let storageEncoding: StorageEncoding
     let contentPath: String
 
     var id: UUID { resourceId }
@@ -55,7 +59,7 @@ struct RemoteLibrary {
         var result: [RemoteAsset] = []
         var cursor: String?
         repeat {
-            var components = URLComponents(url: serverURL.appending(path: "/v1/timeline"), resolvingAgainstBaseURL: false)
+            var components = URLComponents(url: serverURL.appending(path: "/v2/timeline"), resolvingAgainstBaseURL: false)
             components?.queryItems = [
                 URLQueryItem(name: "trashed", value: trashed ? "true" : "false"),
                 URLQueryItem(name: "limit", value: "100"),
@@ -78,7 +82,7 @@ struct RemoteLibrary {
         var sequence = initialSequence
         var more: Bool
         repeat {
-            var components = URLComponents(url: serverURL.appending(path: "/v1/sync"), resolvingAgainstBaseURL: false)
+            var components = URLComponents(url: serverURL.appending(path: "/v2/sync"), resolvingAgainstBaseURL: false)
             components?.queryItems = [
                 URLQueryItem(name: "after", value: String(sequence)),
                 URLQueryItem(name: "limit", value: "1000"),
@@ -94,18 +98,18 @@ struct RemoteLibrary {
     }
 
     func setFavorite(asset: RemoteAsset, value: Bool) async throws {
-        try await sendJSON(path: "/v1/assets/\(asset.assetId)", method: "PATCH", body: ["favorite": value])
+        try await sendJSON(path: "/v2/assets/\(asset.assetId)", method: "PATCH", body: ["favorite": value])
     }
 
     func setArchived(asset: RemoteAsset, value: Bool) async throws {
-        try await sendJSON(path: "/v1/assets/\(asset.assetId)", method: "PATCH", body: ["archived": value])
+        try await sendJSON(path: "/v2/assets/\(asset.assetId)", method: "PATCH", body: ["archived": value])
     }
 
     func addTag(named rawName: String, to asset: RemoteAsset) async throws {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         let (listData, listResponse) = try await URLSession.shared.data(for: authorized(
-            url: serverURL.appending(path: "/v1/tags"),
+            url: serverURL.appending(path: "/v2/tags"),
             method: "GET"
         ))
         try requireSuccess(listResponse, data: listData)
@@ -114,19 +118,19 @@ struct RemoteLibrary {
         if let existing = tags.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
             tag = existing
         } else {
-            var request = authorized(url: serverURL.appending(path: "/v1/tags"), method: "POST")
+            var request = authorized(url: serverURL.appending(path: "/v2/tags"), method: "POST")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: ["name": name])
             let (data, response) = try await URLSession.shared.data(for: request)
             try requireSuccess(response, data: data)
             tag = try decoder.decode(RemoteTag.self, from: data)
         }
-        try await send(path: "/v1/tags/\(tag.tagId)/assets/\(asset.assetId)", method: "POST")
+        try await send(path: "/v2/tags/\(tag.tagId)/assets/\(asset.assetId)", method: "POST")
     }
 
     func duplicateGroupCount() async throws -> Int {
         let (data, response) = try await URLSession.shared.data(for: authorized(
-            url: serverURL.appending(path: "/v1/duplicates"),
+            url: serverURL.appending(path: "/v2/duplicates"),
             method: "GET"
         ))
         try requireSuccess(response, data: data)
@@ -134,7 +138,7 @@ struct RemoteLibrary {
     }
 
     func thumbnailData(for asset: RemoteAsset) async throws -> Data? {
-        guard let thumbnail = asset.thumbnail, thumbnail.storageEncoding == "plain-v1" else { return nil }
+        guard let thumbnail = asset.thumbnail else { return nil }
         let (data, response) = try await URLSession.shared.data(for: authorized(
             url: serverURL.appending(path: thumbnail.contentPath),
             method: "GET"
@@ -144,16 +148,15 @@ struct RemoteLibrary {
     }
 
     func trash(asset: RemoteAsset) async throws {
-        try await send(path: "/v1/assets/\(asset.assetId)/trash", method: "POST")
+        try await send(path: "/v2/assets/\(asset.assetId)/trash", method: "POST")
     }
 
     func restoreFromTrash(asset: RemoteAsset) async throws {
-        try await send(path: "/v1/assets/\(asset.assetId)/restore", method: "POST")
+        try await send(path: "/v2/assets/\(asset.assetId)/restore", method: "POST")
     }
 
     func restoreToPhotos(asset: RemoteAsset) async throws -> String {
         guard let resource = asset.primary else { throw RemoteLibraryError.noPrimaryResource }
-        guard resource.storageEncoding == "plain-v1" else { throw RemoteLibraryError.legacyEncryptedResource }
         let suffix = URL(fileURLWithPath: resource.filename).pathExtension
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -214,7 +217,6 @@ private struct RemoteTag: Decodable {
 enum RemoteLibraryError: LocalizedError {
     case invalidURL
     case noPrimaryResource
-    case legacyEncryptedResource
     case invalidCursor
     case server(String)
 
@@ -222,7 +224,6 @@ enum RemoteLibraryError: LocalizedError {
         switch self {
         case .invalidURL: "服务器地址无效"
         case .noPrimaryResource: "该资产没有可恢复的原始资源"
-        case .legacyEncryptedResource: "旧版加密资源需要旧客户端解密后重新上传"
         case .invalidCursor: "服务器返回了无效的分页游标"
         case .server(let message): message.isEmpty ? "服务器请求失败" : message
         }

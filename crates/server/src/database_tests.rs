@@ -11,7 +11,7 @@ use sqlx::SqlitePool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use photo_backup_protocol::{CreateUploadRequest, MediaKind, UploadPartSpec};
+use photo_backup_protocol::{CreateUploadRequest, MediaKind, StorageEncoding, UploadPartSpec};
 
 use crate::{
     config::Config,
@@ -275,6 +275,24 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
     let (state, pool) = test_state(&workspace.database(), &workspace.data()).await;
     let app = router(state);
 
+    send(
+        &app,
+        json_request(
+            Method::POST,
+            "/v1/auth/bootstrap",
+            json!({
+                "username": USERNAME,
+                "password": PASSWORD,
+                "device_name": "Old Route Client",
+                "platform": "test"
+            }),
+            None,
+            None,
+        ),
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+
     let login = send(
         &app,
         json_request(
@@ -424,7 +442,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
             &app,
             json_request(
                 Method::POST,
-                "/v1/auth/bootstrap",
+                "/v2/auth/bootstrap",
                 json!({
                     "username": USERNAME,
                     "password": PASSWORD,
@@ -452,7 +470,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
             &app,
             json_request(
                 Method::POST,
-                "/v1/uploads",
+                "/v2/uploads",
                 json!({
                     "source_asset_id": "asset-1",
                     "source_resource_id": "resource-1",
@@ -461,6 +479,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
                     "filename": "photo.jpg",
                     "mime_type": "image/jpeg",
                     "source_created_at_ms": 1_750_000_000_000_i64,
+                    "storage_encoding": "plain-v1",
                     "content_size": content.len(),
                     "content_blake3": content_hash,
                     "metadata": {"favorite": false},
@@ -489,7 +508,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         &app,
         authorized_request(
             Method::PUT,
-            format!("/v1/uploads/{upload_id}/parts/0"),
+            format!("/v2/uploads/{upload_id}/parts/0"),
             &bearer,
             Body::from(content.as_slice()),
         ),
@@ -501,7 +520,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
             &app,
             authorized_request(
                 Method::POST,
-                format!("/v1/uploads/{upload_id}/complete"),
+                format!("/v2/uploads/{upload_id}/complete"),
                 &bearer,
                 Body::empty(),
             ),
@@ -522,7 +541,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         &app,
         authorized_request(
             Method::GET,
-            format!("/v1/resources/{resource_id}/content"),
+            format!("/v2/resources/{resource_id}/content"),
             &bearer,
             Body::empty(),
         ),
@@ -542,7 +561,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
     assert!(persisted_blob_key.starts_with(&format!("{storage_path}/")));
     assert!(!Path::new(&persisted_blob_key).is_absolute());
 
-    let default_timeline = get_json(&app, "/v1/timeline", &bearer).await;
+    let default_timeline = get_json(&app, "/v2/timeline", &bearer).await;
     assert_eq!(default_timeline["items"].as_array().map(Vec::len), Some(1));
 
     let updated_asset = json_body(
@@ -550,7 +569,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
             &app,
             json_request(
                 Method::PATCH,
-                format!("/v1/assets/{asset_id}"),
+                format!("/v2/assets/{asset_id}"),
                 json!({"favorite": true, "archived": true}),
                 Some(&bearer),
                 None,
@@ -567,20 +586,20 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         &app,
         authorized_request(
             Method::POST,
-            format!("/v1/assets/{asset_id}/trash"),
+            format!("/v2/assets/{asset_id}/trash"),
             &bearer,
             Body::empty(),
         ),
         StatusCode::NO_CONTENT,
     )
     .await;
-    let trashed = get_json(&app, "/v1/timeline?trashed=true", &bearer).await;
+    let trashed = get_json(&app, "/v2/timeline?trashed=true", &bearer).await;
     assert_eq!(trashed["items"].as_array().map(Vec::len), Some(1));
     send(
         &app,
         authorized_request(
             Method::POST,
-            format!("/v1/assets/{asset_id}/restore"),
+            format!("/v2/assets/{asset_id}/restore"),
             &bearer,
             Body::empty(),
         ),
@@ -593,7 +612,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
             &app,
             json_request(
                 Method::POST,
-                "/v1/albums",
+                "/v2/albums",
                 json!({
                     "source_album_id": "album-1",
                     "name": "Regression Album",
@@ -616,7 +635,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
             &app,
             json_request(
                 Method::POST,
-                "/v1/tags",
+                "/v2/tags",
                 json!({"name": "regression"}),
                 Some(&bearer),
                 None,
@@ -631,7 +650,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         &app,
         json_request(
             Method::PUT,
-            format!("/v1/tags/{tag_id}/assets"),
+            format!("/v2/tags/{tag_id}/assets"),
             json!({"asset_ids": [asset_id]}),
             Some(&bearer),
             None,
@@ -643,7 +662,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         &app,
         authorized_request(
             Method::DELETE,
-            format!("/v1/tags/{tag_id}/assets/{asset_id}"),
+            format!("/v2/tags/{tag_id}/assets/{asset_id}"),
             &bearer,
             Body::empty(),
         ),
@@ -654,7 +673,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         &app,
         authorized_request(
             Method::POST,
-            format!("/v1/tags/{tag_id}/assets/{asset_id}"),
+            format!("/v2/tags/{tag_id}/assets/{asset_id}"),
             &bearer,
             Body::empty(),
         ),
@@ -664,7 +683,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
 
     let filtered_timeline = get_json(
         &app,
-        format!("/v1/timeline?favorite=true&archived=true&album_id={album_id}&tag_id={tag_id}"),
+        format!("/v2/timeline?favorite=true&archived=true&album_id={album_id}&tag_id={tag_id}"),
         &bearer,
     )
     .await;
@@ -675,7 +694,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
             &app,
             json_request(
                 Method::POST,
-                "/v1/api-keys",
+                "/v2/api-keys",
                 json!({"name": "Regression Key"}),
                 Some(&bearer),
                 None,
@@ -689,17 +708,17 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         .as_str()
         .expect("created API token")
         .to_owned();
-    let api_keys = get_json(&app, "/v1/api-keys", &api_token).await;
+    let api_keys = get_json(&app, "/v2/api-keys", &api_token).await;
     assert_eq!(api_keys.as_array().map(Vec::len), Some(1));
 
-    let first_audit_page = get_json(&app, "/v1/audit-events?limit=2", &bearer).await;
+    let first_audit_page = get_json(&app, "/v2/audit-events?limit=2", &bearer).await;
     assert_eq!(first_audit_page["events"].as_array().map(Vec::len), Some(2));
     let before = first_audit_page["next_sequence"]
         .as_i64()
         .expect("audit pagination cursor");
     let second_audit_page = get_json(
         &app,
-        format!("/v1/audit-events?limit=2&before={before}"),
+        format!("/v2/audit-events?limit=2&before={before}"),
         &bearer,
     )
     .await;
@@ -707,7 +726,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         .as_array()
         .expect("second audit page")
         .is_empty());
-    let changes = get_json(&app, "/v1/sync?after=0", &bearer).await;
+    let changes = get_json(&app, "/v2/sync?after=0", &bearer).await;
     assert!(!changes["events"]
         .as_array()
         .expect("sync events")
@@ -751,7 +770,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
     let (restarted_state, restarted_pool) =
         test_state(&workspace.database(), &workspace.data()).await;
     let restarted_app = router(restarted_state);
-    let persisted_timeline = get_json(&restarted_app, "/v1/timeline", &bearer).await;
+    let persisted_timeline = get_json(&restarted_app, "/v2/timeline", &bearer).await;
     assert_eq!(
         persisted_timeline["items"].as_array().map(Vec::len),
         Some(1)
@@ -836,6 +855,7 @@ async fn seed_received_upload(
         filename: format!("{suffix}.jpg"),
         mime_type: "image/jpeg".to_owned(),
         source_created_at_ms: 1,
+        storage_encoding: StorageEncoding::PlainV1,
         content_size: content.len() as u64,
         content_blake3: content_hash,
         metadata: None,
@@ -845,7 +865,7 @@ async fn seed_received_upload(
     sqlx::query(
         r#"
         INSERT INTO uploads(
-            id, account_id, device_id, asset_id, source_resource_id, dedup_token, request,
+            id, account_id, device_id, asset_id, source_resource_id, content_blake3, request,
             created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
         "#,
