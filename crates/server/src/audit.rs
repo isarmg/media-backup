@@ -12,8 +12,10 @@ pub async fn record(
 ) -> Result<(), AppError> {
     sqlx::query(
         r#"
-        INSERT INTO audit_events(account_id, actor_kind, actor_id, action, entity_kind, entity_id)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO audit_events(
+            account_id, actor_kind, actor_id, action, entity_kind, entity_id, occurred_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
         "#,
     )
     .bind(auth.account_id)
@@ -36,8 +38,10 @@ pub async fn record_change(
 ) -> Result<(), AppError> {
     sqlx::query(
         r#"
-        INSERT INTO account_changes(account_id, entity_kind, entity_id, operation)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO account_changes(
+            account_id, entity_kind, entity_id, operation, changed_at
+        )
+        VALUES (?, ?, ?, ?, datetime('now'))
         "#,
     )
     .bind(account_id)

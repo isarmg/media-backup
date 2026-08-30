@@ -217,8 +217,10 @@ pub(crate) async fn create_user(
     let password_hash = password::hash_password(request.password).await?;
     sqlx::query(
         r#"
-        INSERT INTO accounts(id, username, password_hash, display_name, storage_path, quota_bytes, enabled)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO accounts(
+            id, username, password_hash, display_name, storage_path, quota_bytes, enabled, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
         "#,
     )
     .bind(id)

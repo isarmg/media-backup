@@ -39,11 +39,12 @@ pub async fn create_api_key(
     let hash = Sha256::digest(token.as_bytes()).to_vec();
     let row = sqlx::query(
         r#"
-        INSERT INTO api_keys(account_id, device_id, name, prefix, token_hash)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO api_keys(id, account_id, device_id, name, prefix, token_hash, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
         RETURNING id, (CAST(strftime('%s', created_at) AS INTEGER) * 1000) AS created_at_ms
         "#,
     )
+    .bind(Uuid::new_v4())
     .bind(auth.account_id)
     .bind(auth.device_id)
     .bind(name)

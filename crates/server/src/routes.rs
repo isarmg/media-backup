@@ -185,8 +185,11 @@ async fn bootstrap(
     let bearer_token = URL_SAFE_NO_PAD.encode(token_bytes);
     let token_hash = Sha256::digest(bearer_token.as_bytes()).to_vec();
     let device_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO devices(account_id, name, platform, token_hash) VALUES (?, ?, ?, ?) RETURNING id",
+        "INSERT INTO devices(\
+             id, account_id, name, platform, token_hash, created_at, last_seen_at\
+         ) VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now')) RETURNING id",
     )
+    .bind(Uuid::new_v4())
     .bind(account_id)
     .bind(request.device_name.trim())
     .bind(request.platform.trim())
@@ -195,8 +198,10 @@ async fn bootstrap(
     .await?;
     sqlx::query(
         r#"
-        INSERT INTO audit_events(account_id, actor_kind, actor_id, action, entity_kind, entity_id)
-        VALUES (?, 'device', ?, 'device.bootstrap', 'device', ?)
+        INSERT INTO audit_events(
+            account_id, actor_kind, actor_id, action, entity_kind, entity_id, occurred_at
+        )
+        VALUES (?, 'device', ?, 'device.bootstrap', 'device', ?, datetime('now'))
         "#,
     )
     .bind(account_id)
@@ -222,8 +227,11 @@ async fn create_upload(
     let policy = account_policy_for_update(&mut transaction, auth.account_id).await?;
     let asset_id: Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO assets(account_id, device_id, source_asset_id, media_kind, source_created_at_ms, favorite)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO assets(
+            id, account_id, device_id, source_asset_id, media_kind, source_created_at_ms, favorite,
+            created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
         ON CONFLICT(account_id, device_id, source_asset_id) DO UPDATE SET
             media_kind = excluded.media_kind,
             source_created_at_ms = excluded.source_created_at_ms,
@@ -232,6 +240,7 @@ async fn create_upload(
         RETURNING id
         "#,
     )
+    .bind(Uuid::new_v4())
     .bind(auth.account_id)
     .bind(auth.device_id)
     .bind(&request.source_asset_id)
@@ -317,11 +326,15 @@ async fn create_upload(
     let request_json = serde_json::to_value(&request)?;
     let upload_id: Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO uploads(account_id, device_id, asset_id, source_resource_id, dedup_token, request)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO uploads(
+            id, account_id, device_id, asset_id, source_resource_id, dedup_token, request,
+            created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
         RETURNING id
         "#,
     )
+    .bind(Uuid::new_v4())
     .bind(auth.account_id)
     .bind(auth.device_id)
     .bind(asset_id)
@@ -469,12 +482,14 @@ async fn complete_upload(
         let id = sqlx::query_scalar(
             r#"
             INSERT INTO blobs(
-                account_id, dedup_token, content_blake3, plaintext_size, stored_size,
-                storage_path, wrapped_key, key_nonce, nonce_prefix, part_manifest, storage_encoding
-            ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, 'plain-v1')
+                id, account_id, dedup_token, content_blake3, plaintext_size, stored_size,
+                storage_path, wrapped_key, key_nonce, nonce_prefix, part_manifest, storage_encoding,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, 'plain-v1', datetime('now'))
             RETURNING id
             "#,
         )
+        .bind(Uuid::new_v4())
         .bind(auth.account_id)
         .bind(&request.content_blake3)
         .bind(&request.content_blake3)
@@ -653,9 +668,9 @@ async fn upsert_resource(
     Ok(sqlx::query_scalar(
         r#"
         INSERT INTO resources(
-            asset_id, blob_id, source_resource_id, role, filename, mime_type,
-            metadata
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            id, asset_id, blob_id, source_resource_id, role, filename, mime_type,
+            metadata, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         ON CONFLICT(asset_id, source_resource_id) DO UPDATE SET
             blob_id = excluded.blob_id,
             role = excluded.role,
@@ -665,6 +680,7 @@ async fn upsert_resource(
         RETURNING id
         "#,
     )
+    .bind(Uuid::new_v4())
     .bind(asset_id)
     .bind(blob_id)
     .bind(&request.source_resource_id)

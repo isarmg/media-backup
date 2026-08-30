@@ -380,14 +380,17 @@ pub async fn sync_album(
     let mut transaction = state.pool.begin().await?;
     let album_id: Uuid = sqlx::query_scalar(
         r#"
-        INSERT INTO albums(account_id, device_id, source_album_id, name)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO albums(
+            id, account_id, device_id, source_album_id, name, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
         ON CONFLICT(account_id, device_id, source_album_id) DO UPDATE SET
             name = excluded.name,
             updated_at = datetime('now')
         RETURNING id
         "#,
     )
+    .bind(Uuid::new_v4())
     .bind(auth.account_id)
     .bind(auth.device_id)
     .bind(&request.source_album_id)
@@ -482,11 +485,13 @@ pub async fn create_tag(
     let mut transaction = state.pool.begin().await?;
     let row = sqlx::query(
         r#"
-        INSERT INTO tags(account_id, name) VALUES (?, ?)
+        INSERT INTO tags(id, account_id, name, created_at, updated_at)
+        VALUES (?, ?, ?, datetime('now'), datetime('now'))
         RETURNING id, name, 0 AS asset_count,
                   (CAST(strftime('%s', updated_at) AS INTEGER) * 1000) AS updated_at_ms
         "#,
     )
+    .bind(Uuid::new_v4())
     .bind(auth.account_id)
     .bind(request.name)
     .fetch_one(&mut *transaction)
@@ -613,7 +618,8 @@ async fn change_tag_asset(
     }
     if add {
         sqlx::query(
-            "INSERT INTO tag_assets(tag_id, asset_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+            "INSERT INTO tag_assets(tag_id, asset_id, added_at) \
+             VALUES (?, ?, datetime('now')) ON CONFLICT DO NOTHING",
         )
         .bind(tag_id)
         .bind(asset_id)
