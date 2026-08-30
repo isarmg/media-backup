@@ -377,7 +377,8 @@ async fn ensure_unique_username(
     except_id: Option<Uuid>,
 ) -> Result<(), AppError> {
     let existing: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM accounts WHERE lower(username) = lower(?) AND (? IS NULL OR id <> ?)",
+        "SELECT id FROM accounts \
+         WHERE lower(username) = lower(?1) AND (?2 IS NULL OR id <> ?2)",
     )
     .bind(username)
     .bind(except_id)
@@ -395,7 +396,8 @@ async fn ensure_unique_path(
     except_id: Option<Uuid>,
 ) -> Result<(), AppError> {
     let existing: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM accounts WHERE storage_path = ? AND (? IS NULL OR id <> ?)",
+        "SELECT id FROM accounts \
+         WHERE storage_path = ?1 AND (?2 IS NULL OR id <> ?2)",
     )
     .bind(storage_path)
     .bind(except_id)

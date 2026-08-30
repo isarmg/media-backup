@@ -141,8 +141,8 @@ pub async fn audit_events(
         SELECT sequence, actor_kind, action, entity_kind, entity_id,
                (CAST(strftime('%s', occurred_at) AS INTEGER) * 1000) AS occurred_at_ms
         FROM audit_events
-        WHERE account_id = ? AND (? IS NULL OR sequence < ?)
-        ORDER BY sequence DESC LIMIT ?
+        WHERE account_id = ?1 AND (?2 IS NULL OR sequence < ?2)
+        ORDER BY sequence DESC LIMIT ?3
         "#,
     )
     .bind(auth.account_id)

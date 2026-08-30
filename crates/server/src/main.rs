@@ -10,6 +10,9 @@ mod password;
 mod routes;
 mod storage;
 
+#[cfg(test)]
+mod database_tests;
+
 use anyhow::Result;
 use config::Config;
 use routes::AppState;

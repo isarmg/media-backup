@@ -58,26 +58,23 @@ pub async fn timeline(
         r#"
         SELECT id, source_created_at_ms
         FROM assets
-        WHERE account_id = ?
-          AND ((? AND deleted_at IS NOT NULL) OR (NOT ? AND deleted_at IS NULL))
-          AND (? IS NULL OR source_created_at_ms < ? OR (source_created_at_ms = ? AND id < ?))
-          AND (? IS NULL OR favorite = ?)
-          AND (? IS NULL OR archived = ?)
-          AND (? IS NULL OR EXISTS (
-              SELECT 1 FROM album_assets aa WHERE aa.album_id = ? AND aa.asset_id = assets.id
+        WHERE account_id = ?1
+          AND ((?2 AND deleted_at IS NOT NULL) OR (NOT ?2 AND deleted_at IS NULL))
+          AND (?3 IS NULL OR source_created_at_ms < ?3 OR (source_created_at_ms = ?3 AND id < ?4))
+          AND (?5 IS NULL OR favorite = ?5)
+          AND (?6 IS NULL OR archived = ?6)
+          AND (?7 IS NULL OR EXISTS (
+              SELECT 1 FROM album_assets aa WHERE aa.album_id = ?7 AND aa.asset_id = assets.id
           ))
-          AND (? IS NULL OR EXISTS (
-              SELECT 1 FROM tag_assets ta WHERE ta.tag_id = ? AND ta.asset_id = assets.id
+          AND (?8 IS NULL OR EXISTS (
+              SELECT 1 FROM tag_assets ta WHERE ta.tag_id = ?8 AND ta.asset_id = assets.id
           ))
         ORDER BY source_created_at_ms DESC, id DESC
-        LIMIT ?
+        LIMIT ?9
         "#,
     )
     .bind(auth.account_id)
     .bind(query.trashed)
-    .bind(query.trashed)
-    .bind(before_ms)
-    .bind(before_ms)
     .bind(before_ms)
     .bind(before_id)
     .bind(query.favorite)
@@ -166,17 +163,17 @@ pub async fn update_asset(
     let updated: Option<Uuid> = sqlx::query_scalar(
         r#"
         UPDATE assets SET
-            favorite = COALESCE(?, favorite),
-            archived = COALESCE(?, archived),
+            favorite = COALESCE(?1, favorite),
+            archived = COALESCE(?2, archived),
             updated_at = datetime('now')
-        WHERE id = ? AND account_id = ?
+        WHERE id = ?3 AND account_id = ?4
         RETURNING id
         "#,
     )
-    .bind(asset_id)
-    .bind(auth.account_id)
     .bind(request.favorite)
     .bind(request.archived)
+    .bind(asset_id)
+    .bind(auth.account_id)
     .fetch_optional(&mut *transaction)
     .await?;
     updated.ok_or_else(|| AppError::not_found("asset not found"))?;
@@ -238,11 +235,14 @@ async fn set_trashed(
 ) -> Result<(), AppError> {
     let mut transaction = state.pool.begin().await?;
     let changed = sqlx::query(
-        "UPDATE assets SET deleted_at = CASE WHEN ? THEN datetime('now') ELSE NULL END, updated_at = datetime('now') WHERE id = ? AND account_id = ?",
+        "UPDATE assets \
+         SET deleted_at = CASE WHEN ?1 THEN datetime('now') ELSE NULL END, \
+             updated_at = datetime('now') \
+         WHERE id = ?2 AND account_id = ?3",
     )
+    .bind(trashed)
     .bind(asset_id)
     .bind(auth.account_id)
-    .bind(trashed)
     .execute(&mut *transaction)
     .await?;
     if changed.rows_affected() == 0 {
@@ -603,14 +603,14 @@ async fn change_tag_asset(
         r#"
         SELECT EXISTS(
             SELECT 1 FROM tags t, assets a
-            WHERE t.id = ? AND t.account_id = ?
-              AND a.id = ? AND a.account_id = ?
+            WHERE t.id = ?1 AND t.account_id = ?2
+              AND a.id = ?3 AND a.account_id = ?2
         )
         "#,
     )
     .bind(tag_id)
-    .bind(asset_id)
     .bind(auth.account_id)
+    .bind(asset_id)
     .fetch_one(&mut *transaction)
     .await?;
     if !valid {
