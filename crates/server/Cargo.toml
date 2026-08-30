@@ -11,7 +11,6 @@ argon2 = "0.5"
 axum.workspace = true
 base64.workspace = true
 blake3.workspace = true
-bytes.workspace = true
 photo-backup-protocol = { path = "../protocol" }
 rand.workspace = true
 serde.workspace = true

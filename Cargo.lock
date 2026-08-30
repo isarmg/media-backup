@@ -1147,7 +1147,6 @@ dependencies = [
  "axum",
  "base64",
  "blake3",
- "bytes",
  "photo-backup-protocol",
  "rand",
  "serde",

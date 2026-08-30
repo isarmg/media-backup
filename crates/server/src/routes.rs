@@ -1,5 +1,5 @@
 use axum::{
-    body::{to_bytes, Body},
+    body::Body,
     extract::{DefaultBodyLimit, Extension, Path, State},
     http::{header, HeaderValue, StatusCode},
     middleware,
@@ -390,10 +390,10 @@ async fn put_part(
         size: row.get::<i64, _>("expected_size") as u64,
         blake3: row.get("expected_blake3"),
     };
-    let bytes = to_bytes(body, state.config.max_part_bytes)
-        .await
-        .map_err(|_| AppError::new(StatusCode::PAYLOAD_TOO_LARGE, "part exceeds server limit"))?;
-    state.storage.put_part(upload_id, &spec, bytes).await?;
+    state
+        .storage
+        .put_part(upload_id, &spec, body, state.config.max_part_bytes)
+        .await?;
     sqlx::query(
         "UPDATE upload_parts SET received_size = expected_size, received_at = datetime('now') WHERE upload_id = ? AND part_index = ?",
     )
