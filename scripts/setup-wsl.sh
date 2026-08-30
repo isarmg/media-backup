@@ -9,7 +9,6 @@ readonly service_user="isarmg-photo"
 readonly service_group="isarmg-photo"
 readonly app_dir="/opt/isarmg/photo-backup"
 readonly releases_dir="$app_dir/releases"
-readonly current_link="$app_dir/current"
 readonly state_dir="/var/lib/isarmg/photo-backup"
 readonly config_file="/etc/isarmg/photo-backup.env"
 readonly unit_file="/etc/systemd/system/photo-backup.service"
@@ -18,7 +17,7 @@ readonly initial_secret_marker="# INITIAL-SECRETS-MUST-BE-REPLACED"
 setup_root="${PHOTO_BACKUP_SETUP_ROOT:-/}"
 test_mode="${PHOTO_BACKUP_SETUP_TEST:-0}"
 release_staging=""
-current_staging=""
+unit_staging=""
 
 die() {
   printf 'setup error: %s\n' "$*" >&2
@@ -34,8 +33,11 @@ rooted() {
 }
 
 cleanup() {
-  if [[ -n "$current_staging" && -L "$current_staging" ]]; then
-    rm -f -- "$current_staging"
+  if [[ -n "$unit_staging" && -f "$unit_staging" && ! -L "$unit_staging" ]]; then
+    case "$unit_staging" in
+      "$(rooted "/etc/systemd/system")"/.photo-backup.service.install-*) rm -f -- "$unit_staging" ;;
+      *) printf 'setup error: refusing to clean unexpected unit staging path\n' >&2 ;;
+    esac
   fi
   if [[ -n "$release_staging" && -d "$release_staging" && ! -L "$release_staging" ]]; then
     case "$release_staging" in
@@ -58,6 +60,7 @@ fi
 [[ "$setup_root" = /* ]] || die "PHOTO_BACKUP_SETUP_ROOT must be absolute"
 [[ -d "$setup_root" && ! -L "$setup_root" ]] || die "setup root must be a real directory"
 setup_root="$(cd "$setup_root" && pwd -P)"
+shopt -s nullglob dotglob
 
 invoked_script="${BASH_SOURCE[0]}"
 [[ "$invoked_script" = /* ]] || invoked_script="$PWD/$invoked_script"
@@ -316,16 +319,29 @@ verify_release() {
   verified_revision="$output_revision"
 }
 
-validate_current_link() {
-  local current_path="$1"
-  local expected_target="releases/$version"
-  if [[ ! -e "$current_path" && ! -L "$current_path" ]]; then
+validate_empty_release_destination() {
+  local app_path
+  local releases_path
+  local entry
+  local -a entries
+  app_path="$(rooted "$app_dir")"
+  releases_path="$(rooted "$releases_dir")"
+
+  if [[ ! -e "$app_path" && ! -L "$app_path" ]]; then
     return
   fi
-  [[ -L "$current_path" ]] || die "current must be an installer-managed symbolic link"
-  [[ "$(readlink -- "$current_path")" == "$expected_target" ]] ||
-    die "current is not the Photo Backup 0.2 release link"
-  [[ -d "$(rooted "$releases_dir/$version")" ]] || die "current points to a missing release"
+  [[ -d "$app_path" && ! -L "$app_path" ]] || die "application destination must be a real directory"
+  entries=("$app_path"/*)
+  for entry in "${entries[@]}"; do
+    [[ "$entry" == "$releases_path" ]] ||
+      die "application destination contains an unexpected pre-existing entry"
+  done
+  if [[ -e "$releases_path" || -L "$releases_path" ]]; then
+    [[ -d "$releases_path" && ! -L "$releases_path" ]] ||
+      die "releases destination must be a real directory"
+    entries=("$releases_path"/*)
+    ((${#entries[@]} == 0)) || die "releases destination is not empty"
+  fi
 }
 
 random_hex_256() {
@@ -345,32 +361,19 @@ for logical_directory in "$releases_dir" "/etc/isarmg" "/etc/systemd/system" \
   validate_existing_directory_chain "$logical_directory"
 done
 preflight_release_path="$(rooted "$releases_dir/$version")"
-preflight_current_path="$(rooted "$current_link")"
 preflight_config_path="$(rooted "$config_file")"
 preflight_unit_path="$(rooted "$unit_file")"
-validate_current_link "$preflight_current_path"
+validate_empty_release_destination
 if [[ -e "$preflight_release_path" || -L "$preflight_release_path" ]]; then
-  [[ -d "$preflight_release_path" && ! -L "$preflight_release_path" ]] ||
-    die "release target is not a real directory"
-  if [[ "$test_mode" == "0" ]]; then
-    verify_release "$preflight_release_path" installed
-  else
-    verify_release "$preflight_release_path" archive
-  fi
-  [[ "$verified_revision" == "$source_revision" ]] ||
-    die "release 0.2.0 already exists with a different source revision"
-  cmp --silent -- "$release_source_dir/release-manifest.json" \
-    "$preflight_release_path/release-manifest.json" ||
-    die "release 0.2.0 already exists with different immutable content"
+  die "release 0.2.0 destination already exists; installation is one-shot and no-clobber"
 fi
 if [[ -e "$preflight_config_path" || -L "$preflight_config_path" ]]; then
   ensure_single_link_regular_file "$preflight_config_path" "configuration"
 fi
 if [[ -e "$preflight_unit_path" || -L "$preflight_unit_path" ]]; then
-  ensure_single_link_regular_file "$preflight_unit_path" "systemd unit"
+  die "systemd unit destination already exists; refusing to overwrite it"
 fi
 
-shopt -s nullglob dotglob
 ensure_directory_chain "$releases_dir"
 ensure_directory_chain "/etc/isarmg"
 ensure_directory_chain "/etc/systemd/system"
@@ -379,7 +382,6 @@ ensure_directory_chain "$state_dir/data"
 
 releases_path="$(rooted "$releases_dir")"
 release_path="$(rooted "$releases_dir/$version")"
-current_path="$(rooted "$current_link")"
 state_path="$(rooted "$state_dir")"
 config_path="$(rooted "$config_file")"
 unit_path="$(rooted "$unit_file")"
@@ -395,22 +397,13 @@ if [[ "$test_mode" == "0" ]]; then
   ensure_root_owned_directory /var/lib/isarmg "/var/lib/isarmg"
 fi
 
-validate_current_link "$current_path"
-if [[ -e "$release_path" || -L "$release_path" ]]; then
-  [[ -d "$release_path" && ! -L "$release_path" ]] || die "release target is not a real directory"
-  if [[ "$test_mode" == "0" ]]; then
-    verify_release "$release_path" installed
-  else
-    verify_release "$release_path" archive
-  fi
-  cmp --silent -- "$release_source_dir/release-manifest.json" "$release_path/release-manifest.json" ||
-    die "release 0.2.0 already exists with different immutable content"
-fi
+[[ ! -e "$release_path" && ! -L "$release_path" ]] ||
+  die "release 0.2.0 destination appeared during installation"
 if [[ -e "$config_path" || -L "$config_path" ]]; then
   ensure_single_link_regular_file "$config_path" "configuration"
 fi
 if [[ -e "$unit_path" || -L "$unit_path" ]]; then
-  ensure_single_link_regular_file "$unit_path" "systemd unit"
+  die "systemd unit destination appeared during installation"
 fi
 
 if [[ "$test_mode" == "0" ]]; then
@@ -433,21 +426,18 @@ if [[ "$test_mode" == "0" ]]; then
 fi
 
 chmod 0755 "$(rooted "$app_dir")" "$releases_path"
-if [[ ! -e "$release_path" && ! -L "$release_path" ]]; then
-  release_staging="$(mktemp -d -- "$releases_path/.install-$version.XXXXXX")"
-  chmod 0755 "$release_staging"
-  cp -a --no-preserve=ownership -- "$release_source_dir/." "$release_staging/"
-  if [[ "$test_mode" == "0" ]]; then
-    chown -R root:root "$release_staging"
-    verify_release "$release_staging" installed
-  else
-    verify_release "$release_staging" archive
-  fi
-  mv -T -n -- "$release_staging" "$release_path"
-  if [[ ! -e "$release_staging" ]]; then
-    release_staging=""
-  fi
+release_staging="$(mktemp -d -- "$releases_path/.install-$version.XXXXXX")"
+chmod 0755 "$release_staging"
+cp -a --no-preserve=ownership -- "$release_source_dir/." "$release_staging/"
+if [[ "$test_mode" == "0" ]]; then
+  chown -R root:root "$release_staging"
+  verify_release "$release_staging" installed
+else
+  verify_release "$release_staging" archive
 fi
+mv -T -n -- "$release_staging" "$release_path"
+[[ ! -e "$release_staging" ]] || die "release destination appeared concurrently"
+release_staging=""
 [[ -d "$release_path" && ! -L "$release_path" ]] || die "could not install immutable release"
 if [[ "$test_mode" == "0" ]]; then
   verify_release "$release_path" installed
@@ -501,28 +491,18 @@ if [[ "$test_mode" == "0" ]]; then
   chown root:root "$config_path"
 fi
 
-install -m 0644 "$release_path/systemd/photo-backup.service" "$unit_path"
+unit_staging="$(mktemp -- "$(rooted "/etc/systemd/system")/.photo-backup.service.install-XXXXXX")"
+install -m 0644 "$release_path/systemd/photo-backup.service" "$unit_staging"
+mv -T -n -- "$unit_staging" "$unit_path"
+[[ ! -e "$unit_staging" ]] || die "systemd unit destination appeared concurrently"
+unit_staging=""
 ensure_single_link_regular_file "$unit_path" "systemd unit"
 if [[ "$test_mode" == "0" ]]; then
   chown root:root "$unit_path"
 fi
 
-desired_target="releases/$version"
-if [[ ! -L "$current_path" || "$(readlink -- "$current_path")" != "$desired_target" ]]; then
-  for attempt in {1..20}; do
-    candidate="$(rooted "$app_dir/.current-$BASHPID-$RANDOM-$attempt")"
-    if ln -s -- "$desired_target" "$candidate" 2>/dev/null; then
-      current_staging="$candidate"
-      break
-    fi
-  done
-  [[ -n "$current_staging" ]] || die "could not create an atomic current-link candidate"
-  mv -Tf -- "$current_staging" "$current_path"
-  current_staging=""
-fi
-
 if [[ "$test_mode" == "0" ]]; then
-  "$release_path/bin/photo-backup-server" release-verify-installed "$current_path" >/dev/null
+  "$release_path/bin/photo-backup-server" release-verify-installed "$release_path" >/dev/null
   systemctl daemon-reload
 fi
 

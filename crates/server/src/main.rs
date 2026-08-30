@@ -53,7 +53,11 @@ async fn main() -> Result<()> {
             println!("{}", release::verification_line(&identity));
             return Ok(());
         }
-        Command::Serve | Command::Doctor => {}
+        Command::ServeRelease(root) => {
+            release::verify_runtime(root)?;
+        }
+        Command::Serve => release::ensure_unbound_development_serve()?,
+        Command::Doctor => {}
     }
     let config = Config::from_env()?;
     match command {
@@ -61,7 +65,7 @@ async fn main() -> Result<()> {
             println!("{}", serde_json::to_string(&doctor::run(&config)?)?);
             return Ok(());
         }
-        Command::Serve => {}
+        Command::Serve | Command::ServeRelease(_) => {}
         Command::ReleaseIdentity
         | Command::ReleaseVerify(_)
         | Command::ReleaseVerifyInstalled(_) => {
@@ -100,6 +104,7 @@ async fn main() -> Result<()> {
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
     Serve,
+    ServeRelease(PathBuf),
     Doctor,
     ReleaseIdentity,
     ReleaseVerify(PathBuf),
@@ -112,6 +117,9 @@ impl Command {
         let parsed: Result<Self> = match arguments.as_slice() {
             [] => Ok(Self::Serve),
             [command] if command == "serve" => Ok(Self::Serve),
+            [command, root] if command == "serve-release" => {
+                Ok(Self::ServeRelease(PathBuf::from(root)))
+            }
             [command] if command == "doctor" => Ok(Self::Doctor),
             [command] if command == "release-identity" => Ok(Self::ReleaseIdentity),
             [command, root] if command == "release-verify" => {
@@ -121,7 +129,7 @@ impl Command {
                 Ok(Self::ReleaseVerifyInstalled(PathBuf::from(root)))
             }
             _ => anyhow::bail!(
-                "usage: photo-backup-server [serve|doctor|release-identity|release-verify RELEASE_ROOT|release-verify-installed RELEASE_ROOT]"
+                "usage: photo-backup-server [serve|serve-release RELEASE_ROOT|doctor|release-identity|release-verify RELEASE_ROOT|release-verify-installed RELEASE_ROOT]"
             ),
         };
         parsed.context("invalid command")
@@ -142,22 +150,28 @@ mod command_tests {
     fn only_current_product_commands_are_accepted() {
         assert_eq!(parse(&[]).unwrap(), Command::Serve);
         assert_eq!(parse(&["serve"]).unwrap(), Command::Serve);
+        assert_eq!(
+            parse(&["serve-release", "/opt/isarmg/photo-backup/releases/0.2.0"]).unwrap(),
+            Command::ServeRelease(PathBuf::from("/opt/isarmg/photo-backup/releases/0.2.0"))
+        );
         assert_eq!(parse(&["doctor"]).unwrap(), Command::Doctor);
         assert_eq!(
             parse(&["release-identity"]).unwrap(),
             Command::ReleaseIdentity
         );
         assert_eq!(
-            parse(&["release-verify", "/opt/isarmg/photo-backup/current"]).unwrap(),
-            Command::ReleaseVerify(PathBuf::from("/opt/isarmg/photo-backup/current"))
+            parse(&["release-verify", "/opt/isarmg/photo-backup/releases/0.2.0"]).unwrap(),
+            Command::ReleaseVerify(PathBuf::from("/opt/isarmg/photo-backup/releases/0.2.0"))
         );
         assert_eq!(
             parse(&[
                 "release-verify-installed",
-                "/opt/isarmg/photo-backup/current"
+                "/opt/isarmg/photo-backup/releases/0.2.0"
             ])
             .unwrap(),
-            Command::ReleaseVerifyInstalled(PathBuf::from("/opt/isarmg/photo-backup/current"))
+            Command::ReleaseVerifyInstalled(PathBuf::from(
+                "/opt/isarmg/photo-backup/releases/0.2.0"
+            ))
         );
         assert!(parse(&["backup", "create"]).is_err());
         assert!(parse(&["backup", "create", "--output", "/tmp/new"]).is_err());

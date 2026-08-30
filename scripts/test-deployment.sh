@@ -47,7 +47,10 @@ else
   fail "archive contains an unexpected root or non-normal path"
 fi
 tar --no-same-owner -xzf "$archive" -C "$extract_dir"
-release_root="$extract_dir/$package"
+relocated_releases="$test_root/relocated/opt/isarmg/photo-backup/releases"
+mkdir -p "$relocated_releases"
+release_root="$relocated_releases/$version"
+mv -T -- "$extract_dir/$package" "$release_root"
 real_binary="$release_root/bin/photo-backup-server"
 setup_script="$release_root/scripts/setup-wsl.sh"
 unit_source="$release_root/systemd/photo-backup.service"
@@ -111,22 +114,97 @@ for reference in references:
     assert (root / reference).is_file(), f"release README references missing {reference}"
 PY
 
-# Run the binary from the archive against real SQLite and real HTTP. Identity and
-# release verification above intentionally required no application configuration.
+# Every rejected release startup must fail before it creates SQLite, storage, or
+# adjacent runtime-lock state.
+expect_start_rejected() {
+  local label="$1"
+  local executable="$2"
+  shift 2
+  local rejected_state="$test_root/start-rejected-$label"
+  local log="$test_root/start-rejected-$label.log"
+  local status
+  mkdir -m 0755 "$rejected_state" "$rejected_state/db" "$rejected_state/data"
+  set +e
+  (
+    cd /
+    timeout 5s env \
+      DATABASE_URL="sqlite://$rejected_state/db/app.db" \
+      DATA_DIR="$rejected_state/data" \
+      BIND=127.0.0.1:0 \
+      ADMIN_USERNAME=admin \
+      ADMIN_PASSWORD=deployment-rejection-password \
+      REQUIRE_HTTPS=false \
+      DEVELOPMENT=true \
+      TRUSTED_PROXY_CIDRS= \
+      RUST_LOG=warn \
+      "$executable" "$@"
+  ) >"$log" 2>&1
+  status="$?"
+  set -e
+  [[ "$status" -ne 0 && "$status" -ne 124 ]] || fail "$label did not fail closed before serving"
+  [[ -z "$(find "$rejected_state/db" "$rejected_state/data" -mindepth 1 -print -quit)" ]] ||
+    fail "$label wrote application or lock state before rejection"
+}
+
+expect_start_rejected ordinary-serve "$real_binary" serve
+expect_start_rejected implicit-serve "$real_binary"
+expect_start_rejected non-normal-root "$real_binary" serve-release "$release_root/../$version"
+
+wrong_layout_root="$test_root/wrong-layout/$version"
+mkdir -p "$(dirname "$wrong_layout_root")"
+cp -a -- "$release_root" "$wrong_layout_root"
+expect_start_rejected wrong-layout-root \
+  "$wrong_layout_root/bin/photo-backup-server" serve-release "$wrong_layout_root"
+
+outside_binary="$test_root/copied-photo-backup-server"
+cp -- "$real_binary" "$outside_binary"
+chmod 0755 "$outside_binary"
+expect_start_rejected copied-binary "$outside_binary" serve-release "$release_root"
+
+alias_parent="$test_root/alias/opt/isarmg/photo-backup/releases"
+mkdir -p "$alias_parent"
+ln -s "$release_root" "$alias_parent/$version"
+expect_start_rejected symlink-root "$real_binary" serve-release "$alias_parent/$version"
+
+current_alias="$test_root/old-alias/opt/isarmg/photo-backup/current"
+mkdir -p "$(dirname "$current_alias")"
+ln -s "$release_root" "$current_alias"
+expect_start_rejected current-alias "$real_binary" serve-release "$current_alias"
+
+tampered_runtime="$test_root/tampered-runtime/opt/isarmg/photo-backup/releases/$version"
+mkdir -p "$(dirname "$tampered_runtime")"
+cp -a -- "$release_root" "$tampered_runtime"
+printf '\ntampered\n' >>"$tampered_runtime/README.md"
+expect_start_rejected tampered-runtime \
+  "$tampered_runtime/bin/photo-backup-server" serve-release "$tampered_runtime"
+
+extra_runtime="$test_root/extra-runtime/opt/isarmg/photo-backup/releases/$version"
+mkdir -p "$(dirname "$extra_runtime")"
+cp -a -- "$release_root" "$extra_runtime"
+touch "$extra_runtime/EXTRA"
+chmod 0644 "$extra_runtime/EXTRA"
+expect_start_rejected extra-runtime \
+  "$extra_runtime/bin/photo-backup-server" serve-release "$extra_runtime"
+
+# Run the physically relocated binary from / against real SQLite and real HTTP.
+# The same process verifies its root before it reads application configuration.
 smoke_root="$test_root/smoke"
 mkdir -m 0755 "$smoke_root" "$smoke_root/db" "$smoke_root/data"
 smoke_port="$((20000 + BASHPID % 30000))"
-env \
-  DATABASE_URL="sqlite://$smoke_root/db/app.db" \
-  DATA_DIR="$smoke_root/data" \
-  BIND="127.0.0.1:$smoke_port" \
-  ADMIN_USERNAME=admin \
-  ADMIN_PASSWORD=deployment-smoke-password \
-  REQUIRE_HTTPS=false \
-  DEVELOPMENT=true \
-  TRUSTED_PROXY_CIDRS= \
-  RUST_LOG=warn \
-  "$real_binary" serve >"$test_root/server.log" 2>&1 &
+(
+  cd /
+  exec env \
+    DATABASE_URL="sqlite://$smoke_root/db/app.db" \
+    DATA_DIR="$smoke_root/data" \
+    BIND="127.0.0.1:$smoke_port" \
+    ADMIN_USERNAME=admin \
+    ADMIN_PASSWORD=deployment-smoke-password \
+    REQUIRE_HTTPS=false \
+    DEVELOPMENT=true \
+    TRUSTED_PROXY_CIDRS= \
+    RUST_LOG=warn \
+    "$real_binary" serve-release "$release_root"
+) >"$test_root/server.log" 2>&1 &
 server_pid="$!"
 smoke_ready=0
 for _ in {1..120}; do
@@ -146,6 +224,9 @@ done
 }
 [[ "$(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:$smoke_port/admin")" == "200" ]] ||
   fail "real release binary did not serve its embedded admin web"
+curl --silent --fail "http://127.0.0.1:$smoke_port/admin" >"$test_root/served-admin.html"
+cmp --silent "$test_root/served-admin.html" "$release_root/share/web/admin.html" ||
+  fail "served admin asset differs from the verified release copy"
 kill -TERM "$server_pid"
 wait "$server_pid" || true
 server_pid=""
@@ -293,7 +374,6 @@ PHOTO_BACKUP_SETUP_ROOT="$install_root" PHOTO_BACKUP_SETUP_TEST=1 \
 
 release_dir="$install_root/opt/isarmg/photo-backup/releases/$version"
 installed_binary="$release_dir/bin/photo-backup-server"
-current_link="$install_root/opt/isarmg/photo-backup/current"
 config="$install_root/etc/isarmg/photo-backup.env"
 installed_unit="$install_root/etc/systemd/system/photo-backup.service"
 
@@ -305,9 +385,9 @@ if [[ "$EUID" -eq 0 ]]; then
   "$installed_binary" release-verify-installed "$release_dir" >/dev/null ||
     fail "root-owned installed release does not pass the production ownership gate"
 fi
-[[ -L "$current_link" && "$(readlink "$current_link")" == "releases/$version" ]] ||
-  fail "current does not use the fixed managed 0.2 target"
-[[ "$(readlink -f "$current_link")" == "$release_dir" ]] || fail "current resolves outside releases"
+[[ ! -e "$install_root/opt/isarmg/photo-backup/current" &&
+  ! -L "$install_root/opt/isarmg/photo-backup/current" ]] ||
+  fail "installer created a mutable current alias"
 cmp --silent "$unit_source" "$installed_unit" || fail "installed unit differs from the archive"
 
 [[ -f "$config" && ! -L "$config" && "$(stat -c '%a:%h' "$config")" == "600:1" ]] ||
@@ -328,16 +408,18 @@ if grep -Fq "$admin_secret" "$first_output" || grep -Fq "$metrics_secret" "$firs
   fail "setup output disclosed a generated secret"
 fi
 
-config_digest="$(sha256sum "$config" | awk '{ print $1 }')"
-chmod 0644 "$config"
+tree_digest() {
+  tar -C "$1" --sort=name --format=gnu -cf - . | sha256sum | awk '{print $1}'
+}
+
+installed_digest="$(tree_digest "$install_root")"
 second_output="$test_root/second-output"
-PHOTO_BACKUP_SETUP_ROOT="$install_root" PHOTO_BACKUP_SETUP_TEST=1 \
-  "$setup_script" >"$second_output" 2>&1
-[[ "$(sha256sum "$config" | awk '{ print $1 }')" == "$config_digest" ]] ||
-  fail "idempotent setup overwrote configuration"
-[[ "$(stat -c '%a' "$config")" == "600" ]] || fail "idempotent setup did not restore config mode"
-grep -Fq 'Preserved existing /etc/isarmg/photo-backup.env' "$second_output" ||
-  fail "idempotent setup did not report preservation"
+if PHOTO_BACKUP_SETUP_ROOT="$install_root" PHOTO_BACKUP_SETUP_TEST=1 \
+  "$setup_script" >"$second_output" 2>&1; then
+  fail "a second installation of the same physical version was accepted"
+fi
+[[ "$(tree_digest "$install_root")" == "$installed_digest" ]] ||
+  fail "rejected second installation changed installed state"
 
 conflict_root="$test_root/conflict-root"
 mkdir -m 0755 "$conflict_root"
@@ -416,8 +498,7 @@ for setting in \
   'StateDirectory=isarmg/photo-backup' \
   'RuntimeDirectory=isarmg/photo-backup' \
   'EnvironmentFile=/etc/isarmg/photo-backup.env' \
-  'ExecStartPre=/opt/isarmg/photo-backup/current/bin/photo-backup-server release-verify-installed /opt/isarmg/photo-backup/current' \
-  'ExecStart=/opt/isarmg/photo-backup/current/bin/photo-backup-server serve' \
+  'ExecStart=/opt/isarmg/photo-backup/releases/0.2.0/bin/photo-backup-server serve-release /opt/isarmg/photo-backup/releases/0.2.0' \
   'ReadWritePaths=/var/lib/isarmg/photo-backup /run/isarmg/photo-backup' \
   'ProtectSystem=strict' \
   'ProtectHome=true' \
@@ -433,6 +514,10 @@ for setting in \
   assert_unit_setting "$setting"
 done
 
+if grep -q '^ExecStartPre=' "$unit_source"; then
+  fail "systemd split release verification from the serving process"
+fi
+
 if grep -Eqi 'postgres|/mnt/|User=root|PHOTO_BACKUP_BINARY|Cargo\.toml' \
   "$setup_script" "$release_root/scripts/run-server-wsl.sh" \
   "$release_root/scripts/start-server-wsl.sh" "$unit_source"; then
@@ -440,6 +525,12 @@ if grep -Eqi 'postgres|/mnt/|User=root|PHOTO_BACKUP_BINARY|Cargo\.toml' \
 fi
 if grep -Eq 'sed[[:space:]]+-i|systemctl[[:space:]]+(enable|start|restart)' "$setup_script"; then
   fail "setup mutates secrets with sed or starts the service"
+fi
+if grep -Fq '/opt/isarmg/photo-backup/current' \
+  "$project_dir/README.md" "$project_dir/docs/SERVER_RELEASE.md" \
+  "$setup_script" "$release_root/scripts/run-server-wsl.sh" \
+  "$release_root/scripts/start-server-wsl.sh" "$unit_source"; then
+  fail "production deployment still references a mutable current alias"
 fi
 if grep -Eq -- '--clobber|gh[[:space:]]+release[[:space:]]+upload|"v\*\.\*\.\*"|v0\.1\.0' \
   "$project_dir/.github/workflows/release.yml"; then

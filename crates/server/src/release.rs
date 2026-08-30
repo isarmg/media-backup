@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::Read,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::{bail, ensure, Context, Result};
@@ -21,6 +21,8 @@ const STORAGE_ENCODING: &str = "plain-v1";
 const MOBILE_FFI_EPOCH: &str = "photo-backup-mobile-v0.2-r1";
 const MANIFEST_FILENAME: &str = "release-manifest.json";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+pub(crate) const PRODUCTION_RELEASE_ROOT: &str = "/opt/isarmg/photo-backup/releases/0.2.0";
+const RELOCATABLE_RELEASE_SUFFIX: &str = "opt/isarmg/photo-backup/releases/0.2.0";
 
 const MOBILE_FFI_HEADER: &[u8] = include_bytes!("../../mobile-ffi/include/photo_backup_v0_2_r1.h");
 const ADMIN_HTML: &[u8] = include_bytes!("admin.html");
@@ -127,6 +129,70 @@ pub(crate) fn verify(root: &Path) -> Result<ReleaseIdentity> {
 
 pub(crate) fn verify_installed(root: &Path) -> Result<ReleaseIdentity> {
     verify_with_ownership(root, true)
+}
+
+pub(crate) fn verify_runtime(root: &Path) -> Result<ReleaseIdentity> {
+    let root = validate_runtime_root(root)?;
+    let expected_executable = root.join("bin/photo-backup-server");
+    let executing = fs::canonicalize(
+        std::env::current_exe().context("resolve executing server binary for release startup")?,
+    )
+    .context("resolve physical executing server binary for release startup")?;
+    ensure!(
+        executing == expected_executable,
+        "serve-release must execute the binary physically contained by RELEASE_ROOT"
+    );
+
+    if root == Path::new(PRODUCTION_RELEASE_ROOT) {
+        for directory in [
+            "/opt",
+            "/opt/isarmg",
+            "/opt/isarmg/photo-backup",
+            "/opt/isarmg/photo-backup/releases",
+        ] {
+            require_directory(
+                Path::new(directory),
+                0o755,
+                true,
+                "production release parent",
+            )?;
+        }
+        verify_with_ownership(&root, true)
+    } else {
+        verify_with_ownership(&root, false)
+    }
+}
+
+pub(crate) fn ensure_unbound_development_serve() -> Result<()> {
+    ensure!(
+        env!("PHOTO_BACKUP_SOURCE_REVISION") == "unversioned",
+        "a source-bound Photo Backup release cannot use ordinary serve; use serve-release RELEASE_ROOT"
+    );
+    Ok(())
+}
+
+fn validate_runtime_root(root: &Path) -> Result<PathBuf> {
+    ensure!(root.is_absolute(), "RELEASE_ROOT must be absolute");
+    ensure!(
+        root.components()
+            .all(|component| { matches!(component, Component::RootDir | Component::Normal(_)) }),
+        "RELEASE_ROOT must be a normalized absolute path"
+    );
+    let named = fs::symlink_metadata(root).context("inspect RELEASE_ROOT")?;
+    ensure!(
+        named.is_dir() && !named.file_type().is_symlink(),
+        "RELEASE_ROOT must be a real directory"
+    );
+    let canonical = fs::canonicalize(root).context("resolve RELEASE_ROOT")?;
+    ensure!(
+        canonical == root,
+        "RELEASE_ROOT and every parent component must be physical and normalized"
+    );
+    ensure!(
+        canonical.ends_with(RELOCATABLE_RELEASE_SUFFIX),
+        "RELEASE_ROOT must end in the fixed Photo Backup 0.2.0 physical release path"
+    );
+    Ok(canonical)
 }
 
 fn verify_with_ownership(root: &Path, require_root_owned: bool) -> Result<ReleaseIdentity> {

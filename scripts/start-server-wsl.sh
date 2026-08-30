@@ -2,8 +2,7 @@
 set -euo pipefail
 
 readonly release="/opt/isarmg/photo-backup/releases/0.2.0"
-readonly current="/opt/isarmg/photo-backup/current"
-readonly binary="$current/bin/photo-backup-server"
+readonly binary="$release/bin/photo-backup-server"
 readonly config="/etc/isarmg/photo-backup.env"
 readonly unit="/etc/systemd/system/photo-backup.service"
 readonly marker="# INITIAL-SECRETS-MUST-BE-REPLACED"
@@ -24,11 +23,8 @@ verify_installed_release() {
     mode="$(stat -c '%a' -- "$directory")"
     (( (8#$mode & 0022) == 0 )) || fail "release directory is group/other writable: $directory"
   done
-  [[ -L "$current" && "$(readlink -- "$current")" == "releases/0.2.0" ]] ||
-    fail "current is not the managed Photo Backup 0.2 link"
-  [[ "$(readlink -f -- "$current")" == "$release" ]] || fail "current resolves outside the release"
   [[ -x "$binary" ]] || fail "missing installed Photo Backup 0.2 binary"
-  output="$("$binary" release-verify-installed "$current")" ||
+  output="$("$binary" release-verify-installed "$release")" ||
     fail "installed release manifest, identity, or payload verification failed"
   [[ "$output" != *$'\n'* ]] || fail "release verifier returned multiple lines"
   IFS=$'\t' read -r line_marker product version revision target fingerprint extra <<<"$output"
