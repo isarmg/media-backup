@@ -6,12 +6,14 @@
 
 - Android 与 iOS 客户端拒绝非 `https://` 的服务地址。
 - `REQUIRE_HTTPS=true`（默认）时，登录、管理、媒体和指标接口只接受 TLS 反向代理标记为 HTTPS 的请求；`/health*` 可留给本机探针。
-- Axum 建议只监听 `127.0.0.1`，由 Caddy/Nginx 终止 TLS，并设置可信的 `X-Forwarded-Proto: https`。
+- Axum 建议只监听 `127.0.0.1`，由 Caddy/Nginx 终止 TLS；生产模式使用带 `Secure` 的 `__Host-photo_session`。
 - 上传分块、合并对象和下载均校验 BLAKE3；`plain-v1` 对象落盘后是原始未加密字节。
 - 密码使用 Argon2 哈希；设备令牌和 API Key 只保存 SHA-256 摘要；移动端凭据分别存入 Android 加密偏好和 iOS Keychain。
 - 服务器管理员和取得数据卷访问权的人可以读取媒体。生产环境仍应使用磁盘/卷加密、最小权限和加密的异地备份。
 
-`REQUIRE_HTTPS` 依赖反向代理头，因此不能把 Axum 端口直接暴露到不可信网络。仅在隔离的本机开发环境可设置 `REQUIRE_HTTPS=false`。
+管理员身份、随机 Session 和 Session 绑定的 CSRF 摘要持久化在本项目自己的 SQLite 中。Session 有空闲与绝对期限，退出会在数据库撤销当前登录；管理员密码、角色或启用状态变化会使该管理员的全部既有 Session 失效。浏览器管理接口只接受 Cookie 身份，设备与 API Key 接口只接受各自的 Bearer Token，两者不能互换。
+
+仅在显式 `DEVELOPMENT=true` 且 `BIND` 为 `127.0.0.1` 或 `::1` 时，才允许 `REQUIRE_HTTPS=false` 和不带 `Secure` 的开发 Cookie；生产配置拒绝这种组合。
 
 ## 已实现的图库能力
 
@@ -20,7 +22,7 @@
 3. 选中相册向服务器单向同步；完整扫描会精确替换成员，分批扫描不会误删尚未遍历的成员。
 4. 缩略图在设备侧生成并作为独立资源上传，Android/iOS 时间线使用鉴权下载并展示。
 5. 时间线使用不透明游标分页；`/v1/sync` 提供单调序列的增量变更流，两端持久化同步游标。
-6. 收藏、归档和标签已进入 PostgreSQL 模型、筛选 API 和移动端操作；标签支持创建、批量设置、单项添加/移除。
+6. 收藏、归档和标签已进入 SQLite 模型、筛选 API 和移动端操作；标签支持创建、批量设置、单项添加/移除。
 7. 软删除进入回收站，可撤销；只有已进入回收站的资产才能永久删除。
 8. 服务端按原始内容 BLAKE3/大小列出重复组，移动端显示重复组数量，可将多余副本移入回收站。
 9. API Key 支持创建、列出和撤销；关键写操作进入审计日志；带独立令牌的 `/metrics` 输出 Prometheus 指标。
@@ -29,7 +31,7 @@
 
 ## 服务端启动
 
-在 Debian/Ubuntu/WSL 安装 Rust、PostgreSQL 和编译依赖后：
+在 Debian/Ubuntu/WSL 安装 Rust 和编译依赖后：
 
 ```bash
 sudo apt-get update
@@ -40,7 +42,7 @@ cargo build --release -p photo-backup-server
 sudo ./scripts/start-server-wsl.sh
 ```
 
-服务启动时自动执行 PostgreSQL 迁移。管理页面位于 `https://你的域名/admin`；管理员先创建普通用户，移动端随后用普通用户账号登录。开发机只读健康检查为 `http://127.0.0.1:8080/health`。
+服务启动时自动执行 SQLite 迁移。首次启动会把 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 写入独立的管理员认证表；之后由数据库中的 Argon2 密码摘要完成登录。管理页面位于 `https://你的域名/admin`；管理员先创建普通用户，移动端随后用普通用户账号登录。开发机只读健康检查为 `http://127.0.0.1:8080/health`。
 
 一个最小 Caddy 配置如下：
 
@@ -57,7 +59,9 @@ Caddy 会自动处理证书并传递 HTTPS 代理信息。使用其他代理时�
 - `DATABASE_URL`：SQLite 连接串，例如 `sqlite:///var/lib/isarmg/photo-backup/db/app.db`。
 - `DATA_DIR`：原始媒体和临时分块根目录。
 - `BIND`：推荐 `127.0.0.1:8080`。
-- `REQUIRE_HTTPS`：生产保持 `true`。
+- `REQUIRE_HTTPS`：生产必须保持 `true`。
+- `DEVELOPMENT`：仅回环开发环境可设为 `true`，默认 `false`。
+- `ADMIN_SESSION_IDLE_SECONDS` / `ADMIN_SESSION_ABSOLUTE_SECONDS`：管理员 Session 空闲/绝对期限，默认 1800/43200 秒。
 - `METRICS_TOKEN`：启用 `/metrics` 的独立 Bearer Token；不设置则返回 404。
 
 ## Android 与 iOS

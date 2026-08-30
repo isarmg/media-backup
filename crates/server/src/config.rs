@@ -12,13 +12,16 @@ pub struct Config {
     pub max_part_bytes: usize,
     pub metrics_token: Option<String>,
     pub require_https: bool,
+    pub development: bool,
+    pub admin_session_idle_seconds: u64,
+    pub admin_session_absolute_seconds: u64,
 }
 
 impl Config {
     pub fn from_env() -> Result<Self> {
         let database_url = env::var("DATABASE_URL").context("DATABASE_URL is required")?;
         let data_dir = PathBuf::from(env::var("DATA_DIR").unwrap_or_else(|_| "./data".to_owned()));
-        let bind = env::var("BIND")
+        let bind: SocketAddr = env::var("BIND")
             .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
             .parse()
             .context("BIND must be a socket address")?;
@@ -37,10 +40,29 @@ impl Config {
         let metrics_token = env::var("METRICS_TOKEN")
             .ok()
             .filter(|value| !value.trim().is_empty());
-        let require_https = env::var("REQUIRE_HTTPS")
+        let require_https: bool = env::var("REQUIRE_HTTPS")
             .unwrap_or_else(|_| "true".to_owned())
             .parse()
             .context("REQUIRE_HTTPS must be true or false")?;
+        let development: bool = env::var("DEVELOPMENT")
+            .unwrap_or_else(|_| "false".to_owned())
+            .parse()
+            .context("DEVELOPMENT must be true or false")?;
+        validate_security_mode(bind, require_https, development)?;
+        let admin_session_idle_seconds: u64 = env::var("ADMIN_SESSION_IDLE_SECONDS")
+            .unwrap_or_else(|_| "1800".to_owned())
+            .parse()
+            .context("ADMIN_SESSION_IDLE_SECONDS must be an integer")?;
+        let admin_session_absolute_seconds: u64 = env::var("ADMIN_SESSION_ABSOLUTE_SECONDS")
+            .unwrap_or_else(|_| "43200".to_owned())
+            .parse()
+            .context("ADMIN_SESSION_ABSOLUTE_SECONDS must be an integer")?;
+        if admin_session_idle_seconds == 0
+            || admin_session_absolute_seconds == 0
+            || admin_session_idle_seconds > admin_session_absolute_seconds
+        {
+            anyhow::bail!("admin session TTLs must be non-zero and idle cannot exceed absolute");
+        }
         Ok(Self {
             database_url,
             data_dir,
@@ -50,6 +72,33 @@ impl Config {
             max_part_bytes,
             metrics_token,
             require_https,
+            development,
+            admin_session_idle_seconds,
+            admin_session_absolute_seconds,
         })
+    }
+}
+
+fn validate_security_mode(bind: SocketAddr, require_https: bool, development: bool) -> Result<()> {
+    if development && !bind.ip().is_loopback() {
+        anyhow::bail!("DEVELOPMENT=true requires a loopback BIND address");
+    }
+    if !development && !require_https {
+        anyhow::bail!("production mode requires REQUIRE_HTTPS=true");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_security_mode;
+
+    #[test]
+    fn insecure_cookies_are_limited_to_explicit_loopback_development() {
+        assert!(validate_security_mode("127.0.0.1:8080".parse().unwrap(), false, true).is_ok());
+        assert!(validate_security_mode("[::1]:8080".parse().unwrap(), false, true).is_ok());
+        assert!(validate_security_mode("0.0.0.0:8080".parse().unwrap(), false, true).is_err());
+        assert!(validate_security_mode("127.0.0.1:8080".parse().unwrap(), false, false).is_err());
+        assert!(validate_security_mode("0.0.0.0:8080".parse().unwrap(), true, false).is_ok());
     }
 }

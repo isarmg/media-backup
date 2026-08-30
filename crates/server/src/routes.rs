@@ -82,6 +82,7 @@ pub fn router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let admin_protected = Router::new()
+        .route("/admin/api/session", get(admin::session))
         .route("/admin/api/overview", get(admin::overview))
         .route("/admin/api/users", post(admin::create_user))
         .route("/admin/api/users/{id}", put(admin::update_user))
@@ -90,6 +91,7 @@ pub fn router(state: AppState) -> Router {
             post(admin::reset_user_password),
         )
         .route("/admin/api/logout", post(admin::logout))
+        .route("/admin/api/password", post(admin::change_admin_password))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             admin::require_admin,

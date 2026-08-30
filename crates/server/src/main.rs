@@ -14,6 +14,8 @@ mod storage;
 mod upload_commit;
 
 #[cfg(test)]
+mod browser_session_tests;
+#[cfg(test)]
 mod database_tests;
 
 use anyhow::Result;
@@ -38,6 +40,7 @@ async fn main() -> Result<()> {
         storage,
         config: config.clone(),
     };
+    admin::ensure_admin_user(&state).await?;
     let reconciliation = upload_commit::reconcile_all(&state).await?;
     info!(
         recovered = reconciliation.recovered,

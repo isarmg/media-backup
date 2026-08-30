@@ -77,12 +77,18 @@ async fn test_state(database: &Path, data: &Path) -> (AppState, SqlitePool) {
         max_part_bytes: 1024 * 1024,
         metrics_token: None,
         require_https: false,
+        development: true,
+        admin_session_idle_seconds: 1_800,
+        admin_session_absolute_seconds: 43_200,
     };
     let state = AppState {
         pool: pool.clone(),
         storage,
         config,
     };
+    crate::admin::ensure_admin_user(&state)
+        .await
+        .expect("bootstrap persisted test administrator");
     upload_commit::reconcile_all(&state)
         .await
         .expect("reconcile uploads on test startup");
@@ -194,17 +200,21 @@ fn json_request(
     uri: impl AsRef<str>,
     body: Value,
     bearer: Option<&str>,
-    cookie: Option<&str>,
+    browser: Option<(&str, &str)>,
 ) -> Request<Body> {
     let mut builder = Request::builder()
         .method(method)
         .uri(uri.as_ref())
-        .header(header::CONTENT_TYPE, "application/json");
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::HOST, "photos.test")
+        .header(header::ORIGIN, "http://photos.test");
     if let Some(token) = bearer {
         builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
     }
-    if let Some(cookie) = cookie {
-        builder = builder.header(header::COOKIE, cookie);
+    if let Some((cookie, csrf)) = browser {
+        builder = builder
+            .header(header::COOKIE, cookie)
+            .header("x-csrf-token", csrf);
     }
     builder
         .body(Body::from(body.to_string()))
@@ -277,7 +287,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
             None,
             None,
         ),
-        StatusCode::NO_CONTENT,
+        StatusCode::OK,
     )
     .await;
     let admin_cookie = login
@@ -289,6 +299,10 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
         .split(';')
         .next()
         .expect("cookie pair")
+        .to_owned();
+    let admin_csrf = json_body(login).await["csrf_token"]
+        .as_str()
+        .expect("admin CSRF token")
         .to_owned();
 
     for (index, invalid_storage_path) in [
@@ -314,7 +328,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
                     "enabled": true
                 }),
                 None,
-                Some(&admin_cookie),
+                Some((&admin_cookie, &admin_csrf)),
             ),
             StatusCode::BAD_REQUEST,
         )
@@ -336,7 +350,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
                     "enabled": true
                 }),
                 None,
-                Some(&admin_cookie),
+                Some((&admin_cookie, &admin_csrf)),
             ),
             StatusCode::OK,
         )
@@ -364,7 +378,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
                 "enabled": true
             }),
             None,
-            Some(&admin_cookie),
+            Some((&admin_cookie, &admin_csrf)),
         ),
         StatusCode::CONFLICT,
     )
@@ -384,7 +398,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
                 "enabled": true
             }),
             None,
-            Some(&admin_cookie),
+            Some((&admin_cookie, &admin_csrf)),
         ),
         StatusCode::CONFLICT,
     )
@@ -402,7 +416,7 @@ async fn fresh_sqlite_supports_the_core_data_flow_and_restart() {
                 "enabled": true
             }),
             None,
-            Some(&admin_cookie),
+            Some((&admin_cookie, &admin_csrf)),
         ),
         StatusCode::OK,
     )
