@@ -11,9 +11,15 @@ Internet 只到 TLS reverse proxy；Axum 回环监听。Proxy、应用、SQLite�
 API/Schema/mobile epoch/Web 和全部文件 Hash/mode。安装只创建缺失的 `releases/0.2.0`，不覆盖同版本，
 无 `current` symlink。
 
+Server 的开发、测试和正式目标都只有 `x86_64-unknown-linux-gnu`。`sarmg-server-target=0.3.0` 在 crate
+编译期执行共享 compile gate，Server 自身 build.rs 再无条件核对 Cargo `TARGET`。CI 必须显式
+`--target`；build script 校验 x86_64 ELF；
+安装/启动脚本、`serve-release` 的内核 uname 检查和 systemd `ConditionArchitecture=x86-64` 都拒绝其他
+主机。移动端的 Android/iOS ARM target 不代表 Server 支持 ARM。
+
 ## 权限
 
-release root-owned read-only；服务账户 `isarmg-photo` 不可登录，仅写状态和 runtime。环境文件 0600；
+release root-owned read-only；服务账户 `isarmg-media` 不可登录，仅写状态和 runtime。环境文件 0600；
 数据库和媒体目录 0700/最小 umask。TLS 私钥由 proxy 账户保护，不授予应用读取。
 
 ## 上线检查
@@ -37,8 +43,8 @@ release root-owned read-only；服务账户 `isarmg-photo` 不可登录，仅写
 
 ## Secret 轮换
 
-管理员密码、设备 Token、API Key、metrics Token、TLS key 分别轮换。产品不保留 previous-key fallback；
-涉及数据 envelope/代际的转换使用升级工具。轮换后验证旧凭据确实失败。
+管理员密码、设备 Token、API Key、metrics Token、TLS key 分别轮换。认证器只接受当前有效摘要，不保留
+双密钥 fallback；涉及持久数据代际的转换使用升级工具。轮换后验证被替换的凭据确实失败。
 
 ## 事件响应
 

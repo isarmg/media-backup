@@ -250,7 +250,7 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
 
     private fun createForegroundInfo(message: String, completed: Int, total: Int): ForegroundInfo {
         val manager = applicationContext.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "照片备份", NotificationManager.IMPORTANCE_LOW))
+        manager.createNotificationChannel(NotificationChannel(CHANNEL_ID, "媒体备份", NotificationManager.IMPORTANCE_LOW))
         val contentIntent = PendingIntent.getActivity(
             applicationContext,
             0,
@@ -259,7 +259,7 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
         )
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setContentTitle("照片备份")
+            .setContentTitle("媒体备份")
             .setContentText(message)
             .setContentIntent(contentIntent)
             .setOnlyAlertOnce(true)

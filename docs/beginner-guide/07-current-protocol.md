@@ -2,8 +2,33 @@
 
 ## 唯一 namespace
 
-业务 API 只位于 `/v2`。`/admin` 是静态管理入口，health/metrics 是运维入口。没有 `/v1`、未版本化、
-旧项目名、尾斜杠 alias 或 fallback redirect。
+移动备份业务 API 只位于 `/v2`。浏览器管理认证只位于 `/api/v2/auth`，管理业务只位于
+`/api/v2/admin`；`/admin` 是静态管理入口，health/metrics 是运维入口。没有 `/v1`、旧的
+`/v2/admin/*`、未版本化、旧项目名、尾斜杠 alias 或 fallback redirect。
+
+## 浏览器管理员合同
+
+| 方法与路径 | 精确请求 | 成功响应 |
+|---|---|---|
+| `POST /api/v2/auth/login` | `{ "username": "admin", "password": "..." }` | `AdministratorSession` + HttpOnly Cookie |
+| `GET /api/v2/auth/session` | 无 body；Cookie | 新的 `AdministratorSession`，同时轮换 CSRF token |
+| `POST /api/v2/auth/logout` | 无 body；Cookie + `X-CSRF-Token` | `204` 并过期 Cookie |
+
+`AdministratorSession` 恰好包含 `authenticated: true`、UUID `user_id`、canonical `username`、固定
+`role: "admin"` 和 `csrf_token` 五个字段。`admin` 是控制面 wire 常量，不在数据库持久化；当前 Schema
+不存在 email、operator/viewer 或 role 列。登录 username 候选只允许 1–64 bytes 可打印 ASCII，经
+trim ASCII whitespace 与 ASCII lowercase 后必须是 3–64 bytes、首尾字母数字且字符仅 `[a-z0-9._-]`；
+`@` 明确非法。普通备份账户的 `accounts.username` 不属于管理角色系统。所有管理 mutation 位于
+`/api/v2/admin/*`，都要求同源、
+有效 Session 和与该 Session 绑定的 CSRF token。
+
+这套管理合同只由 Server 与内置 React/Vite Web 消费。移动 `/v2` DTO、设备 Token/API Key、Agent
+Schema、Android/iOS 和 FFI 仍使用原有数据面身份；协议修改时不得机械地把它们替换成管理 username。
+
+失败响应不使用产品私有 `{error}`。服务端直接序列化 `sarmg-error=0.3.0` 的 Foundation ErrorEnvelope 顶层
+`{code,message,retryable}`；`code` 只用小写字母开头的安全 ASCII 标识，当前没有 request ID 时不输出
+占位字段，当前没有结构化细节时也不输出 `details`。429 的 envelope 标记 `retryable:true`，并保留
+标准 `Retry-After` header；客户端应以 header 决定等待时间，不从 message 文本解析策略。
 
 ## DTO 版本字段
 

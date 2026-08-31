@@ -4,9 +4,9 @@ set -euo pipefail
 readonly product="media-backup-server"
 readonly version="0.2.0"
 readonly target="x86_64-unknown-linux-gnu"
-readonly release_contract_sha256="aee2762ec7bf9b139b2a8658ac2832423eba6489399e12584b28695c2573f1f2"
-readonly service_user="isarmg-photo"
-readonly service_group="isarmg-photo"
+readonly release_contract_sha256="58614dbf5e928423d10e6977bb99e3e53fd03b47678defd9e3b7a204e8540a9d"
+readonly service_user="isarmg-media"
+readonly service_group="isarmg-media"
 readonly app_dir="/opt/isarmg/media-backup"
 readonly releases_dir="$app_dir/releases"
 readonly state_dir="/var/lib/isarmg/media-backup"
@@ -23,6 +23,9 @@ die() {
   printf 'setup error: %s\n' "$*" >&2
   exit 1
 }
+
+[[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]] ||
+  die "formal server installation requires Linux x86_64"
 
 rooted() {
   if [[ "$setup_root" == "/" ]]; then
@@ -158,14 +161,15 @@ expected_identity = {
     "api_version": "v2",
     "storage_encoding": "plain-v1",
     "server_schema_revision": 1,
-    "server_schema_sha256": "a464584cf7a55f9e50cb85bb539b1f42a9285f707440bb0bcfcd31a6b3a083c0",
+    "server_schema_sha256": "2563e6afc3fff272d02b7a5615272cc773862243bfd15aec51655abf1d9c6b1c",
     "mobile_ffi_epoch": "media-backup-mobile-v0.2-r1",
-    "mobile_ffi_header_sha256": "f5402b3d56e4ecefdfea2c3e849cfc05105fac27b5c6006c8215bfb9fde03dd1",
-    "web_assets_sha256": "6c1c04b220464b62e227395fe5b9b6e320a90b8d1d85e768505059a0fafecb88",
-    "release_contract_sha256": "aee2762ec7bf9b139b2a8658ac2832423eba6489399e12584b28695c2573f1f2",
+    "mobile_ffi_header_sha256": "e56615f40b4b968dd4a8775e50ba2dfd9e67784e6ca19f4e3715ca99c541ced9",
+    "web_assets_sha256": "b830dcfc692f10bc23694eaf425fbe013b85245d04041398cb5e8bc4e7dc81aa",
+    "release_contract_sha256": "58614dbf5e928423d10e6977bb99e3e53fd03b47678defd9e3b7a204e8540a9d",
 }
 expected_directories = {
-    "bin", "config", "docs", "include", "scripts", "share", "share/web", "systemd",
+    "bin", "config", "docs", "include", "scripts", "share", "share/web",
+    "share/web/assets", "systemd",
 }
 expected_files = {
     "LICENSE": 0o644,
@@ -178,9 +182,9 @@ expected_files = {
     "scripts/setup-wsl.sh": 0o755,
     "scripts/start-server-wsl.sh": 0o755,
     "scripts/verify-server-wsl.sh": 0o755,
-    "share/web/admin.css": 0o644,
-    "share/web/admin.html": 0o644,
-    "share/web/sarmg-design.css": 0o644,
+    "share/web/index.html": 0o644,
+    "share/web/assets/admin.js": 0o644,
+    "share/web/assets/admin.css": 0o644,
     "systemd/media-backup.service": 0o644,
 }
 

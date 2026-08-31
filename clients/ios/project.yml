@@ -17,7 +17,7 @@ targets:
     info:
       path: MediaBackup/Info.plist
       properties:
-        CFBundleDisplayName: 照片备份
+        CFBundleDisplayName: 媒体备份
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}

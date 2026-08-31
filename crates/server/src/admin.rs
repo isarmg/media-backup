@@ -4,18 +4,21 @@ use std::{
 };
 
 use axum::{
-    extract::{ConnectInfo, Extension, Path, Request, State},
-    http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri},
+    extract::{rejection::JsonRejection, ConnectInfo, Extension, Path, Request, State},
+    http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri},
     middleware::Next,
     response::{Html, IntoResponse, Response},
     Json,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use rand::{rngs::OsRng, RngCore};
+use sarmg_admin_auth::{
+    is_token_shape, normalize_administrator_username, parse_cookie_value,
+    require_administrator_same_origin, require_canonical_administrator_username,
+    require_csrf_token_matches_hash, require_current_password_hash, require_single_csrf_token,
+    AdministratorOriginMode, CSRF_HEADER, HOST_HEADER, ORIGIN_HEADER, SEC_FETCH_SITE_HEADER,
+};
+use sarmg_contracts::{AdministratorLoginRequest, AdministratorSession};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use sqlx::Row;
-use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use crate::{error::AppError, password, routes::AppState};
@@ -28,23 +31,9 @@ const SESSION_TOUCH_INTERVAL_SECONDS: i64 = 60;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct LoginRequest {
-    username: String,
-    password: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct ChangeAdminPasswordRequest {
     current_password: String,
     new_password: String,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct SessionResponse {
-    authenticated: bool,
-    username: String,
-    csrf_token: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -133,57 +122,70 @@ pub(crate) async fn page() -> Response {
     response.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
+            "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'",
         ),
     );
     response
 }
 
-pub(crate) async fn design_styles() -> Response {
-    stylesheet_response(ADMIN_DESIGN_CSS, "public, max-age=3600")
+pub(crate) async fn script() -> Response {
+    static_asset_response(ADMIN_JS, "text/javascript; charset=utf-8")
 }
 
-pub(crate) async fn product_styles() -> Response {
-    stylesheet_response(ADMIN_CSS, "no-cache")
+pub(crate) async fn styles() -> Response {
+    static_asset_response(ADMIN_CSS, "text/css; charset=utf-8")
 }
 
-fn stylesheet_response(contents: &'static str, cache_control: &'static str) -> Response {
+fn static_asset_response(contents: &'static str, content_type: &'static str) -> Response {
     let mut response = contents.into_response();
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("text/css; charset=utf-8"),
-    );
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static(cache_control),
-    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     response
 }
 
 pub(crate) async fn ensure_admin_user(state: &AppState) -> Result<(), AppError> {
-    let configured_username = state.config.admin_username.trim().to_lowercase();
-    let existing: Option<String> =
-        sqlx::query_scalar("SELECT id FROM auth_users WHERE lower(username) = ?")
-            .bind(&configured_username)
-            .fetch_optional(&state.pool)
-            .await?;
-    if existing.is_some() {
+    let configured_username = state.config.admin_username.clone();
+    let credentials = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT id, username, password_hash FROM auth_users ORDER BY id",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    for (id, username, password_hash) in &credentials {
+        require_canonical_administrator_username(username).map_err(|error| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("persisted administrator {id} has a non-canonical username: {error}"),
+            )
+        })?;
+        require_current_password_hash(password_hash).map_err(|error| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("persisted administrator {id} has a non-current password hash: {error}"),
+            )
+        })?;
+    }
+    if credentials
+        .iter()
+        .any(|(_, username, _)| username == &configured_username)
+    {
         return Ok(());
     }
-    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auth_users")
-        .fetch_one(&state.pool)
-        .await?;
-    if user_count != 0 {
+    if !credentials.is_empty() {
         return Err(AppError::conflict(
             "configured administrator does not match the persisted administrator",
         ));
     }
-    let password_hash = password::hash_password(state.config.admin_password.clone()).await?;
+    let password_hash =
+        password::hash_current_password(state.config.admin_password.clone()).await?;
     let now = now_seconds()?;
     sqlx::query(
         "INSERT INTO auth_users(\
-             id, username, password_hash, role, active, session_version, created_at, updated_at\
-         ) VALUES (?, ?, ?, 'admin', 1, 1, ?, ?)",
+             id, username, password_hash, active, session_version, created_at, updated_at\
+         ) VALUES (?, ?, ?, 1, 1, ?, ?)",
     )
     .bind(Uuid::new_v4().to_string())
     .bind(configured_username)
@@ -198,12 +200,23 @@ pub(crate) async fn ensure_admin_user(state: &AppState) -> Result<(), AppError> 
 pub(crate) async fn login(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    uri: Uri,
     headers: HeaderMap,
-    Json(request): Json<LoginRequest>,
+    request: Result<Json<AdministratorLoginRequest>, JsonRejection>,
 ) -> Result<Response, AppError> {
     reject_browser_bearer(&headers)?;
-    verify_same_origin(&headers)?;
-    let normalized_username = request.username.trim().to_lowercase();
+    verify_same_origin(&state, &headers, &uri)?;
+    let Json(request) = request.map_err(|error| {
+        if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            AppError::new(StatusCode::PAYLOAD_TOO_LARGE, "request body is too large")
+        } else {
+            AppError::bad_request(error.to_string())
+        }
+    })?;
+    let normalized_username = normalize_administrator_username(&request.username)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
+    sarmg_admin_auth::validate_password(&request.password)
+        .map_err(|error| AppError::bad_request(error.to_string()))?;
     let source = crate::trusted_proxy::resolve_client_ip(
         peer.ip(),
         &headers,
@@ -215,7 +228,7 @@ pub(crate) async fn login(
         .check_account(&format!("admin:{normalized_username}"))?;
     let user = sqlx::query_as::<_, AuthUser>(
         "SELECT id, username, password_hash, session_version FROM auth_users \
-         WHERE lower(username) = ? AND active = 1 AND role = 'admin'",
+         WHERE username = ? AND active = 1",
     )
     .bind(normalized_username)
     .fetch_optional(&state.pool)
@@ -231,8 +244,8 @@ pub(crate) async fn login(
         return Err(AppError::unauthorized());
     };
 
-    let token = random_token();
-    let csrf_token = random_token();
+    let token = issue_random_token()?;
+    let csrf_token = issue_random_token()?;
     let now = now_seconds()?;
     let idle_expires_at = checked_expiry(now, state.config.admin_session_idle_seconds)?;
     let absolute_expires_at = checked_expiry(now, state.config.admin_session_absolute_seconds)?;
@@ -269,7 +282,7 @@ pub(crate) async fn login(
     )
     .bind(&session_id)
     .bind(&user.id)
-    .bind(token_hash(&token))
+    .bind(sarmg_admin_auth::token_hash(&token).to_vec())
     .bind(user.session_version)
     .bind(now)
     .bind(now)
@@ -283,22 +296,29 @@ pub(crate) async fn login(
         "INSERT INTO admin_session_csrf_tokens(session_id, token_hash, created_at) VALUES (?, ?, ?)",
     )
     .bind(&session_id)
-    .bind(token_hash(&csrf_token))
+    .bind(sarmg_admin_auth::token_hash(&csrf_token).to_vec())
     .bind(now)
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
 
-    let mut response = Json(SessionResponse {
-        authenticated: true,
-        username: user.username,
-        csrf_token,
-    })
-    .into_response();
+    let administrator_session = AdministratorSession::new(user.id, user.username, csrf_token)
+        .map_err(|error| {
+            tracing::error!(?error, "failed to construct administrator session contract");
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "administrator session contract error",
+            )
+        })?;
+    let mut response = Json(administrator_session).into_response();
     response.headers_mut().append(
         header::SET_COOKIE,
         HeaderValue::from_str(&session_cookie(&state, &token))
             .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "invalid session"))?,
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, private, max-age=0"),
     );
     Ok(response)
 }
@@ -306,7 +326,6 @@ pub(crate) async fn login(
 pub(crate) async fn logout(
     State(state): State<AppState>,
     Extension(identity): Extension<AdminIdentity>,
-    Json(_request): Json<media_backup_protocol::EmptyRequest>,
 ) -> Result<Response, AppError> {
     sqlx::query("UPDATE auth_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
         .bind(now_seconds()?)
@@ -319,8 +338,8 @@ pub(crate) async fn logout(
 pub(crate) async fn session(
     State(state): State<AppState>,
     Extension(identity): Extension<AdminIdentity>,
-) -> Result<Json<SessionResponse>, AppError> {
-    let csrf_token = random_token();
+) -> Result<Response, AppError> {
+    let csrf_token = issue_random_token()?;
     let now = now_seconds()?;
     let mut transaction = state.pool.begin().await?;
     let active: Option<i64> =
@@ -335,7 +354,7 @@ pub(crate) async fn session(
         "INSERT INTO admin_session_csrf_tokens(session_id, token_hash, created_at) VALUES (?, ?, ?)",
     )
     .bind(&identity.session_id)
-    .bind(token_hash(&csrf_token))
+    .bind(sarmg_admin_auth::token_hash(&csrf_token).to_vec())
     .bind(now)
     .execute(&mut *transaction)
     .await?;
@@ -351,11 +370,22 @@ pub(crate) async fn session(
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
-    Ok(Json(SessionResponse {
-        authenticated: true,
-        username: identity.username,
-        csrf_token,
-    }))
+    let administrator_session =
+        AdministratorSession::new(identity.user_id, identity.username, csrf_token).map_err(
+            |error| {
+                tracing::error!(?error, "failed to construct administrator session contract");
+                AppError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "administrator session contract error",
+                )
+            },
+        )?;
+    let mut response = Json(administrator_session).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, private, max-age=0"),
+    );
+    Ok(response)
 }
 
 pub(crate) async fn change_admin_password(
@@ -363,17 +393,17 @@ pub(crate) async fn change_admin_password(
     Extension(identity): Extension<AdminIdentity>,
     Json(request): Json<ChangeAdminPasswordRequest>,
 ) -> Result<Response, AppError> {
-    password::validate_password(&request.new_password)?;
+    password::require_current_policy(&request.new_password)?;
     let current_hash: String =
         sqlx::query_scalar("SELECT password_hash FROM auth_users WHERE id = ?")
             .bind(&identity.user_id)
             .fetch_optional(&state.pool)
             .await?
             .ok_or_else(AppError::unauthorized)?;
-    if !password::verify_password(request.current_password, current_hash).await {
+    if !password::verify_current_password(request.current_password, current_hash).await {
         return Err(AppError::unauthorized());
     }
-    let new_hash = password::hash_password(request.new_password).await?;
+    let new_hash = password::hash_current_password(request.new_password).await?;
     let changed = sqlx::query("UPDATE auth_users SET password_hash = ? WHERE id = ?")
         .bind(new_hash)
         .bind(identity.user_id)
@@ -399,10 +429,10 @@ pub(crate) async fn require_admin(
          FROM auth_sessions s JOIN auth_users u ON u.id = s.user_id \
          WHERE s.token_hash = ? AND s.revoked_at IS NULL \
            AND s.idle_expires_at > ? AND s.absolute_expires_at > ? \
-           AND u.active = 1 AND u.role = 'admin' \
+           AND u.active = 1 \
            AND u.session_version = s.user_session_version",
     )
-    .bind(token_hash(&provided))
+    .bind(sarmg_admin_auth::token_hash(&provided).to_vec())
     .bind(now)
     .bind(now)
     .fetch_optional(&state.pool)
@@ -411,7 +441,7 @@ pub(crate) async fn require_admin(
     let refreshed_idle = checked_expiry(now, state.config.admin_session_idle_seconds)?
         .min(stored.absolute_expires_at);
     if is_unsafe_method(request.method()) {
-        verify_mutation_request(&state, request.headers(), &stored.id).await?;
+        verify_mutation_request(&state, request.headers(), request.uri(), &stored.id).await?;
     }
     let session_id = stored.id.clone();
     request.extensions_mut().insert(AdminIdentity {
@@ -477,12 +507,12 @@ pub(crate) async fn create_user(
         request.storage_path.trim().to_owned()
     };
     validate_username(username)?;
-    password::validate_password(&request.password)?;
+    password::require_current_policy(&request.password)?;
     validate_policy(display_name, &storage_path, request.quota_bytes)?;
     ensure_unique_username(&state, username, None).await?;
     ensure_unique_path(&state, &storage_path, None).await?;
     state.storage.validate_account_path(&storage_path).await?;
-    let password_hash = password::hash_password(request.password).await?;
+    let password_hash = password::hash_current_password(request.password).await?;
     sqlx::query(
         r#"
         INSERT INTO accounts(
@@ -542,8 +572,8 @@ pub(crate) async fn reset_user_password(
     Path(id): Path<Uuid>,
     Json(request): Json<ResetPasswordRequest>,
 ) -> Result<StatusCode, AppError> {
-    password::validate_password(&request.password)?;
-    let password_hash = password::hash_password(request.password).await?;
+    password::require_current_policy(&request.password)?;
+    let password_hash = password::hash_current_password(request.password).await?;
     let changed = sqlx::query("UPDATE accounts SET password_hash = ? WHERE id = ?")
         .bind(password_hash)
         .bind(id)
@@ -691,14 +721,14 @@ fn is_unsafe_method(method: &Method) -> bool {
 async fn verify_mutation_request(
     state: &AppState,
     headers: &HeaderMap,
+    uri: &Uri,
     session_id: &str,
 ) -> Result<(), AppError> {
-    verify_same_origin(headers)?;
-    let provided = headers
-        .get("x-csrf-token")
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| AppError::new(StatusCode::FORBIDDEN, "invalid CSRF token"))?;
-    let provided_hash = token_hash(provided);
+    verify_same_origin(state, headers, uri)?;
+    let csrf_name = HeaderName::from_static(CSRF_HEADER);
+    let csrf_values = raw_header_values(headers, &csrf_name);
+    require_single_csrf_token(&csrf_values)
+        .map_err(|_| AppError::new(StatusCode::FORBIDDEN, "invalid CSRF token"))?;
     let candidates: Vec<Vec<u8>> = sqlx::query_scalar(
         "SELECT token_hash FROM admin_session_csrf_tokens WHERE session_id = ? \
          ORDER BY created_at DESC, id DESC LIMIT ?",
@@ -707,54 +737,33 @@ async fn verify_mutation_request(
     .bind(MAX_CSRF_TOKENS_PER_SESSION)
     .fetch_all(&state.pool)
     .await?;
-    if !candidates.iter().any(|expected| {
-        provided_hash.len() == expected.len()
-            && provided_hash.ct_eq(expected.as_slice()).unwrap_u8() == 1
-    }) {
+    if !candidates
+        .iter()
+        .any(|expected| require_csrf_token_matches_hash(&csrf_values, expected).is_ok())
+    {
         return Err(AppError::new(StatusCode::FORBIDDEN, "invalid CSRF token"));
     }
     Ok(())
 }
 
-fn verify_same_origin(headers: &HeaderMap) -> Result<(), AppError> {
-    let origin = headers
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<Uri>().ok())
-        .filter(|uri| matches!(uri.scheme_str(), Some("http" | "https")))
-        .ok_or_else(|| AppError::new(StatusCode::FORBIDDEN, "invalid request origin"))?;
-    if origin
-        .path_and_query()
-        .is_some_and(|value| value.as_str() != "/")
-    {
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "invalid request origin",
-        ));
-    }
-    let origin_authority = origin
-        .authority()
-        .ok_or_else(|| AppError::new(StatusCode::FORBIDDEN, "invalid request origin"))?;
-    let host = headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<axum::http::uri::Authority>().ok())
-        .ok_or_else(|| AppError::new(StatusCode::FORBIDDEN, "invalid request host"))?;
-    let default_port = if origin.scheme_str() == Some("https") {
-        443
+fn verify_same_origin(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Result<(), AppError> {
+    let mode = if state.config.development {
+        AdministratorOriginMode::LoopbackDevelopmentHttp
     } else {
-        80
+        AdministratorOriginMode::ProductionHttps
     };
-    if !origin_authority.host().eq_ignore_ascii_case(host.host())
-        || origin_authority.port_u16().unwrap_or(default_port)
-            != host.port_u16().unwrap_or(default_port)
-    {
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "cross-origin request rejected",
-        ));
+    let origin_name = HeaderName::from_static(ORIGIN_HEADER);
+    let host_name = HeaderName::from_static(HOST_HEADER);
+    let site_name = HeaderName::from_static(SEC_FETCH_SITE_HEADER);
+    let origins = raw_header_values(headers, &origin_name);
+    let mut hosts = raw_header_values(headers, &host_name);
+    if let Some(authority) = uri.authority() {
+        hosts.push(authority.as_str().as_bytes());
     }
-    Ok(())
+    let sites = raw_header_values(headers, &site_name);
+    require_administrator_same_origin(mode, &origins, &hosts, &sites)
+        .map(|_| ())
+        .map_err(|_| AppError::new(StatusCode::FORBIDDEN, "invalid request origin"))
 }
 
 fn reject_browser_bearer(headers: &HeaderMap) -> Result<(), AppError> {
@@ -764,14 +773,14 @@ fn reject_browser_bearer(headers: &HeaderMap) -> Result<(), AppError> {
     Ok(())
 }
 
-fn random_token() -> String {
-    let mut bytes = [0_u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
-}
-
-fn token_hash(token: &str) -> Vec<u8> {
-    Sha256::digest(token.as_bytes()).to_vec()
+fn issue_random_token() -> Result<String, AppError> {
+    sarmg_admin_auth::random_token().map_err(|error| {
+        tracing::error!(?error, "administrator token generation failed");
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "administrator token generation failed",
+        )
+    })
 }
 
 fn now_seconds() -> Result<i64, AppError> {
@@ -811,15 +820,30 @@ fn session_cookie(state: &AppState, token: &str) -> String {
 }
 
 fn parse_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    let cookie = single_cookie_header(headers)?;
+    parse_cookie_value(cookie, name)
+        .filter(|value| is_token_shape(value))
+        .map(str::to_owned)
+}
+
+fn single_cookie_header(headers: &HeaderMap) -> Option<&str> {
+    let mut values = headers.get_all(header::COOKIE).iter();
+    let value = values.next()?.to_str().ok()?;
+    if values.next().is_some() {
+        return None;
+    }
+    Some(value)
+}
+
+fn raw_header_values<'headers>(
+    headers: &'headers HeaderMap,
+    name: &HeaderName,
+) -> Vec<&'headers [u8]> {
     headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .find_map(|part| {
-            let (key, value) = part.trim().split_once('=')?;
-            (key == name && !value.is_empty()).then(|| value.to_owned())
-        })
+        .get_all(name)
+        .iter()
+        .map(HeaderValue::as_bytes)
+        .collect()
 }
 
 fn expire_session_response(state: &AppState, status: StatusCode) -> Response {
@@ -834,30 +858,70 @@ fn expire_session_response(state: &AppState, status: StatusCode) -> Response {
     if let Ok(cookie) = HeaderValue::from_str(&cookie) {
         response.headers_mut().append(header::SET_COOKIE, cookie);
     }
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, private, max-age=0"),
+    );
     response
 }
 
-// clients/web 是管理客户端的唯一源码位置；嵌入可避免运行时出现前后端版本漂移。
-const ADMIN_HTML: &str = include_str!("../../../clients/web/admin.html");
-const ADMIN_CSS: &str = include_str!("../../../clients/web/admin.css");
-const ADMIN_DESIGN_CSS: &str = include_str!("../../../vendor/sarmg-design/bundle.css");
+// clients/web 是管理客户端的唯一源码位置；只嵌入经 Foundation 门禁和 Vite 生成的当前产物。
+const ADMIN_HTML: &str = include_str!("../../../clients/web/dist/index.html");
+const ADMIN_JS: &str = include_str!("../../../clients/web/dist/assets/admin.js");
+const ADMIN_CSS: &str = include_str!("../../../clients/web/dist/assets/admin.css");
 
 #[cfg(test)]
 mod contract_tests {
-    use super::ADMIN_HTML;
+    use super::{parse_cookie, ADMIN_HTML, ADMIN_JS};
+    use axum::http::{header, HeaderMap, HeaderValue};
 
     #[test]
     fn embedded_browser_uses_only_the_current_admin_api_namespace() {
-        for path in [
-            "/v2/admin/login",
-            "/v2/admin/session",
-            "/v2/admin/overview",
-            "/v2/admin/users",
-            "/v2/admin/logout",
-        ] {
-            assert!(ADMIN_HTML.contains(path), "missing browser API path {path}");
+        assert!(ADMIN_HTML.contains("/admin/assets/admin.js"));
+        assert!(ADMIN_HTML.contains("/admin/assets/admin.css"));
+        assert!(ADMIN_HTML.contains("data-sarmg-scope"));
+        for path in ["/api/v2/admin/overview", "/api/v2/admin/users"] {
+            assert!(ADMIN_JS.contains(path), "missing browser API path {path}");
         }
-        assert!(!ADMIN_HTML.contains("/admin/api"));
-        assert!(!ADMIN_HTML.contains("/v1/"));
+        assert!(!ADMIN_JS.contains("\"/v2/admin"));
+        assert!(!ADMIN_JS.contains("'/v2/admin"));
+        assert!(!ADMIN_JS.contains("/admin/api"));
+    }
+
+    #[test]
+    fn browser_cookie_requires_one_header_one_name_and_current_token_shape() {
+        let token = sarmg_admin_auth::random_token().expect("generate canonical session token");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("other=x; media_session={token}"))
+                .expect("valid test Cookie header"),
+        );
+        assert_eq!(parse_cookie(&headers, "media_session"), Some(token.clone()));
+
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("media_session={token}; media_session={token}"))
+                .expect("valid duplicate-cookie test header"),
+        );
+        assert_eq!(parse_cookie(&headers, "media_session"), None);
+
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("media_session=short"),
+        );
+        assert_eq!(parse_cookie(&headers, "media_session"), None);
+
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("media_session={token}"))
+                .expect("valid first Cookie header"),
+        );
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("media_session={token}"))
+                .expect("valid second Cookie header"),
+        );
+        assert_eq!(parse_cookie(&headers, "media_session"), None);
     }
 }

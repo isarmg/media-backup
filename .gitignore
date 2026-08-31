@@ -16,5 +16,7 @@
 /clients/ios/DerivedData/
 /clients/ios/MediaBackup.xcodeproj/
 /clients/ios/MediaBackup/Info.plist
+/clients/web/node_modules/
+/clients/web/dist/
 *.xcuserstate
 DerivedData/

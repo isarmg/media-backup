@@ -14,6 +14,7 @@ use media_backup_protocol::{
     UploadDisposition, UploadPartSpec, UploadStatusResponse, API_BASE_PATH,
 };
 use rand::{rngs::OsRng, RngCore};
+use sarmg_contracts::{ADMIN_LOGIN_PATH, ADMIN_LOGOUT_PATH, ADMIN_SESSION_PATH};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
@@ -155,43 +156,47 @@ pub fn router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let admin_protected = Router::new()
-        .route("/admin/session", get(admin::session))
-        .route("/admin/overview", get(admin::overview))
-        .route("/admin/users", post(admin::create_user))
-        .route("/admin/users/{id}", put(admin::update_user))
+        .route(ADMIN_SESSION_PATH, get(admin::session))
+        .route(ADMIN_LOGOUT_PATH, post(admin::logout))
+        .route("/api/v2/admin/overview", get(admin::overview))
+        .route("/api/v2/admin/users", post(admin::create_user))
+        .route("/api/v2/admin/users/{id}", put(admin::update_user))
         .route(
-            "/admin/users/{id}/reset-password",
+            "/api/v2/admin/users/{id}/reset-password",
             post(admin::reset_user_password),
         )
-        .route("/admin/logout", post(admin::logout))
-        .route("/admin/password", post(admin::change_admin_password))
+        .route("/api/v2/admin/password", post(admin::change_admin_password))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             admin::require_admin,
         ));
 
-    let current_api = Router::new()
+    let mobile_api = Router::new()
         .route(
             "/auth/bootstrap",
             post(bootstrap).layer(DefaultBodyLimit::max(
                 crate::login_admission::LOGIN_BODY_LIMIT_BYTES,
             )),
         )
+        .merge(protected);
+
+    let browser_api = Router::new()
         .route(
-            "/admin/login",
+            ADMIN_LOGIN_PATH,
             post(admin::login).layer(DefaultBodyLimit::max(
                 crate::login_admission::LOGIN_BODY_LIMIT_BYTES,
             )),
         )
-        .merge(admin_protected)
-        .merge(protected);
+        .merge(admin_protected);
 
     let sensitive = Router::new()
         .route("/metrics", get(metrics::prometheus))
         .route("/admin", get(admin::page))
-        .route("/admin/sarmg-design.css", get(admin::design_styles))
-        .route("/admin/admin.css", get(admin::product_styles))
-        .nest(API_BASE_PATH, current_api)
+        .route("/admin/", get(admin::page))
+        .route("/admin/assets/admin.js", get(admin::script))
+        .route("/admin/assets/admin.css", get(admin::styles))
+        .nest(API_BASE_PATH, mobile_api)
+        .merge(browser_api)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_secure_transport,
@@ -203,6 +208,7 @@ pub fn router(state: AppState) -> Router {
         .route("/health/ready", get(ready))
         .merge(sensitive)
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
+        .layer(middleware::from_fn(crate::error::normalize_error_response))
         .with_state(state)
 }
 

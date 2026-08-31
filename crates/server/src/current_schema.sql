@@ -206,9 +206,15 @@ CREATE INDEX audit_events_account_idx ON audit_events(account_id, sequence DESC)
 
 CREATE TABLE auth_users (
     id              TEXT PRIMARY KEY,
-    username        TEXT NOT NULL,
+    username        TEXT NOT NULL CHECK (
+        length(username) BETWEEN 3 AND 64
+        AND username = lower(username)
+        AND username NOT GLOB '*[^a-z0-9._-]*'
+        AND substr(username, 1, 1) GLOB '[a-z0-9]'
+        AND substr(username, -1, 1) GLOB '[a-z0-9]'
+        AND instr(username, '@') = 0
+    ),
     password_hash   TEXT NOT NULL,
-    role            TEXT NOT NULL DEFAULT 'admin',
     active          INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
     session_version INTEGER NOT NULL DEFAULT 1 CHECK (session_version > 0),
     created_at      INTEGER NOT NULL,
@@ -216,7 +222,7 @@ CREATE TABLE auth_users (
 );
 
 CREATE UNIQUE INDEX auth_users_username_idx
-    ON auth_users(lower(username));
+    ON auth_users(username);
 
 CREATE TABLE auth_sessions (
     id                   TEXT PRIMARY KEY,
@@ -254,10 +260,9 @@ CREATE INDEX admin_session_csrf_tokens_session_idx
     ON admin_session_csrf_tokens(session_id, created_at DESC, id DESC);
 
 CREATE TRIGGER auth_users_security_version
-AFTER UPDATE OF password_hash, role, active ON auth_users
+AFTER UPDATE OF password_hash, active ON auth_users
 FOR EACH ROW
 WHEN OLD.password_hash IS NOT NEW.password_hash
-  OR OLD.role IS NOT NEW.role
   OR OLD.active IS NOT NEW.active
 BEGIN
     UPDATE auth_users

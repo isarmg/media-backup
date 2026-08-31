@@ -507,7 +507,7 @@ mod platform {
     fn unsupported() -> std::io::Error {
         std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            "secure photo storage requires Linux openat2",
+            "secure media storage requires Linux openat2",
         )
     }
 }

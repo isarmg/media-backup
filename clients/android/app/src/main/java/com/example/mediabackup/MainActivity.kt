@@ -550,7 +550,7 @@ private fun BackupScreen(context: Context) {
                     onValueChange = { serverUrl = it },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("服务器地址") },
-                    placeholder = { Text("https://photos.example.com") },
+                    placeholder = { Text("https://media.example.com") },
                     singleLine = true,
                 )
                 Spacer(Modifier.height(10.dp))

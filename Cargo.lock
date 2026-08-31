@@ -972,6 +972,83 @@ dependencies = [
 ]
 
 [[package]]
+name = "media-backup-agent-core"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "libc",
+ "media-backup-crypto",
+ "media-backup-protocol",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "media-backup-crypto"
+version = "0.2.0"
+dependencies = [
+ "blake3",
+ "media-backup-protocol",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "media-backup-mobile"
+version = "0.2.0"
+dependencies = [
+ "jni",
+ "media-backup-agent-core",
+ "serde_json",
+]
+
+[[package]]
+name = "media-backup-protocol"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "media-backup-server"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "blake3",
+ "libc",
+ "media-backup-protocol",
+ "rand",
+ "rusqlite",
+ "rustix",
+ "sarmg-admin-auth",
+ "sarmg-contracts",
+ "sarmg-error",
+ "sarmg-server-target",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1108,81 +1185,6 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
-
-[[package]]
-name = "media-backup-agent-core"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "blake3",
- "libc",
- "media-backup-crypto",
- "media-backup-protocol",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.20",
- "uuid",
-]
-
-[[package]]
-name = "media-backup-crypto"
-version = "0.2.0"
-dependencies = [
- "blake3",
- "media-backup-protocol",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "media-backup-mobile"
-version = "0.2.0"
-dependencies = [
- "jni",
- "media-backup-agent-core",
- "serde_json",
-]
-
-[[package]]
-name = "media-backup-protocol"
-version = "0.2.0"
-dependencies = [
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "media-backup-server"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "argon2",
- "axum",
- "base64",
- "blake3",
- "libc",
- "media-backup-protocol",
- "rand",
- "rusqlite",
- "rustix",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "subtle",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tokio-util",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
 
 [[package]]
 name = "pin-project-lite"
@@ -1397,6 +1399,57 @@ checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
 ]
+
+[[package]]
+name = "sarmg-admin-auth"
+version = "0.3.0"
+source = "git+https://github.com/isarmg/sarmg-foundation.git?rev=1fe326081cfd896f05ff502e80f99504797c14c6#1fe326081cfd896f05ff502e80f99504797c14c6"
+dependencies = [
+ "argon2",
+ "base64",
+ "getrandom 0.4.3",
+ "sha2",
+ "subtle",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "sarmg-contracts"
+version = "0.3.0"
+source = "git+https://github.com/isarmg/sarmg-foundation.git?rev=1fe326081cfd896f05ff502e80f99504797c14c6#1fe326081cfd896f05ff502e80f99504797c14c6"
+dependencies = [
+ "sarmg-admin-auth",
+ "sarmg-error",
+ "sarmg-schema-identity",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "sarmg-error"
+version = "0.3.0"
+source = "git+https://github.com/isarmg/sarmg-foundation.git?rev=1fe326081cfd896f05ff502e80f99504797c14c6#1fe326081cfd896f05ff502e80f99504797c14c6"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "sarmg-schema-identity"
+version = "0.3.0"
+source = "git+https://github.com/isarmg/sarmg-foundation.git?rev=1fe326081cfd896f05ff502e80f99504797c14c6#1fe326081cfd896f05ff502e80f99504797c14c6"
+dependencies = [
+ "serde",
+ "sha2",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "sarmg-server-target"
+version = "0.3.0"
+source = "git+https://github.com/isarmg/sarmg-foundation.git?rev=1fe326081cfd896f05ff502e80f99504797c14c6#1fe326081cfd896f05ff502e80f99504797c14c6"
 
 [[package]]
 name = "scopeguard"

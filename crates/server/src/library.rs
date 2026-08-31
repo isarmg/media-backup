@@ -49,6 +49,16 @@ pub struct DuplicateQuery {
     limit: Option<u32>,
 }
 
+/// Result of draining blob rows that no resource references. The blob row is
+/// the durable deletion intent: it is removed in the same SQLite transaction
+/// that unlinks the object, so a filesystem failure never creates an
+/// untracked object outside the database.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OrphanBlobReconcileReport {
+    pub removed: u64,
+    pub errors: u64,
+}
+
 pub async fn timeline(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
@@ -285,12 +295,6 @@ pub async fn delete_asset_permanently(
     Json(_request): Json<EmptyRequest>,
 ) -> Result<StatusCode, AppError> {
     let mut transaction = state.pool.begin().await?;
-    let storage_path: Option<String> =
-        sqlx::query_scalar("SELECT storage_path FROM accounts WHERE id = ?")
-            .bind(auth.account_id)
-            .fetch_optional(&mut *transaction)
-            .await?;
-    let storage_path = storage_path.ok_or_else(AppError::unauthorized)?;
     let blob_ids: Vec<Uuid> = sqlx::query_scalar(
         r#"
         SELECT DISTINCT r.blob_id FROM resources r
@@ -310,26 +314,6 @@ pub async fn delete_asset_permanently(
         .bind(auth.account_id)
         .execute(&mut *transaction)
         .await?;
-    let mut orphan_paths = Vec::new();
-    for blob_id in &blob_ids {
-        let orphan: Option<String> = sqlx::query_scalar(
-            "SELECT b.storage_path FROM blobs b \
-             WHERE b.id = ? AND b.account_id = ? \
-               AND NOT EXISTS (SELECT 1 FROM resources r WHERE r.blob_id = b.id)",
-        )
-        .bind(blob_id)
-        .bind(auth.account_id)
-        .fetch_optional(&mut *transaction)
-        .await?;
-        if let Some(path) = orphan {
-            sqlx::query("DELETE FROM blobs WHERE id = ? AND account_id = ?")
-                .bind(blob_id)
-                .bind(auth.account_id)
-                .execute(&mut *transaction)
-                .await?;
-            orphan_paths.push(path);
-        }
-    }
     audit::record_change(
         &mut transaction,
         auth.account_id,
@@ -347,10 +331,96 @@ pub async fn delete_asset_permanently(
     )
     .await?;
     transaction.commit().await?;
-    for path in orphan_paths {
-        state.storage.remove_blob(&storage_path, &path).await?;
+
+    // The asset deletion is already durable. Physical reclamation is a
+    // separate, retryable close-out step; never return 500 after committing
+    // the user-visible delete because that would invite an unsafe replay.
+    match reconcile_orphan_blobs(&state, Some(auth.account_id)).await {
+        Ok(report) if report.errors == 0 => Ok(StatusCode::NO_CONTENT),
+        Ok(report) => {
+            tracing::warn!(
+                account_id = %auth.account_id,
+                pending = report.errors,
+                "asset metadata was deleted; blob reclamation remains queued"
+            );
+            Ok(StatusCode::ACCEPTED)
+        }
+        Err(error) => {
+            tracing::error!(
+                account_id = %auth.account_id,
+                ?error,
+                "asset metadata was deleted; blob reconciliation could not be scanned"
+            );
+            Ok(StatusCode::ACCEPTED)
+        }
     }
-    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Remove unreferenced blob objects without ever losing their durable lookup
+/// row first. `DELETE ... RETURNING` obtains SQLite's write lock and makes the
+/// row unavailable to concurrent deduplication while the rooted unlink runs.
+/// On unlink failure the transaction rolls back, leaving both row and file for
+/// the next startup/periodic/manual reconciliation pass. If commit fails after
+/// unlink, the restored row points to a missing unreferenced file and the next
+/// pass safely finishes the metadata deletion.
+pub(crate) async fn reconcile_orphan_blobs(
+    state: &AppState,
+    account_filter: Option<Uuid>,
+) -> Result<OrphanBlobReconcileReport, AppError> {
+    let blob_ids: Vec<Uuid> = sqlx::query_scalar(
+        r#"
+        SELECT b.id FROM blobs b
+        WHERE (?1 IS NULL OR b.account_id = ?1)
+          AND NOT EXISTS (SELECT 1 FROM resources r WHERE r.blob_id = b.id)
+          AND NOT EXISTS (SELECT 1 FROM uploads u WHERE u.commit_blob_id = b.id)
+        ORDER BY b.created_at, b.id
+        "#,
+    )
+    .bind(account_filter)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut report = OrphanBlobReconcileReport::default();
+    for blob_id in blob_ids {
+        let mut transaction = state.pool.begin().await?;
+        let orphan: Option<(Uuid, String)> = sqlx::query_as(
+            r#"
+            DELETE FROM blobs
+            WHERE id = ?
+              AND NOT EXISTS (SELECT 1 FROM resources r WHERE r.blob_id = blobs.id)
+              AND NOT EXISTS (SELECT 1 FROM uploads u WHERE u.commit_blob_id = blobs.id)
+            RETURNING account_id, storage_path
+            "#,
+        )
+        .bind(blob_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some((account_id, object_path)) = orphan else {
+            transaction.rollback().await?;
+            continue;
+        };
+        let account_path: String =
+            sqlx::query_scalar("SELECT storage_path FROM accounts WHERE id = ?")
+                .bind(account_id)
+                .fetch_one(&mut *transaction)
+                .await?;
+        match state.storage.remove_blob(&account_path, &object_path).await {
+            Ok(()) => {
+                transaction.commit().await?;
+                report.removed = report.removed.saturating_add(1);
+            }
+            Err(error) => {
+                transaction.rollback().await?;
+                report.errors = report.errors.saturating_add(1);
+                tracing::warn!(
+                    blob_id = %blob_id,
+                    account_id = %account_id,
+                    ?error,
+                    "orphan blob reclamation will be retried"
+                );
+            }
+        }
+    }
+    Ok(report)
 }
 
 pub async fn list_albums(

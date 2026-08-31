@@ -15,7 +15,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 const MANIFEST_VERSION: u32 = 1;
 const PRODUCT: &str = "media-backup-server";
 const VERSION: &str = "0.2.0";
-const TARGET: &str = "x86_64-unknown-linux-gnu";
+const TARGET: &str = sarmg_server_target::SERVER_TARGET_TRIPLE;
 const API_VERSION: &str = media_backup_protocol::API_VERSION;
 const STORAGE_ENCODING: &str = "plain-v1";
 const MOBILE_FFI_EPOCH: &str = "media-backup-mobile-v0.2-r1";
@@ -26,9 +26,9 @@ const RELOCATABLE_RELEASE_SUFFIX: &str = "opt/isarmg/media-backup/releases/0.2.0
 
 const MOBILE_FFI_HEADER: &[u8] = include_bytes!("../../mobile-ffi/include/media_backup_v0_2_r1.h");
 // 发布身份直接绑定当前客户端源码，而不是信任另行复制的 Web 文件。
-const ADMIN_HTML: &[u8] = include_bytes!("../../../clients/web/admin.html");
-const ADMIN_CSS: &[u8] = include_bytes!("../../../clients/web/admin.css");
-const ADMIN_DESIGN_CSS: &[u8] = include_bytes!("../../../vendor/sarmg-design/bundle.css");
+const ADMIN_HTML: &[u8] = include_bytes!("../../../clients/web/dist/index.html");
+const ADMIN_JS: &[u8] = include_bytes!("../../../clients/web/dist/assets/admin.js");
+const ADMIN_CSS: &[u8] = include_bytes!("../../../clients/web/dist/assets/admin.css");
 
 const EXPECTED_DIRECTORIES: &[&str] = &[
     "bin",
@@ -38,6 +38,7 @@ const EXPECTED_DIRECTORIES: &[&str] = &[
     "scripts",
     "share",
     "share/web",
+    "share/web/assets",
     "systemd",
 ];
 
@@ -52,9 +53,9 @@ const EXPECTED_FILES: &[(&str, u32)] = &[
     ("scripts/setup-wsl.sh", 0o755),
     ("scripts/start-server-wsl.sh", 0o755),
     ("scripts/verify-server-wsl.sh", 0o755),
-    ("share/web/admin.css", 0o644),
-    ("share/web/admin.html", 0o644),
-    ("share/web/sarmg-design.css", 0o644),
+    ("share/web/index.html", 0o644),
+    ("share/web/assets/admin.js", 0o644),
+    ("share/web/assets/admin.css", 0o644),
     ("systemd/media-backup.service", 0o644),
 ];
 
@@ -95,9 +96,9 @@ struct ReleaseManifest {
 pub(crate) fn identity() -> ReleaseIdentity {
     let mobile_ffi_header_sha256 = sha256_hex(MOBILE_FFI_HEADER);
     let web_assets_sha256 = bundle_sha256(&[
-        ("share/web/admin.css", ADMIN_CSS),
-        ("share/web/admin.html", ADMIN_HTML),
-        ("share/web/sarmg-design.css", ADMIN_DESIGN_CSS),
+        ("share/web/assets/admin.css", ADMIN_CSS),
+        ("share/web/assets/admin.js", ADMIN_JS),
+        ("share/web/index.html", ADMIN_HTML),
     ]);
     let contract = format!(
         "product={PRODUCT}\nversion={VERSION}\napi_version={API_VERSION}\nstorage_encoding={STORAGE_ENCODING}\nserver_schema_revision={}\nserver_schema_sha256={}\nmobile_ffi_epoch={MOBILE_FFI_EPOCH}\nmobile_ffi_header_sha256={mobile_ffi_header_sha256}\nweb_assets_sha256={web_assets_sha256}\n",
@@ -133,6 +134,7 @@ pub(crate) fn verify_installed(root: &Path) -> Result<ReleaseIdentity> {
 }
 
 pub(crate) fn verify_runtime(root: &Path) -> Result<ReleaseIdentity> {
+    ensure_supported_runtime_host()?;
     let root = validate_runtime_root(root)?;
     let expected_executable = root.join("bin/media-backup-server");
     let executing = fs::canonicalize(
@@ -162,6 +164,15 @@ pub(crate) fn verify_runtime(root: &Path) -> Result<ReleaseIdentity> {
     } else {
         verify_with_ownership(&root, false)
     }
+}
+
+fn ensure_supported_runtime_host() -> Result<()> {
+    let host = rustix::system::uname();
+    ensure!(
+        host.sysname().to_bytes() == b"Linux" && host.machine().to_bytes() == b"x86_64",
+        "formal Media Backup server runtime requires Linux x86_64"
+    );
+    Ok(())
 }
 
 pub(crate) fn ensure_unbound_development_serve() -> Result<()> {
@@ -311,9 +322,9 @@ fn verify_with_ownership(root: &Path, require_root_owned: bool) -> Result<Releas
     );
     let web_assets_sha256 = bundle_sha256(&[
         (
-            "share/web/admin.css",
+            "share/web/assets/admin.css",
             &read_small_regular_file(
-                &root.join("share/web/admin.css"),
+                &root.join("share/web/assets/admin.css"),
                 0o644,
                 4 * 1024 * 1024,
                 require_root_owned,
@@ -321,23 +332,23 @@ fn verify_with_ownership(root: &Path, require_root_owned: bool) -> Result<Releas
             )?,
         ),
         (
-            "share/web/admin.html",
+            "share/web/assets/admin.js",
             &read_small_regular_file(
-                &root.join("share/web/admin.html"),
+                &root.join("share/web/assets/admin.js"),
+                0o644,
+                4 * 1024 * 1024,
+                require_root_owned,
+                "admin JavaScript",
+            )?,
+        ),
+        (
+            "share/web/index.html",
+            &read_small_regular_file(
+                &root.join("share/web/index.html"),
                 0o644,
                 4 * 1024 * 1024,
                 require_root_owned,
                 "admin HTML",
-            )?,
-        ),
-        (
-            "share/web/sarmg-design.css",
-            &read_small_regular_file(
-                &root.join("share/web/sarmg-design.css"),
-                0o644,
-                4 * 1024 * 1024,
-                require_root_owned,
-                "design CSS",
             )?,
         ),
     ]);
@@ -721,8 +732,16 @@ mod tests {
         assert_eq!(identity.storage_encoding, "plain-v1");
         assert_eq!(identity.server_schema_revision, 1);
         assert_eq!(
+            identity.mobile_ffi_header_sha256,
+            "e56615f40b4b968dd4a8775e50ba2dfd9e67784e6ca19f4e3715ca99c541ced9"
+        );
+        assert_eq!(
+            identity.web_assets_sha256,
+            "b830dcfc692f10bc23694eaf425fbe013b85245d04041398cb5e8bc4e7dc81aa"
+        );
+        assert_eq!(
             identity.release_contract_sha256,
-            "aee2762ec7bf9b139b2a8658ac2832423eba6489399e12584b28695c2573f1f2"
+            "58614dbf5e928423d10e6977bb99e3e53fd03b47678defd9e3b7a204e8540a9d"
         );
     }
 
@@ -738,7 +757,7 @@ mod tests {
         assert!(serde_json::from_value::<ReleaseManifest>(manifest).is_err());
 
         let mut identity_value = serde_json::to_value(identity()).unwrap();
-        identity_value["legacy_version"] = json!("0.1.0");
+        identity_value["unknown_version_field"] = json!("noncurrent-version");
         let manifest = json!({
             "manifest_version": MANIFEST_VERSION,
             "identity": identity_value,

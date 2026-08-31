@@ -112,6 +112,7 @@ async fn main() -> Result<()> {
         recovered = reconciliation.recovered,
         marked_unknown = reconciliation.marked_unknown,
         orphan_stages_removed = reconciliation.orphan_stages_removed,
+        orphan_blobs_removed = reconciliation.orphan_blobs_removed,
         errors = reconciliation.errors,
         "upload commit reconciliation finished"
     );
@@ -127,6 +128,7 @@ async fn main() -> Result<()> {
                     recovered = report.recovered,
                     marked_unknown = report.marked_unknown,
                     orphan_stages_removed = report.orphan_stages_removed,
+                    orphan_blobs_removed = report.orphan_blobs_removed,
                     errors = report.errors,
                     "periodic upload reconciliation finished"
                 ),

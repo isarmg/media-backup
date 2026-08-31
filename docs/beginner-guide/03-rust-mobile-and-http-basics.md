@@ -31,11 +31,12 @@ Swift continuation 只能 resume 一次；后台 delegate、取消和进程恢�
 
 ## HTTP 约定
 
-JSON 请求设置正确 Content-Type，并受 body 上限。错误使用稳定 code/status/request ID；展示 message
+JSON 请求设置正确 Content-Type，并受 body 上限。错误使用稳定 HTTP status 与 Foundation
+`code/message/retryable`；当前 Server 不生成 request ID，客户端也不能依赖该可选字段。展示 message
 不用于程序分支。下载与分块上传是二进制流，不能先无界读入内存再检查大小。
 
-`GET`/`HEAD` 不改变业务状态；所有 action POST/DELETE 的空 body 也要求精确 `{}`，用来阻止代理或旧
-客户端携带未审计字段。
+`GET`/`HEAD` 不改变业务状态；使用 `EmptyRequest` 的 action POST/DELETE 要求精确 `{}`，以拒绝未审计
+字段。登录、创建上传、PATCH 等路由则各自使用明确 DTO，不能把 `{}` 规则泛化到全部写请求。
 
 ## SQLite 基础
 
@@ -48,5 +49,6 @@ file、Hash、rename、持久 upload record 和恢复扫描组合出可证明状
 - 外部长度先验证再分配。
 - 路径按组件和已打开目录描述符约束，不用字符串前缀判断。
 - Secret 使用专用类型/日志 redaction，不进入 error detail。
-- 比较 Token/Hash 使用 constant-time helper。
-- spawn 后的任务要有 owner、取消、deadline 和 shutdown join。
+- Secret Token 的摘要与比较必须沿用既有认证边界；内容 BLAKE3 不是授权凭据。
+- spawn 后的任务必须写明生命周期。当前周期协调任务由进程拥有，没有独立取消句柄或 shutdown join；
+  不得在文档中把尚未实现的 graceful shutdown 当成保障。

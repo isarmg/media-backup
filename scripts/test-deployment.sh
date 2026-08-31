@@ -4,7 +4,7 @@ set -euo pipefail
 readonly archive_arg="${1:-${MEDIA_BACKUP_RELEASE_ARCHIVE:-}}"
 readonly package="media-backup-server-0.2.0-x86_64-unknown-linux-gnu"
 readonly version="0.2.0"
-readonly contract="aee2762ec7bf9b139b2a8658ac2832423eba6489399e12584b28695c2573f1f2"
+readonly contract="58614dbf5e928423d10e6977bb99e3e53fd03b47678defd9e3b7a204e8540a9d"
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly project_dir
 
@@ -80,9 +80,9 @@ assert identity["target"] == "x86_64-unknown-linux-gnu"
 assert identity["api_version"] == "v2"
 assert identity["storage_encoding"] == "plain-v1"
 assert identity["server_schema_revision"] == 1
-assert identity["server_schema_sha256"] == "a464584cf7a55f9e50cb85bb539b1f42a9285f707440bb0bcfcd31a6b3a083c0"
+assert identity["server_schema_sha256"] == "2563e6afc3fff272d02b7a5615272cc773862243bfd15aec51655abf1d9c6b1c"
 assert identity["mobile_ffi_epoch"] == "media-backup-mobile-v0.2-r1"
-assert identity["release_contract_sha256"] == "aee2762ec7bf9b139b2a8658ac2832423eba6489399e12584b28695c2573f1f2"
+assert identity["release_contract_sha256"] == "58614dbf5e928423d10e6977bb99e3e53fd03b47678defd9e3b7a204e8540a9d"
 PY
 source_revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_revision"])' "$identity_file")"
 verification="$($real_binary release-verify "$release_root")"
@@ -95,12 +95,12 @@ if "$project_dir/scripts/build-server-release.sh" "$real_binary" "$source_revisi
 fi
 [[ "$(sha256sum "$archive" | awk '{print $1}')" == "$archive_digest" ]] ||
   fail "release builder changed an existing archive"
-cmp --silent "$release_root/share/web/admin.html" "$project_dir/clients/web/admin.html" ||
+cmp --silent "$release_root/share/web/index.html" "$project_dir/clients/web/dist/index.html" ||
   fail "archive omits or changes the real admin HTML"
-cmp --silent "$release_root/share/web/admin.css" "$project_dir/clients/web/admin.css" ||
+cmp --silent "$release_root/share/web/assets/admin.css" "$project_dir/clients/web/dist/assets/admin.css" ||
   fail "archive omits or changes the real admin CSS"
-cmp --silent "$release_root/share/web/sarmg-design.css" "$project_dir/vendor/sarmg-design/bundle.css" ||
-  fail "archive omits or changes the real design CSS"
+cmp --silent "$release_root/share/web/assets/admin.js" "$project_dir/clients/web/dist/assets/admin.js" ||
+  fail "archive omits or changes the real admin JavaScript"
 python3 - "$release_root" <<'PY'
 from pathlib import Path
 import re
@@ -166,7 +166,7 @@ mkdir -p "$alias_parent"
 ln -s "$release_root" "$alias_parent/$version"
 expect_start_rejected symlink-root "$real_binary" serve-release "$alias_parent/$version"
 
-current_alias="$test_root/old-alias/opt/isarmg/media-backup/current"
+current_alias="$test_root/mutable-alias/opt/isarmg/media-backup/current"
 mkdir -p "$(dirname "$current_alias")"
 ln -s "$release_root" "$current_alias"
 expect_start_rejected current-alias "$real_binary" serve-release "$current_alias"
@@ -225,7 +225,7 @@ done
 [[ "$(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:$smoke_port/admin")" == "200" ]] ||
   fail "real release binary did not serve its embedded admin web"
 curl --silent --fail "http://127.0.0.1:$smoke_port/admin" >"$test_root/served-admin.html"
-cmp --silent "$test_root/served-admin.html" "$release_root/share/web/admin.html" ||
+cmp --silent "$test_root/served-admin.html" "$release_root/share/web/index.html" ||
   fail "served admin asset differs from the verified release copy"
 kill -TERM "$server_pid"
 wait "$server_pid" || true
@@ -275,7 +275,7 @@ chmod 0644 "$negative_root/EXTRA"
 expect_invalid_source extra-file "$negative_root"
 
 fresh_negative
-rm "$negative_root/share/web/admin.css"
+rm "$negative_root/share/web/assets/admin.css"
 expect_invalid_source missing-file "$negative_root"
 
 fresh_negative
@@ -291,13 +291,13 @@ ln "$negative_root/README.md" "$negative_root/docs/README.alias"
 expect_invalid_source hard-linked-payload "$negative_root"
 
 fresh_negative
-rm "$negative_root/share/web/admin.css"
-ln -s /etc/passwd "$negative_root/share/web/admin.css"
+rm "$negative_root/share/web/assets/admin.css"
+ln -s /etc/passwd "$negative_root/share/web/assets/admin.css"
 expect_invalid_source symlinked-payload "$negative_root"
 
 fresh_negative
-rm "$negative_root/share/web/admin.css"
-mkfifo "$negative_root/share/web/admin.css"
+rm "$negative_root/share/web/assets/admin.css"
+mkfifo "$negative_root/share/web/assets/admin.css"
 expect_invalid_source special-payload "$negative_root"
 
 fresh_negative
@@ -319,18 +319,6 @@ PY
 expect_invalid_source wrong-product "$negative_root"
 
 fresh_negative
-python3 - "$negative_root/release-manifest.json" <<'PY'
-import json, pathlib, sys
-path = pathlib.Path(sys.argv[1]); value = json.loads(path.read_text())
-value["identity"].update({
-    "version": "0.1.0", "api_version": "v1", "storage_encoding": "encrypted-v1",
-    "mobile_ffi_epoch": "media-backup-mobile-v0.1-r1",
-})
-path.write_text(json.dumps(value) + "\n")
-PY
-expect_invalid_source old-v01-identity "$negative_root"
-
-fresh_negative
 python3 - "$negative_root/release-manifest.json" top <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1]); value = json.loads(path.read_text())
@@ -343,7 +331,7 @@ fresh_negative
 python3 - "$negative_root/release-manifest.json" nested <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1]); value = json.loads(path.read_text())
-value["identity"]["legacy_alias"] = "v0.1"
+value["identity"]["unknown_alias"] = "unexpected"
 path.write_text(json.dumps(value) + "\n")
 PY
 expect_invalid_source unknown-identity-field "$negative_root"
@@ -352,7 +340,7 @@ fresh_negative
 python3 - "$negative_root/release-manifest.json" file <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1]); value = json.loads(path.read_text())
-value["files"][0]["legacy_path"] = value["files"][0]["path"]
+value["files"][0]["unknown_path"] = value["files"][0]["path"]
 path.write_text(json.dumps(value) + "\n")
 PY
 expect_invalid_source unknown-file-field "$negative_root"
@@ -454,16 +442,6 @@ if MEDIA_BACKUP_SETUP_ROOT="$symlink_config_root" MEDIA_BACKUP_SETUP_TEST=1 \
 fi
 [[ -z "$(find "$config_escape" -mindepth 1 -print -quit)" ]] || fail "config symlink escaped test root"
 
-old_current_root="$test_root/old-current-root"
-mkdir -p "$old_current_root/opt/isarmg/media-backup/releases/0.1.0"
-ln -s releases/0.1.0 "$old_current_root/opt/isarmg/media-backup/current"
-if MEDIA_BACKUP_SETUP_ROOT="$old_current_root" MEDIA_BACKUP_SETUP_TEST=1 \
-  "$setup_script" >/dev/null 2>&1; then
-  fail "a legacy 0.1 current layout was accepted or migrated"
-fi
-[[ ! -e "$old_current_root/etc" && ! -e "$old_current_root/var" ]] ||
-  fail "legacy 0.1 layout rejection wrote new install state"
-
 malicious_current_root="$test_root/malicious-current-root"
 mkdir -p "$malicious_current_root/opt/isarmg/media-backup"
 ln -s /tmp "$malicious_current_root/opt/isarmg/media-backup/current"
@@ -492,8 +470,8 @@ if MEDIA_BACKUP_SETUP_ROOT="$hardlink_config_root" MEDIA_BACKUP_SETUP_TEST=1 \
 fi
 
 for setting in \
-  'User=isarmg-photo' \
-  'Group=isarmg-photo' \
+  'User=isarmg-media' \
+  'Group=isarmg-media' \
   'UMask=0077' \
   'StateDirectory=isarmg/media-backup' \
   'RuntimeDirectory=isarmg/media-backup' \
@@ -532,12 +510,12 @@ if grep -Fq '/opt/isarmg/media-backup/current' \
   "$release_root/scripts/start-server-wsl.sh" "$unit_source"; then
   fail "production deployment still references a mutable current alias"
 fi
-if grep -Eq -- '--clobber|gh[[:space:]]+release[[:space:]]+upload|"v\*\.\*\.\*"|v0\.1\.0' \
+if grep -Eq -- '--clobber|gh[[:space:]]+release[[:space:]]+upload|"v\*\.\*\.\*"' \
   "$project_dir/.github/workflows/release.yml"; then
-  fail "release workflow can overwrite assets, accepts mutable tags, or retains a 0.1 example"
+  fail "release workflow can overwrite assets or accepts mutable tags"
 fi
-if "$project_dir/scripts/verify-release-version.sh" v0.1.0 >/dev/null 2>&1; then
-  fail "release version gate accepted the retired 0.1 tag"
+if "$project_dir/scripts/verify-release-version.sh" v9.9.9 >/dev/null 2>&1; then
+  fail "release version gate accepted a non-current tag"
 fi
 
 bash -n "$setup_script" "$release_root/scripts/run-server-wsl.sh" \

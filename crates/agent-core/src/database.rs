@@ -122,7 +122,7 @@ fn snapshot_generation(path: &Path) -> anyhow::Result<ValidationSnapshot> {
 
 fn snapshot_generation_once(path: &Path) -> anyhow::Result<ValidationSnapshot> {
     let directory = tempfile::Builder::new()
-        .prefix("photo-agent-schema-check-")
+        .prefix("media-agent-schema-check-")
         .tempdir()
         .context("create private agent current-schema validation directory")?;
     let database = directory.path().join("database.sqlite3");
@@ -138,7 +138,7 @@ fn snapshot_generation_once(path: &Path) -> anyhow::Result<ValidationSnapshot> {
     ];
 
     // A SQLite read-only connection to a WAL generation still writes lock
-    // bytes to `-shm`. Replay a private copy so rejecting an old, empty, or
+    // bytes to `-shm`. Replay a private copy so rejecting a foreign, empty, or
     // drifted database leaves the entire source generation byte-identical.
     let mut expected = Vec::with_capacity(sources.len());
     for (source, destination) in sources.iter().zip(&destinations) {

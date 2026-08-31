@@ -39,9 +39,9 @@ EXPECTED_FILES = {
     "scripts/setup-wsl.sh": 0o755,
     "scripts/start-server-wsl.sh": 0o755,
     "scripts/verify-server-wsl.sh": 0o755,
-    "share/web/admin.css": 0o644,
-    "share/web/admin.html": 0o644,
-    "share/web/sarmg-design.css": 0o644,
+    "share/web/index.html": 0o644,
+    "share/web/assets/admin.js": 0o644,
+    "share/web/assets/admin.css": 0o644,
     "systemd/media-backup.service": 0o644,
 }
 

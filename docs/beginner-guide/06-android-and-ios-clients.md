@@ -18,7 +18,15 @@
 普通文件路径。
 
 `BackupScheduler` 配置 WorkManager 网络/电量策略，`BackupWorker` 驱动 Rust queue 与 `BackupApi`。
-Worker 重启时从 durable state 继续，不能仅依赖 Compose 内存状态。
+Worker 重启时从 durable state 继续，不能仅依赖 Compose 内存状态。达到本轮 40 个新资源上限时不会全量
+替换远端相册成员；但 Android 14 selected-media grant 当前没有被标成“不完整扫描”，维护者必须知道它
+仍可能把不可见成员从相册关系中移除。
+
+“从 durable state 继续”必须按状态理解：`ready` job 会复用已经持久化的 prepared JSON 和 part；当前
+`retry_wait` 到期后却会重新调用 `prepare_file`。Android/iOS 扫描器通常把系统媒体导出为 staging 临时源，
+并要求准备成功后删除它；若随后上传失败，下一轮可能因源文件已不存在而无法复用仍在磁盘上的 part。
+准备失败或 `preparing` 崩溃残留也没有自动按 job 目录清理。维护者不能把“SQLite 有任务”直接等价为
+“所有上传失败都可恢复”，也不能用清空整个 staging 的方式排障。
 
 ## Android Secret 与权限
 
@@ -29,16 +37,21 @@ preference、database 或 staging。
 ## iOS 扫描
 
 `PhotoScanner` 通过 PhotoKit fetch result 和授权范围读取 asset/album，必要时请求 resource stream。
-limited library 权限意味着可见集合会变化；扫描逻辑要把“不可见”与“已删除”区分，避免错误删除服务
-端副本。
+limited library 权限意味着可见集合会变化。当前扫描结果没有携带“非完整可见集”标志，而相册同步总是
+`replace_members=true`；因此隐藏于 limited grant 外的成员可能从远端相册关系中移除（媒体 asset 本身不
+会因此删除）。这是当前边界，不是已经解决的保障。
 
-`BackupCoordinator` 管理扫描/队列/后台任务，`BackgroundUploader` 关联 URLSession task 与 durable job。
-delegate 回调可在 App UI 不存在时发生，因此恢复 mapping 不能只放内存。
+`BackupCoordinator` 管理扫描/队列/后台任务，`BackgroundUploader` 用 `taskDescription` 关联 URLSession
+task 与 durable job。当前 `AppDelegate` 只注册 BGProcessingTask，没有实现 background URLSession 的
+relaunch completion handoff；因此只能保证现有 delegate 生命周期内的回调，不能宣称杀进程后已闭环。
+另外 `runBackup` 在 part 仍由系统异步传输时就同步相册，新资产成员可能要到后续运行才能补齐。
 
 ## iOS Secret 与恢复
 
-Token 存 Keychain。下载完成先验证内容，再通过 PhotoKit performChanges 写入系统库；权限拒绝、空间
-不足和 duplicate 写入分别呈现，不把服务端成功下载等同于系统恢复成功。
+Token 存 Keychain。当前恢复路径检查 HTTP 成功并把临时下载文件交给 PhotoKit `performChanges`，但尚未
+调用 Rust `restore_file` 按 manifest size/BLAKE3 复核；因此下载成功不能表述为内容已端到端验证。权限
+拒绝、空间不足和照片库写入失败也都不能等同于服务端恢复成功。Android 的 MediaStore 恢复同样没有
+连接该 Rust 校验 helper。
 
 ## FFI 规则
 

@@ -178,7 +178,7 @@ pub struct Agent {
 impl Agent {
     pub fn open(path: impl AsRef<Path>, config: AgentConfig) -> Result<Self, AgentError> {
         // Contract validation deliberately precedes every filesystem or SQLite
-        // operation, so a v0.1 payload is a zero-write rejection.
+        // operation, so any non-current payload is a zero-write rejection.
         config.validate()?;
         let connection = database::open_current(path.as_ref())?;
         validate_persisted_jobs(&connection)?;
@@ -667,10 +667,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(assembled, original);
         let mut persisted = serde_json::to_value(&prepared).unwrap();
-        persisted["legacy_cipher_metadata"] = serde_json::Value::Bool(true);
+        persisted["unknown_cipher_metadata"] = serde_json::Value::Bool(true);
         assert!(serde_json::from_value::<PreparedJob>(persisted).is_err());
         let mut persisted = serde_json::to_value(&prepared).unwrap();
-        persisted["application_version"] = serde_json::Value::String("0.1.0".to_owned());
+        persisted["application_version"] =
+            serde_json::Value::String("noncurrent-version".to_owned());
         assert!(serde_json::from_value::<PreparedJob>(persisted)
             .unwrap()
             .validate()
@@ -688,7 +689,7 @@ mod tests {
         assert!(serde_json::from_value::<AgentConfig>(config).is_err());
 
         let mut config = serde_json::to_value(current_config(16)).unwrap();
-        config["master_key_b64"] = serde_json::Value::String("legacy".to_owned());
+        config["unknown_key_material"] = serde_json::Value::String("unexpected".to_owned());
         assert!(serde_json::from_value::<AgentConfig>(config).is_err());
 
         let mut resource = serde_json::to_value(current_resource()).unwrap();
@@ -730,10 +731,10 @@ mod tests {
     }
 
     #[test]
-    fn old_or_empty_agent_databases_are_rejected_without_byte_changes() {
+    fn foreign_or_empty_agent_databases_are_rejected_without_byte_changes() {
         let root = tempfile::tempdir().unwrap();
-        let old = root.path().join("old.sqlite3");
-        let connection = Connection::open(&old).unwrap();
+        let foreign = root.path().join("foreign.sqlite3");
+        let connection = Connection::open(&foreign).unwrap();
         connection
             .execute_batch(
                 "CREATE TABLE jobs(
@@ -744,8 +745,8 @@ mod tests {
             )
             .unwrap();
         drop(connection);
-        secure_permissions(&old);
-        assert_rejected_without_byte_changes(&old);
+        secure_permissions(&foreign);
+        assert_rejected_without_byte_changes(&foreign);
 
         let empty = root.path().join("empty.sqlite3");
         File::create(&empty).unwrap();
@@ -762,8 +763,8 @@ mod tests {
                 "UPDATE product_metadata SET application = 'media-backup'",
             ),
             (
-                "old-version",
-                "UPDATE product_metadata SET application_version = '0.1.0'",
+                "noncurrent-version",
+                "UPDATE product_metadata SET application_version = 'noncurrent-version'",
             ),
             (
                 "wrong-revision",
@@ -965,7 +966,7 @@ mod tests {
             )
             .unwrap();
         let mut persisted: serde_json::Value = serde_json::from_str(&persisted).unwrap();
-        persisted["legacy_cipher_metadata"] = serde_json::Value::Bool(true);
+        persisted["unknown_cipher_metadata"] = serde_json::Value::Bool(true);
         connection
             .execute(
                 "UPDATE jobs SET state = 'uploading', prepared_json = ?2 WHERE id = ?1",

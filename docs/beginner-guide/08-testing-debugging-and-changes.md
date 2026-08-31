@@ -14,6 +14,8 @@
 ```bash
 ./scripts/check-mobile-v02-contract.sh
 ./scripts/check-workflow-supply-chain.sh
+npm ci --prefix clients/web
+npm run build --prefix clients/web
 cargo fmt --all -- --check
 cargo check --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -23,10 +25,22 @@ cargo test --workspace --locked
 只跑目标测试适合迭代，不是最终验收。涉及登录 Argon2 的测试对 CPU 争用敏感；并发跑多个大 workspace
 可能制造 timeout 假失败，应在资源正常时单独复现。
 
+管理 Web 的 `build` 一定先执行 `check:foundation`。需要快速定位时可显式运行：
+
+```bash
+npm run check:foundation --prefix clients/web
+npm run typecheck --prefix clients/web
+```
+
+门禁调用 Foundation 的统一 toolchain validator，检查 Node `26.7.0`、React `19.2.8`、Vite `7.3.6`、
+TypeScript `5.8.3`、类型包、依赖/lockfile、三个共享 CSS 摘要和根作用域。共享规则只在 Foundation 修改；
+产品颜色、卡片和登录布局只在 `clients/web/src/styles.css` 修改。不复制共享 CSS，不增设并行入口或 fallback。
+
 ## 调试分层
 
-先记录 request ID、设备 job ID、upload ID、asset/resource ID 和时间，再定位层次：扫描权限 -> 本地队列
--> DNS/TLS -> auth -> create -> part -> complete -> sync -> restore。不要从 UI “失败”直接猜数据库。
+先记录时间、设备 job ID、upload ID 和 asset/resource ID，再定位层次：扫描权限 -> 本地队列 -> DNS/TLS
+-> auth -> create -> part -> complete -> sync -> restore。当前 Server 不签发 request ID；如要新增，必须
+同步 ErrorEnvelope、代理传播、日志和客户端，而不能让排障手册依赖不存在的字段。
 
 ## SQLite 调试
 

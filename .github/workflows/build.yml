@@ -22,8 +22,16 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
+          toolchain: 1.98.0
           components: rustfmt,clippy
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: clients/web/package-lock.json
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: npm ci --prefix clients/web
+      - run: npm run build --prefix clients/web
       - run: ./scripts/check-mobile-v02-contract.sh
       - run: ./scripts/check-workflow-supply-chain.sh
       - run: cargo fmt --all -- --check
@@ -33,9 +41,9 @@ jobs:
       - name: Build and test the real server release archive
         run: |
           revision="$(git rev-parse HEAD)"
-          MEDIA_BACKUP_SOURCE_REVISION="$revision" cargo build --release --locked -p media-backup-server
+          MEDIA_BACKUP_SOURCE_REVISION="$revision" cargo build --release --locked -p media-backup-server --target x86_64-unknown-linux-gnu
           mkdir -p "$PWD/dist"
-          archive="$(./scripts/build-server-release.sh "$PWD/target/release/media-backup-server" "$revision" "$PWD/dist")"
+          archive="$(./scripts/build-server-release.sh "$PWD/target/x86_64-unknown-linux-gnu/release/media-backup-server" "$revision" "$PWD/dist")"
           MEDIA_BACKUP_VERIFY_SYSTEMD=1 ./scripts/test-deployment.sh "$archive"
 
   android:
@@ -50,6 +58,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
+          toolchain: 1.98.0
           targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -69,7 +78,7 @@ jobs:
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
           cargo ndk -t arm64-v8a -o clients/android/app/src/main/jniLibs build -p media-backup-mobile --release
-      - run: gradle -p android testDebugUnitTest assembleDebug
+      - run: gradle -p clients/android testDebugUnitTest assembleDebug
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: media-backup-android-debug
@@ -87,13 +96,14 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
+          toolchain: 1.98.0
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: ios
       - run: brew install xcodegen
       - run: ./scripts/build-ios-rust.sh
-      - run: cd ios && xcodegen generate
+      - run: cd clients/ios && xcodegen generate
       - name: Run iOS state-epoch isolation tests
         run: |
           simulator_udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/{print $2; exit}')"

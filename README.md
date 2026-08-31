@@ -5,22 +5,23 @@ Media Backup `0.2.0` 是一个自托管照片与视频备份系统，由 Rust �
 SQLite 保存账户、图库组织和同步状态，并以 `plain-v1` 保存与设备原文件一致的未加密字节。
 
 本项目只实现当前版本。服务端只创建并接受 Media Backup `0.2.0` 当前 Schema，移动端只接受
-`media-backup-mobile-v0.2-r1` 合约；产品代码不读取旧数据库、旧凭据或旧队列，也不提供迁移、备份
-和恢复命令。这些离线任务统一由独立的 `sarmg-upgrade` 项目负责。
+`media-backup-mobile-v0.2-r1` 合约；不属于当前身份的数据库、凭据和队列一律拒绝，产品仓库也不提供
+迁移、备份和恢复命令。这些离线任务统一由独立的 `sarmg-upgrade` 项目负责。
 
 ## 组成
 
 ```text
 crates/server       Rust/Axum 服务端、管理页和运维命令
 crates/protocol     服务端与移动端共享的数据协议
-crates/crypto       Hash、密钥和安全比较基础能力
+crates/crypto       分块准备、BLAKE3 计算和明文恢复校验能力
 crates/agent-core   移动端本地队列与当前 SQLite 契约
 crates/mobile-ffi   Android JNI 与 iOS C ABI 边界
 clients/android/            Kotlin、Jetpack Compose、WorkManager 客户端
 clients/ios/                SwiftUI、PhotoKit、后台 URLSession 客户端
-clients/web/                编译进 Server 的管理客户端源码
+clients/web/                React 19 + TypeScript strict + Vite 7 管理客户端
 config/                     可提交配置样例；生产 Secret 位于源码树外
-scripts/            构建、发行、部署和契约门禁
+deploy/                     systemd 源单元；发行时映射到 systemd/
+scripts/                    构建、发行、部署和契约门禁
 ```
 
 ## 快速验证
@@ -28,14 +29,28 @@ scripts/            构建、发行、部署和契约门禁
 ```bash
 ./scripts/check-mobile-v02-contract.sh
 ./scripts/check-workflow-supply-chain.sh
+npm ci --prefix clients/web
+npm run build --prefix clients/web
 cargo fmt --all -- --check
 cargo check --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
+Web 使用 Node `26.7.0`；`build` 会先执行 `check:foundation`，核对 `.node-version`、engine、精确
+React/Vite/TypeScript 版本、Foundation 依赖、lockfile、CSS 摘要和 `data-sarmg-scope`。Server 使用
+`rust-toolchain.toml` 固定 Rust `1.98.0`，Rust 编译前必须先生成 `clients/web/dist`。
+
 服务端开发构建可以在显式回环开发配置下运行；正式环境必须使用不可变发行归档，并由 Caddy 或
-Nginx 在可信代理边界终止 TLS。完整步骤见运维文档。
+Nginx 在可信代理边界终止 TLS。移动业务 API 只位于 `/v2`；浏览器管理员认证只位于
+`/api/v2/auth/login|session|logout`，管理业务只位于 `/api/v2/admin/*`。正式 Server 的编译目标、
+归档 ELF、运行主机和 systemd 条件都固定为 `x86_64-unknown-linux-gnu`/Linux x86_64，不提供 ARM Server
+fallback。完整步骤见运维文档。
+
+Server 管理身份采用 Foundation 当前 `username` 合同：登录只接受 `{username,password}`，成功 Session
+恰为 `{authenticated,user_id,username,role:"admin",csrf_token}`。这一变化只属于 Server 与内置
+React/Vite 管理 Web；移动端、`accounts.username`、设备 Token/API Key、移动 Schema 和 FFI 合同保持
+原状。管理 username 与备份账户 username 即使文字相同，也属于不同表、不同凭据和不同授权域。
 
 ## 文档
 

@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn exclusive_runtime_lock_rejects_service_and_cli_overlap() {
-        let root = std::env::temp_dir().join(format!("photo-runtime-lock-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("media-runtime-lock-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let data = root.join("data");
         let database = database_url(&root.join("app.sqlite3"));
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn either_shared_database_or_shared_data_directory_is_exclusive() {
-        let root = std::env::temp_dir().join(format!("photo-runtime-lock-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("media-runtime-lock-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let database_a = database_url(&root.join("a.sqlite3"));
         let database_b = database_url(&root.join("b.sqlite3"));
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn runtime_lock_rejects_a_symlink_in_the_parent_chain() {
-        let root = std::env::temp_dir().join(format!("photo-runtime-lock-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("media-runtime-lock-{}", Uuid::new_v4()));
         let real = root.join("real");
         std::fs::create_dir_all(&real).unwrap();
         symlink(&real, root.join("linked-parent")).unwrap();
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn runtime_lock_rejects_symlinked_database_and_data_resources() {
-        let root = std::env::temp_dir().join(format!("photo-runtime-lock-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("media-runtime-lock-{}", Uuid::new_v4()));
         let real_data = root.join("real-data");
         std::fs::create_dir_all(&real_data).unwrap();
         let real_database = root.join("real.sqlite3");
@@ -282,7 +282,7 @@ mod tests {
 
     #[test]
     fn runtime_lock_rejects_database_and_lock_file_hardlink_aliases() {
-        let root = std::env::temp_dir().join(format!("photo-runtime-lock-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("media-runtime-lock-{}", Uuid::new_v4()));
         let data_a = root.join("data-a");
         let data_b = root.join("data-b");
         std::fs::create_dir_all(&data_a).unwrap();

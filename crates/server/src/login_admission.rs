@@ -23,7 +23,8 @@ const RATE_ENTRY_TTL: Duration = Duration::from_secs(15 * 60);
 const ARGON2_CONCURRENCY: usize = 2;
 const ARGON2_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(1);
 const ARGON2_EXECUTION_TIMEOUT: Duration = Duration::from_secs(10);
-// Generated with Argon2::default(). It is never accepted as a real credential.
+// Generated with the Foundation 0.3 current Argon2id policy. It is never
+// accepted as a real credential.
 const DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$aOVS660TGXMspMgoSOcv6A$1eMydp1lX0/SzNdUYR28nln2fa2gMPGF626+W6gPKK8";
 
 #[derive(Clone)]
@@ -131,7 +132,7 @@ impl LoginAdmission {
             .map(Arc::from)
             .unwrap_or_else(|| Arc::clone(&self.dummy_password_hash));
         self.run_argon2(move || {
-            crate::password::verify_password_blocking(&password, &password_hash)
+            crate::password::verify_current_password_blocking(&password, &password_hash)
         })
         .await
     }

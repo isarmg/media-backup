@@ -15,7 +15,7 @@ use media_backup_protocol::{CreateUploadRequest, MediaKind, StorageEncoding, Upl
 
 use crate::{
     config::Config,
-    database,
+    database, library,
     routes::{router, AppState},
     storage::LocalStorage,
     upload_commit,
@@ -24,7 +24,7 @@ use crate::{
 
 const ADMIN_USERNAME: &str = "test-admin";
 const ADMIN_PASSWORD: &str = "test-admin-password";
-const USERNAME: &str = "photo-owner";
+const USERNAME: &str = "media-owner";
 const PASSWORD: &str = "correct-horse-battery-staple";
 
 struct TestWorkspace {
@@ -249,8 +249,9 @@ fn json_request(
         .method(method)
         .uri(uri.as_ref())
         .header(header::CONTENT_TYPE, "application/json")
-        .header(header::HOST, "photos.test")
-        .header(header::ORIGIN, "http://photos.test");
+        .header(header::HOST, "localhost")
+        .header(header::ORIGIN, "http://localhost")
+        .header("sec-fetch-site", "same-origin");
     if let Some(token) = bearer {
         builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
     }
@@ -346,15 +347,15 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
     let empty_database = table_counts(&pool, &mutation_tables).await;
     let empty_storage = storage_snapshot(&workspace.data());
 
-    send(
+    let unknown_route = send(
         &app,
         json_request(
             Method::POST,
-            "/v1/auth/bootstrap",
+            "/not-a-route",
             json!({
                 "username": USERNAME,
                 "password": PASSWORD,
-                "device_name": "Old Route Client",
+                "device_name": "Unknown Route Client",
                 "platform": "test"
             }),
             None,
@@ -363,32 +364,16 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
         StatusCode::NOT_FOUND,
     )
     .await;
+    assert_eq!(
+        json_body(unknown_route).await,
+        json!({
+            "code": "not_found",
+            "message": "Not Found",
+            "retryable": false
+        })
+    );
 
-    for (method, path) in [
-        (Method::POST, "/auth/bootstrap"),
-        (Method::POST, "/admin/api/login"),
-        (Method::GET, "/admin/"),
-    ] {
-        send(
-            &app,
-            json_request(
-                method,
-                path,
-                json!({
-                    "username": ADMIN_USERNAME,
-                    "password": ADMIN_PASSWORD,
-                    "device_name": "Legacy Client",
-                    "platform": "test"
-                }),
-                None,
-                None,
-            ),
-            StatusCode::NOT_FOUND,
-        )
-        .await;
-    }
-
-    send(
+    let rejected_mobile_dto = send(
         &app,
         json_request(
             Method::POST,
@@ -398,7 +383,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
                 "password": PASSWORD,
                 "device_name": "Loose Client",
                 "platform": "test",
-                "application_version": "0.1.0"
+                "application_version": "noncurrent-version"
             }),
             None,
             None,
@@ -406,20 +391,28 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
         StatusCode::UNPROCESSABLE_ENTITY,
     )
     .await;
+    assert_eq!(
+        json_body(rejected_mobile_dto).await,
+        json!({
+            "code": "unprocessable_entity",
+            "message": "Unprocessable Entity",
+            "retryable": false
+        })
+    );
     send(
         &app,
         json_request(
             Method::POST,
-            "/v2/admin/login",
+            "/api/v2/auth/login",
             json!({
                 "username": ADMIN_USERNAME,
                 "password": ADMIN_PASSWORD,
-                "legacy_session": true
+                "unknown_session_field": true
             }),
             None,
             None,
         ),
-        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::BAD_REQUEST,
     )
     .await;
     assert_eq!(table_counts(&pool, &mutation_tables).await, empty_database);
@@ -429,7 +422,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
         &app,
         json_request(
             Method::POST,
-            "/v2/admin/login",
+            "/api/v2/auth/login",
             json!({"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}),
             None,
             None,
@@ -447,7 +440,17 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
         .next()
         .expect("cookie pair")
         .to_owned();
-    let admin_csrf = json_body(login).await["csrf_token"]
+    let administrator_session = json_body(login).await;
+    assert_eq!(administrator_session.as_object().unwrap().len(), 5);
+    assert_eq!(administrator_session["authenticated"], true);
+    assert_eq!(administrator_session["username"], ADMIN_USERNAME);
+    assert_eq!(administrator_session["role"], "admin");
+    let administrator_id: String = sqlx::query_scalar("SELECT id FROM auth_users")
+        .fetch_one(&pool)
+        .await
+        .expect("persisted administrator id");
+    assert_eq!(administrator_session["user_id"], administrator_id);
+    let admin_csrf = administrator_session["csrf_token"]
         .as_str()
         .expect("admin CSRF token")
         .to_owned();
@@ -467,7 +470,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
         &app,
         json_request(
             Method::POST,
-            "/v2/admin/users",
+            "/api/v2/admin/users",
             json!({
                 "username": "loose-admin-created-user",
                 "password": PASSWORD,
@@ -513,7 +516,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
             &app,
             json_request(
                 Method::POST,
-                "/v2/admin/users",
+                "/api/v2/admin/users",
                 json!({
                     "username": format!("invalid-path-{index}"),
                     "password": PASSWORD,
@@ -535,11 +538,11 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
             &app,
             json_request(
                 Method::POST,
-                "/v2/admin/users",
+                "/api/v2/admin/users",
                 json!({
                     "username": USERNAME,
                     "password": PASSWORD,
-                    "display_name": "Photo Owner",
+                    "display_name": "Media Owner",
                     "storage_path": "",
                     "quota_bytes": 10_000_000,
                     "enabled": true
@@ -563,7 +566,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
         &app,
         json_request(
             Method::POST,
-            "/v2/admin/users",
+            "/api/v2/admin/users",
             json!({
                 "username": "nested-storage-owner",
                 "password": PASSWORD,
@@ -583,7 +586,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
         &app,
         json_request(
             Method::POST,
-            "/v2/admin/users",
+            "/api/v2/admin/users",
             json!({
                 "username": USERNAME,
                 "password": PASSWORD,
@@ -602,10 +605,10 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
         &app,
         json_request(
             Method::PUT,
-            format!("/v2/admin/users/{account_id}"),
+            format!("/api/v2/admin/users/{account_id}"),
             json!({
                 "username": USERNAME,
-                "display_name": "Photo Owner Updated",
+                "display_name": "Media Owner Updated",
                 "storage_path": storage_path,
                 "quota_bytes": 10_000_000,
                 "enabled": true
@@ -650,18 +653,18 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
     let pre_upload_storage = storage_snapshot(&workspace.data());
     for rejected_upload in [
         json!({
-            "source_asset_id": "legacy-asset",
-            "source_resource_id": "legacy-resource",
+            "source_asset_id": "unsupported-asset",
+            "source_resource_id": "unsupported-resource",
             "media_kind": "photo",
             "role": "primary",
-            "filename": "legacy.jpg",
+            "filename": "unsupported.jpg",
             "mime_type": "image/jpeg",
             "source_created_at_ms": 1_700_000_000_000_i64,
             "plaintext_size": 1,
-            "dedup_token": "legacy",
-            "wrapped_key": "legacy",
-            "key_nonce": "legacy",
-            "nonce_prefix": "legacy",
+            "dedup_token": "unsupported",
+            "wrapped_key": "unsupported",
+            "key_nonce": "unsupported",
+            "nonce_prefix": "unsupported",
             "metadata_nonce": null,
             "metadata_ciphertext": null,
             "parts": [{
@@ -683,7 +686,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
             "content_blake3": "0".repeat(64),
             "metadata": null,
             "parts": [{"index": 0, "size": 1, "blake3": "0".repeat(64)}],
-            "dedup_token": "legacy-alias"
+            "dedup_token": "unknown-alias"
         }),
     ] {
         send(
@@ -704,7 +707,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
         json_request(
             Method::POST,
             "/uploads",
-            json!({"legacy": true}),
+            json!({"unknown_field": true}),
             Some(&bearer),
             None,
         ),
@@ -718,7 +721,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
                 .await
                 .unwrap_or_else(|error| panic!("count {table}: {error}")),
             0,
-            "rejected legacy or loose upload mutated {table}"
+            "rejected unsupported or malformed upload mutated {table}"
         );
     }
     assert_eq!(
@@ -809,7 +812,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
         json_request(
             Method::POST,
             format!("/v2/uploads/{upload_id}/complete"),
-            json!({"legacy": true}),
+            json!({"unknown_field": true}),
             Some(&bearer),
             None,
         ),
@@ -913,7 +916,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
         json_request(
             Method::POST,
             format!("/v2/assets/{asset_id}/trash"),
-            json!({"legacy": true}),
+            json!({"unknown_field": true}),
             Some(&bearer),
             None,
         ),
@@ -935,7 +938,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
         &app,
         authorized_request(
             Method::GET,
-            "/v2/timeline?legacy=true",
+            "/v2/timeline?unknown_parameter=true",
             &bearer,
             Body::empty(),
         ),
@@ -1030,7 +1033,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
         json_request(
             Method::DELETE,
             format!("/v2/tags/{tag_id}/assets/{asset_id}"),
-            json!({"legacy": true}),
+            json!({"unknown_field": true}),
             Some(&bearer),
             None,
         ),
@@ -1566,5 +1569,70 @@ async fn orphan_cleanup_is_scoped_and_preserves_cross_account_references() {
         "superseded local stage is an orphan and should be removed"
     );
     assert!(report.orphan_stages_removed >= 2);
+    close_test_state(state, pool).await;
+}
+
+#[tokio::test]
+async fn orphan_blob_reclamation_keeps_a_durable_row_until_unlink_succeeds() {
+    let workspace = TestWorkspace::new();
+    let (state, pool) = test_state(&workspace.database(), &workspace.data()).await;
+    let (account_id, device_id) = seed_account(&pool, "blobs/delete-retry", "delete-retry").await;
+    let content = b"durable orphan blob deletion";
+    let upload_id =
+        seed_received_upload(&state, account_id, device_id, content, "delete-retry").await;
+    let committed = upload_commit::complete(&state, upload_id, account_id)
+        .await
+        .expect("commit blob before deleting its asset");
+    let object_key: String =
+        sqlx::query_scalar("SELECT storage_path FROM blobs WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read committed object key");
+    let object_path = workspace.data().join(&object_key);
+    assert_eq!(std::fs::read(&object_path).unwrap(), content);
+
+    // Asset/resource removal is the durable user-visible deletion. The now
+    // unreferenced blob row remains as the retry queue until rooted unlink and
+    // the metadata delete can commit together.
+    sqlx::query("DELETE FROM assets WHERE id = ?")
+        .bind(committed.asset_id)
+        .execute(&pool)
+        .await
+        .expect("delete asset and cascade resource");
+    std::fs::remove_file(&object_path).expect("replace blob with a failing object type");
+    std::fs::create_dir(&object_path).expect("create non-regular object at blob key");
+
+    let failed = library::reconcile_orphan_blobs(&state, Some(account_id))
+        .await
+        .expect("scan orphan blobs despite one storage failure");
+    assert_eq!(failed.removed, 0);
+    assert_eq!(failed.errors, 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM blobs WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1,
+        "filesystem failure must roll back the blob-row delete"
+    );
+
+    std::fs::remove_dir(&object_path).expect("remove injected non-regular object");
+    std::fs::write(&object_path, content).expect("restore retryable blob object");
+    let recovered = library::reconcile_orphan_blobs(&state, Some(account_id))
+        .await
+        .expect("retry orphan blob reclamation");
+    assert_eq!(recovered.removed, 1);
+    assert_eq!(recovered.errors, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM blobs WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(!object_path.exists());
     close_test_state(state, pool).await;
 }

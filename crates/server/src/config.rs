@@ -30,14 +30,12 @@ impl Config {
             .unwrap_or_else(|_| "0.0.0.0:8080".to_owned())
             .parse()
             .context("BIND must be a socket address")?;
-        let admin_username = env::var("ADMIN_USERNAME").context("ADMIN_USERNAME is required")?;
-        if admin_username.trim().is_empty() || admin_username.len() > 100 {
-            anyhow::bail!("ADMIN_USERNAME must contain 1 to 100 characters");
-        }
+        let admin_username = configured_administrator_username(
+            env::var("ADMIN_USERNAME").context("ADMIN_USERNAME is required")?,
+        )?;
         let admin_password = env::var("ADMIN_PASSWORD").context("ADMIN_PASSWORD is required")?;
-        if admin_password.len() < 12 {
-            anyhow::bail!("ADMIN_PASSWORD must contain at least 12 characters");
-        }
+        sarmg_admin_auth::validate_password(&admin_password)
+            .map_err(|error| anyhow::anyhow!("ADMIN_PASSWORD is invalid: {error}"))?;
         let max_part_bytes = env::var("MAX_PART_BYTES")
             .unwrap_or_else(|_| (64 * 1024 * 1024).to_string())
             .parse()
@@ -103,6 +101,11 @@ impl Config {
     }
 }
 
+fn configured_administrator_username(value: String) -> Result<String> {
+    sarmg_admin_auth::normalize_administrator_username(&value)
+        .map_err(|error| anyhow::anyhow!("ADMIN_USERNAME is invalid: {error}"))
+}
+
 fn positive_usize(name: &str, default: usize) -> Result<usize> {
     let value = env::var(name)
         .unwrap_or_else(|_| default.to_string())
@@ -126,7 +129,18 @@ fn validate_security_mode(bind: SocketAddr, require_https: bool, development: bo
 
 #[cfg(test)]
 mod tests {
-    use super::validate_security_mode;
+    use super::{configured_administrator_username, validate_security_mode};
+
+    #[test]
+    fn administrator_username_is_current_normalized_identity() {
+        assert_eq!(
+            configured_administrator_username(" Admin.Ops ".to_owned()).unwrap(),
+            "admin.ops"
+        );
+        for invalid in ["ad", "admin@example.test", "-admin", "admin-", "管理员"] {
+            assert!(configured_administrator_username(invalid.to_owned()).is_err());
+        }
+    }
 
     #[test]
     fn insecure_cookies_are_limited_to_explicit_loopback_development() {

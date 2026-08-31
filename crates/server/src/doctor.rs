@@ -97,6 +97,17 @@ fn validate_database_files(database: &Path, files: &FileIndex) -> anyhow::Result
         broken_committed == 0,
         "a committed upload has incomplete metadata"
     );
+    let orphan_blobs: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM blobs b \
+         WHERE NOT EXISTS (SELECT 1 FROM resources r WHERE r.blob_id = b.id) \
+           AND NOT EXISTS (SELECT 1 FROM uploads u WHERE u.commit_blob_id = b.id)",
+        [],
+        |row| row.get(0),
+    )?;
+    ensure!(
+        orphan_blobs == 0,
+        "an unreferenced blob is awaiting reconciliation; run `reconcile scan`"
+    );
 
     let mut blobs = connection.prepare(
         "SELECT a.storage_path, b.storage_path, b.stored_size, b.content_blake3
@@ -566,7 +577,7 @@ mod tests {
     #[tokio::test]
     async fn doctor_checks_a_current_empty_installation() {
         let temporary = tempfile::tempdir().unwrap();
-        let database = temporary.path().join("photo.sqlite3");
+        let database = temporary.path().join("media.sqlite3");
         let data = temporary.path().join("data");
         std::fs::create_dir(&data).unwrap();
         let database_url = format!("sqlite://{}", database.display());

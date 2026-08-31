@@ -22,7 +22,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const CURRENT_SCHEMA: &str = include_str!("current_schema.sql");
 pub(crate) const CURRENT_SCHEMA_REVISION: i64 = 1;
 pub(crate) const CURRENT_SCHEMA_SHA256: &str =
-    "a464584cf7a55f9e50cb85bb539b1f42a9285f707440bb0bcfcd31a6b3a083c0";
+    "2563e6afc3fff272d02b7a5615272cc773862243bfd15aec51655abf1d9c6b1c";
 const PRODUCT_METADATA_SQL: &str = "CREATE TABLE product_metadata (
     singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
     application TEXT NOT NULL,
@@ -165,7 +165,7 @@ fn snapshot_generation(path: &Path) -> anyhow::Result<ValidationSnapshot> {
 
 fn snapshot_generation_once(path: &Path) -> anyhow::Result<ValidationSnapshot> {
     let directory = tempfile::Builder::new()
-        .prefix("photo-schema-check-")
+        .prefix("media-schema-check-")
         .tempdir()
         .context("create private current-schema validation directory")?;
     let database = directory.path().join("database.sqlite3");
@@ -606,15 +606,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn old_database_without_metadata_is_rejected_without_changing_bytes() {
+    async fn foreign_database_without_metadata_is_rejected_without_changing_bytes() {
         let temporary = tempfile::tempdir().unwrap();
-        let database = temporary.path().join("old-0.1.sqlite3");
+        let database = temporary.path().join("foreign.sqlite3");
         let connection = Connection::open(&database).unwrap();
         connection
             .execute_batch(
-                "CREATE TABLE _sqlx_migrations(version INTEGER PRIMARY KEY, success INTEGER);
-                 INSERT INTO _sqlx_migrations VALUES(1, 1), (2, 1), (3, 1);
-                 CREATE TABLE accounts(id TEXT PRIMARY KEY, username TEXT NOT NULL);",
+                "CREATE TABLE unrelated_records(id TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO unrelated_records VALUES('record', 'foreign');",
             )
             .unwrap();
         drop(connection);
@@ -648,14 +647,14 @@ mod tests {
     #[tokio::test]
     async fn noncurrent_wal_generation_is_rejected_without_changing_bytes() {
         let temporary = tempfile::tempdir().unwrap();
-        let database = temporary.path().join("old-wal.sqlite3");
+        let database = temporary.path().join("noncurrent-wal.sqlite3");
         let connection = Connection::open(&database).unwrap();
         connection
             .execute_batch(
                 "PRAGMA journal_mode=WAL;
                  PRAGMA wal_autocheckpoint=0;
                  CREATE TABLE accounts(id TEXT PRIMARY KEY, username TEXT NOT NULL);
-                 INSERT INTO accounts VALUES('old-user', 'old-format');",
+                 INSERT INTO accounts VALUES('unknown-user', 'noncurrent-format');",
             )
             .unwrap();
         assert!(sqlite_sidecar(&database, "-wal").exists());
@@ -750,8 +749,8 @@ mod tests {
                 "UPDATE product_metadata SET application = 'another-product'",
             ),
             (
-                "old-version",
-                "UPDATE product_metadata SET application_version = '0.1.0'",
+                "noncurrent-version",
+                "UPDATE product_metadata SET application_version = 'noncurrent-version'",
             ),
             (
                 "wrong-revision",

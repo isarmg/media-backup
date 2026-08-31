@@ -32,6 +32,7 @@ pub(crate) struct ReconcileReport {
     pub recovered: u64,
     pub marked_unknown: u64,
     pub orphan_stages_removed: u64,
+    pub orphan_blobs_removed: u64,
     pub errors: u64,
 }
 
@@ -169,7 +170,7 @@ async fn complete_inner(
                 {
                     tracing::warn!(upload_id = %upload_id, ?error, "failed to assemble upload commit");
                     if error.status == StatusCode::CONFLICT {
-                        return mark_failed_message(&state.pool, upload_id, &error.message).await;
+                        return mark_failed_message(&state.pool, upload_id, error.message()).await;
                     }
                     return Err(error);
                 }
@@ -958,6 +959,12 @@ pub(crate) async fn reconcile_all(state: &AppState) -> Result<ReconcileReport, A
             }
         }
     }
+
+    let blob_report = crate::library::reconcile_orphan_blobs(state, None).await?;
+    report.orphan_blobs_removed = report
+        .orphan_blobs_removed
+        .saturating_add(blob_report.removed);
+    report.errors = report.errors.saturating_add(blob_report.errors);
 
     let accounts: Vec<(Uuid, String)> =
         sqlx::query_as("SELECT id, storage_path FROM accounts ORDER BY id")

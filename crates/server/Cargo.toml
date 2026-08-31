@@ -2,12 +2,12 @@
 name = "media-backup-server"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-argon2 = "0.5"
 axum.workspace = true
 base64.workspace = true
 blake3.workspace = true
@@ -16,11 +16,14 @@ media-backup-protocol = { path = "../protocol" }
 rand.workspace = true
 rusqlite.workspace = true
 rustix.workspace = true
+sarmg-admin-auth = { version = "=0.3.0", git = "https://github.com/isarmg/sarmg-foundation.git", rev = "1fe326081cfd896f05ff502e80f99504797c14c6" }
+sarmg-contracts = { version = "=0.3.0", git = "https://github.com/isarmg/sarmg-foundation.git", rev = "1fe326081cfd896f05ff502e80f99504797c14c6" }
+sarmg-error = { version = "=0.3.0", git = "https://github.com/isarmg/sarmg-foundation.git", rev = "1fe326081cfd896f05ff502e80f99504797c14c6" }
+sarmg-server-target = { version = "=0.3.0", git = "https://github.com/isarmg/sarmg-foundation.git", rev = "1fe326081cfd896f05ff502e80f99504797c14c6" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
-subtle.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

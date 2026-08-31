@@ -5,7 +5,7 @@
 ### 第一周：契约与入口
 
 读 workspace manifest、protocol、server main/routes/config。画出四种身份和每类路由。练习为一个无状态
-GET 写 router test，观察 request ID 与错误 envelope。
+GET 写 router test，观察当前三字段错误 envelope，并证明响应不会伪造 request ID。
 
 ### 第二周：上传与存储
 
@@ -25,7 +25,7 @@ epoch gate，并证明旧命名空间不会被读取。
 ## 推荐练习
 
 1. 构造在 WAL 中提交 current Schema 的 fixture，证明验证不改原件。
-2. 模拟上传 complete 在 rename 前后中断，说明重启收敛结果。
+2. 模拟上传 complete 在 stage、`linkat` 发布、metadata commit 前后中断，说明重启收敛结果。
 3. 用不可信 forwarded header 请求，验证 client identity 不被伪造。
 4. 让移动 sync 在事务提交前终止，证明 cursor 不会提前推进。
 5. 对 release tree 增加 symlink/hardlink/extra file，观察失败信息。

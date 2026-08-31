@@ -6,12 +6,15 @@ readonly binary="$release/bin/media-backup-server"
 readonly config="/etc/isarmg/media-backup.env"
 readonly unit="/etc/systemd/system/media-backup.service"
 readonly marker="# INITIAL-SECRETS-MUST-BE-REPLACED"
-readonly contract="aee2762ec7bf9b139b2a8658ac2832423eba6489399e12584b28695c2573f1f2"
+readonly contract="58614dbf5e928423d10e6977bb99e3e53fd03b47678defd9e3b7a204e8540a9d"
 
 fail() {
   printf 'start error: %s\n' "$*" >&2
   exit 1
 }
+
+[[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]] ||
+  fail "formal server startup requires Linux x86_64"
 
 verify_installed_release() {
   local output line_marker product version revision target fingerprint extra directory mode

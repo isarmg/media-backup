@@ -22,9 +22,9 @@ Media Backup 解决的是“手机原始照片和视频可靠上传到自有服�
 完整的社交图库，也不是零知识加密系统。TLS 保护网络传输，服务端最终保存原始明文字节，因此服务器
 和数据卷管理员能够读取媒体；生产安全依赖主机权限、磁盘加密、TLS 和可靠备份。
 
-项目坚持当前版本边界：`0.2.0` 服务端、`/v2` HTTP API、`plain-v1` 存储和
-`media-backup-mobile-v0.2-r1` 移动合约构成一个不可拆分的版本身份。发现旧状态时产品必须只读拒绝，
-不能“尽量兼容”。
+项目坚持当前版本边界：`0.2.0` 服务端、移动 `/v2` API、浏览器管理 `/api/v2` API、`plain-v1` 存储和
+`media-backup-mobile-v0.2-r1` 移动合约构成一个不可拆分的版本身份。发现非当前状态时产品必须只读拒绝，
+不能猜测或转换。
 
 ## 2. 认识四层架构
 
@@ -65,8 +65,9 @@ Xcode、XcodeGen，以及 `aarch64-apple-ios`、`aarch64-apple-ios-sim` Rust tar
 推荐顺序：
 
 1. `crates/protocol/src/lib.rs`：先看网络对象和版本字段。
-2. `crates/server/src/main.rs` 与 `routes.rs`：理解命令入口和 `/v2` 路由。
-3. `auth.rs`、`login_admission.rs`、`api_access.rs`：理解三类身份边界。
+2. `crates/server/src/main.rs` 与 `routes.rs`：理解命令入口、移动 `/v2` 与浏览器 `/api/v2` 路由。
+3. `admin.rs`、`auth.rs`、`login_admission.rs`、`api_access.rs`、`metrics.rs`：理解 Administrator、device、
+   API Key 与 metrics 四条身份边界。
 4. `storage.rs`、`upload_commit.rs`、`rooted_fs.rs`：理解文件如何安全落盘。
 5. `agent-core/src/database.rs`：理解移动队列和本地当前 Schema。
 6. Android 的 `BackupWorker.kt`、iOS 的 `BackupCoordinator.swift`：理解宿主调度。
@@ -113,13 +114,14 @@ curl --fail http://127.0.0.1:8080/health
 Schema、元数据指纹和所有新库测试，不在产品里添加 migration；修改发行布局时更新 manifest 生成器、
 运行时验证器和部署测试。完成修改后运行根 README 的完整门禁。
 
-常见错误：只改一个移动端、复用旧 JSON 字段作为兼容 alias、直接编辑既有数据库、让服务端读取
+常见错误：只改一个移动端、为非当前 JSON 字段增加 alias、直接编辑既有数据库、让服务端读取
 移动端 Keychain/Keystore、或者让反向代理来源头绕过真实 peer 校验。
 
 ## 9. 调试方法
 
-先区分错误发生在权限扫描、本地队列、HTTPS、鉴权、上传分块、提交事务还是文件系统。服务端日志
-使用 request ID 关联请求，但不得记录密码、Token 或媒体内容。数据库或存储异常先运行 `doctor`；
+先区分错误发生在权限扫描、本地队列、HTTPS、鉴权、上传分块、提交事务还是文件系统。当前日志没有
+统一 request ID，应以时间、job/upload/asset/resource ID 和操作事件关联，同时不得记录密码、Token 或
+媒体内容。数据库或存储异常先运行 `doctor`；
 若它报告版本/Schema 不匹配，不要强行修表，应停止产品并使用独立升级工具。
 
 ## 10. 术语

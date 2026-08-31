@@ -292,7 +292,7 @@ mod tests {
     fn empty_action_request_is_an_exact_dto() {
         assert_eq!(API_BASE_PATH, format!("/{API_VERSION}"));
         assert!(serde_json::from_str::<EmptyRequest>("{}").is_ok());
-        assert!(serde_json::from_str::<EmptyRequest>(r#"{"legacy":true}"#).is_err());
+        assert!(serde_json::from_str::<EmptyRequest>(r#"{"unknown_field":true}"#).is_err());
         assert!(serde_json::from_str::<EmptyRequest>("").is_err());
     }
 

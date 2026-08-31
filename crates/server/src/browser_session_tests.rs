@@ -31,13 +31,13 @@ struct TestWorkspace(PathBuf);
 
 impl TestWorkspace {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("photo-browser-auth-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("media-browser-auth-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("create browser auth test directory");
         Self(root)
     }
 
     fn database(&self) -> PathBuf {
-        self.0.join("photo.db")
+        self.0.join("media.db")
     }
 
     fn data(&self) -> PathBuf {
@@ -90,6 +90,53 @@ async fn test_state(workspace: &TestWorkspace) -> (AppState, SqlitePool) {
     (state, pool)
 }
 
+#[tokio::test]
+async fn startup_rejects_noncanonical_admin_identity_and_noncurrent_password_hash() {
+    let workspace = TestWorkspace::new();
+    let (state, pool) = test_state(&workspace).await;
+    let current_hash: String = sqlx::query_scalar("SELECT password_hash FROM auth_users")
+        .fetch_one(&pool)
+        .await
+        .expect("load current administrator hash");
+
+    sqlx::query("UPDATE auth_users SET password_hash = 'malformed-password-hash'")
+        .execute(&pool)
+        .await
+        .expect("install invalid test hash");
+    let error = admin::ensure_admin_user(&state)
+        .await
+        .expect_err("non-current administrator hash must fail startup");
+    assert!(error.to_string().contains("non-current password hash"));
+
+    let mut connection = pool
+        .acquire()
+        .await
+        .expect("acquire connection for corruption fixture");
+    sqlx::query("PRAGMA ignore_check_constraints = ON")
+        .execute(&mut *connection)
+        .await
+        .expect("disable CHECK constraints for corruption fixture");
+    sqlx::query(
+        "UPDATE auth_users SET password_hash = ?, username = 'persisted-admin@example.test'",
+    )
+    .bind(current_hash)
+    .execute(&mut *connection)
+    .await
+    .expect("install non-canonical test username");
+    sqlx::query("PRAGMA ignore_check_constraints = OFF")
+        .execute(&mut *connection)
+        .await
+        .expect("restore CHECK constraints after corruption fixture");
+    drop(connection);
+    let error = admin::ensure_admin_user(&state)
+        .await
+        .expect_err("non-canonical administrator username must fail startup");
+    assert!(error.to_string().contains("non-canonical username"));
+
+    drop(pool);
+    state.pool.close().await;
+}
+
 fn browser_request(
     method: Method,
     path: &str,
@@ -123,8 +170,9 @@ fn browser_request_from(
         .method(method)
         .uri(path)
         .header(header::CONTENT_TYPE, "application/json")
-        .header(header::HOST, "photos.test")
-        .header(header::ORIGIN, origin);
+        .header(header::HOST, "localhost")
+        .header(header::ORIGIN, origin)
+        .header("sec-fetch-site", "same-origin");
     if let Some(cookie) = cookie {
         builder = builder.header(header::COOKIE, cookie);
     }
@@ -145,15 +193,19 @@ async fn login(app: &Router, password: &str) -> (String, String) {
         app,
         browser_request(
             Method::POST,
-            "/v2/admin/login",
+            "/api/v2/auth/login",
             json!({"username": ADMIN_USERNAME, "password": password}),
             None,
             None,
-            "http://photos.test",
+            "http://localhost",
         ),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "no-store, private, max-age=0"
+    );
     let cookie = response
         .headers()
         .get(header::SET_COOKIE)
@@ -170,11 +222,59 @@ async fn login(app: &Router, password: &str) -> (String, String) {
             .expect("read login body"),
     )
     .expect("decode login body");
+    let object = body.as_object().expect("administrator session object");
+    assert_eq!(object.len(), 5, "administrator session must be exact");
+    assert_eq!(body["authenticated"], true);
+    Uuid::parse_str(body["user_id"].as_str().expect("administrator user id"))
+        .expect("administrator user id UUID");
+    assert_eq!(body["username"], ADMIN_USERNAME);
+    assert_eq!(body["role"], "admin");
     (cookie, body["csrf_token"].as_str().unwrap().to_owned())
 }
 
 fn cookie_token(cookie: &str) -> &str {
     cookie.split_once('=').unwrap().1
+}
+
+#[tokio::test]
+async fn login_rejects_policy_invalid_credentials_before_account_lookup() {
+    let workspace = TestWorkspace::new();
+    let (state, pool) = test_state(&workspace).await;
+    let app = router(state);
+    for body in [
+        json!({"email": "admin@example.test", "password": "valid-password"}),
+        json!({"username": "admin@example.test", "password": "valid-password"}),
+        json!({"username": ADMIN_USERNAME, "password": "short"}),
+        json!({"username": ADMIN_USERNAME, "password": ""}),
+    ] {
+        let response = respond(
+            &app,
+            browser_request(
+                Method::POST,
+                "/api/v2/auth/login",
+                body,
+                None,
+                None,
+                "http://localhost",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    let wrong_but_valid = respond(
+        &app,
+        browser_request(
+            Method::POST,
+            "/api/v2/auth/login",
+            json!({"username": "unknown", "password": "wrong-password"}),
+            None,
+            None,
+            "http://localhost",
+        ),
+    )
+    .await;
+    assert_eq!(wrong_but_valid.status(), StatusCode::UNAUTHORIZED);
+    pool.close().await;
 }
 
 #[tokio::test]
@@ -202,11 +302,11 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         &app,
         browser_request(
             Method::POST,
-            "/v2/admin/logout",
+            "/api/v2/auth/logout",
             json!({}),
             Some(&first_cookie),
             None,
-            "http://photos.test",
+            "http://localhost",
         ),
     )
     .await;
@@ -216,11 +316,11 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         &app,
         browser_request(
             Method::POST,
-            "/v2/admin/logout",
+            "/api/v2/auth/logout",
             json!({}),
             Some(&first_cookie),
             Some(&second_csrf),
-            "http://photos.test",
+            "http://localhost",
         ),
     )
     .await;
@@ -230,7 +330,7 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         &app,
         browser_request(
             Method::POST,
-            "/v2/admin/logout",
+            "/api/v2/auth/logout",
             json!({}),
             Some(&first_cookie),
             Some(&first_csrf),
@@ -242,11 +342,11 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
 
     let mut ambiguous = browser_request(
         Method::GET,
-        "/v2/admin/overview",
+        "/api/v2/admin/overview",
         json!({}),
         Some(&first_cookie),
         None,
-        "http://photos.test",
+        "http://localhost",
     );
     ambiguous.headers_mut().insert(
         header::AUTHORIZATION,
@@ -271,11 +371,11 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         &app,
         browser_request(
             Method::POST,
-            "/v2/admin/logout",
+            "/api/v2/auth/logout",
             json!({}),
             Some(&first_cookie),
             Some(&first_csrf),
-            "http://photos.test",
+            "http://localhost",
         ),
     )
     .await;
@@ -284,11 +384,11 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         &app,
         browser_request(
             Method::GET,
-            "/v2/admin/overview",
+            "/api/v2/admin/overview",
             json!({}),
             Some(&first_cookie),
             None,
-            "http://photos.test",
+            "http://localhost",
         ),
     )
     .await;
@@ -298,28 +398,33 @@ async fn sessions_are_random_revocable_and_bound_to_origin_and_csrf() {
         &app,
         browser_request(
             Method::GET,
-            "/v2/admin/session",
+            "/api/v2/auth/session",
             json!({}),
             Some(&second_cookie),
             None,
-            "http://photos.test",
+            "http://localhost",
         ),
     )
     .await;
     assert_eq!(session.status(), StatusCode::OK);
     let body: Value =
         serde_json::from_slice(&to_bytes(session.into_body(), 16 * 1024).await.unwrap()).unwrap();
+    assert_eq!(body.as_object().unwrap().len(), 5);
+    assert_eq!(body["authenticated"], true);
+    assert_eq!(body["username"], ADMIN_USERNAME);
+    assert_eq!(body["role"], "admin");
+    Uuid::parse_str(body["user_id"].as_str().unwrap()).unwrap();
     let rotated_csrf = body["csrf_token"].as_str().unwrap();
     assert_ne!(rotated_csrf, second_csrf);
     let previous_tab_csrf = respond(
         &app,
         browser_request(
             Method::POST,
-            "/v2/admin/logout",
+            "/api/v2/auth/logout",
             json!({}),
             Some(&second_cookie),
             Some(&second_csrf),
-            "http://photos.test",
+            "http://localhost",
         ),
     )
     .await;
@@ -341,11 +446,11 @@ async fn sessions_survive_restart_and_security_changes_invalidate_all_sessions()
         &restarted_app,
         browser_request(
             Method::GET,
-            "/v2/admin/overview",
+            "/api/v2/admin/overview",
             json!({}),
             Some(&cookie),
             None,
-            "http://photos.test",
+            "http://localhost",
         ),
     )
     .await;
@@ -355,14 +460,14 @@ async fn sessions_survive_restart_and_security_changes_invalidate_all_sessions()
         &restarted_app,
         browser_request(
             Method::POST,
-            "/v2/admin/password",
+            "/api/v2/admin/password",
             json!({
                 "current_password": ADMIN_PASSWORD,
                 "new_password": NEW_ADMIN_PASSWORD
             }),
             Some(&cookie),
             Some(&csrf),
-            "http://photos.test",
+            "http://localhost",
         ),
     )
     .await;
@@ -372,11 +477,11 @@ async fn sessions_survive_restart_and_security_changes_invalidate_all_sessions()
             &restarted_app,
             browser_request(
                 Method::GET,
-                "/v2/admin/overview",
+                "/api/v2/admin/overview",
                 json!({}),
                 Some(&cookie),
                 None,
-                "http://photos.test",
+                "http://localhost",
             ),
         )
         .await
@@ -387,52 +492,23 @@ async fn sessions_survive_restart_and_security_changes_invalidate_all_sessions()
         &restarted_app,
         browser_request(
             Method::POST,
-            "/v2/admin/login",
+            "/api/v2/auth/login",
             json!({"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}),
             None,
             None,
-            "http://photos.test",
+            "http://localhost",
         ),
     )
     .await;
     assert_eq!(old_password.status(), StatusCode::UNAUTHORIZED);
-    let (role_cookie, _) = login(&restarted_app, NEW_ADMIN_PASSWORD).await;
+    let persisted_role_columns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('auth_users') WHERE name = 'role'",
+    )
+    .fetch_one(&restarted_pool)
+    .await
+    .unwrap();
+    assert_eq!(persisted_role_columns, 0);
 
-    let before_version: i64 = sqlx::query_scalar("SELECT session_version FROM auth_users LIMIT 1")
-        .fetch_one(&restarted_pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE auth_users SET role = 'viewer'")
-        .execute(&restarted_pool)
-        .await
-        .unwrap();
-    let after_role_version: i64 =
-        sqlx::query_scalar("SELECT session_version FROM auth_users LIMIT 1")
-            .fetch_one(&restarted_pool)
-            .await
-            .unwrap();
-    assert_eq!(after_role_version, before_version + 1);
-    assert_eq!(
-        respond(
-            &restarted_app,
-            browser_request(
-                Method::GET,
-                "/v2/admin/overview",
-                json!({}),
-                Some(&role_cookie),
-                None,
-                "http://photos.test",
-            ),
-        )
-        .await
-        .status(),
-        StatusCode::UNAUTHORIZED
-    );
-
-    sqlx::query("UPDATE auth_users SET role = 'admin'")
-        .execute(&restarted_pool)
-        .await
-        .unwrap();
     let (active_cookie, _) = login(&restarted_app, NEW_ADMIN_PASSWORD).await;
     sqlx::query("UPDATE auth_users SET active = 0")
         .execute(&restarted_pool)
@@ -443,11 +519,11 @@ async fn sessions_survive_restart_and_security_changes_invalidate_all_sessions()
             &restarted_app,
             browser_request(
                 Method::GET,
-                "/v2/admin/overview",
+                "/api/v2/admin/overview",
                 json!({}),
                 Some(&active_cookie),
                 None,
-                "http://photos.test",
+                "http://localhost",
             ),
         )
         .await
@@ -473,11 +549,11 @@ async fn idle_and_absolute_expiry_are_enforced_from_persisted_state() {
         &app,
         browser_request(
             Method::GET,
-            "/v2/admin/overview",
+            "/api/v2/admin/overview",
             json!({}),
             Some(&cookie),
             None,
-            "http://photos.test",
+            "http://localhost",
         ),
     )
     .await;
@@ -494,11 +570,11 @@ async fn production_cookie_uses_host_prefix_and_complete_security_attributes() {
         &app,
         browser_request(
             Method::POST,
-            "/v2/admin/login",
+            "/api/v2/auth/login",
             json!({"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}),
             None,
             None,
-            "https://photos.test",
+            "https://localhost",
         ),
     )
     .await;
@@ -527,10 +603,11 @@ async fn login_body_limit_and_source_and_normalized_account_budgets_are_enforced
 
     let mut oversized = Request::builder()
         .method(Method::POST)
-        .uri("/v2/admin/login")
+        .uri("/api/v2/auth/login")
         .header(header::CONTENT_TYPE, "application/json")
-        .header(header::HOST, "photos.test")
-        .header(header::ORIGIN, "http://photos.test")
+        .header(header::HOST, "localhost")
+        .header(header::ORIGIN, "http://localhost")
+        .header("sec-fetch-site", "same-origin")
         .body(Body::from(format!(
             "{{\"username\":\"admin\",\"password\":\"{}\"}}",
             "x".repeat(5_000)
@@ -548,11 +625,11 @@ async fn login_body_limit_and_source_and_normalized_account_budgets_are_enforced
         let mut request = browser_request_from(
             "198.51.100.10:43000".parse().unwrap(),
             Method::POST,
-            "/v2/admin/login",
+            "/api/v2/auth/login",
             json!({"username": format!("unknown-{index}"), "password": "incorrect-password"}),
             None,
             None,
-            "http://photos.test",
+            "http://localhost",
         );
         request.headers_mut().insert(
             "x-forwarded-for",
@@ -566,11 +643,11 @@ async fn login_body_limit_and_source_and_normalized_account_budgets_are_enforced
     let mut source_limited = browser_request_from(
         "198.51.100.10:43000".parse().unwrap(),
         Method::POST,
-        "/v2/admin/login",
+        "/api/v2/auth/login",
         json!({"username": "another-unknown", "password": "incorrect-password"}),
         None,
         None,
-        "http://photos.test",
+        "http://localhost",
     );
     source_limited
         .headers_mut()
@@ -593,11 +670,11 @@ async fn login_body_limit_and_source_and_normalized_account_budgets_are_enforced
             browser_request_from(
                 peer.parse().unwrap(),
                 Method::POST,
-                "/v2/admin/login",
+                "/api/v2/auth/login",
                 json!({"username": username, "password": "incorrect-password"}),
                 None,
                 None,
-                "http://photos.test",
+                "http://localhost",
             ),
         )
         .await;
@@ -608,11 +685,11 @@ async fn login_body_limit_and_source_and_normalized_account_budgets_are_enforced
         browser_request_from(
             "192.0.2.13:44000".parse().unwrap(),
             Method::POST,
-            "/v2/admin/login",
+            "/api/v2/auth/login",
             json!({"username": "Persisted-Admin", "password": "incorrect-password"}),
             None,
             None,
-            "http://photos.test",
+            "http://localhost",
         ),
     )
     .await;
@@ -632,11 +709,11 @@ async fn trusted_peer_is_required_for_forwarded_https_and_client_identity() {
     let mut spoofed = browser_request_from(
         "198.51.100.20:45000".parse().unwrap(),
         Method::POST,
-        "/v2/admin/login",
+        "/api/v2/auth/login",
         json!({"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}),
         None,
         None,
-        "https://photos.test",
+        "https://localhost",
     );
     spoofed
         .headers_mut()
@@ -652,11 +729,11 @@ async fn trusted_peer_is_required_for_forwarded_https_and_client_identity() {
     let mut trusted = browser_request_from(
         "127.0.0.1:45000".parse().unwrap(),
         Method::POST,
-        "/v2/admin/login",
+        "/api/v2/auth/login",
         json!({"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}),
         None,
         None,
-        "https://photos.test",
+        "https://localhost",
     );
     trusted
         .headers_mut()
@@ -695,7 +772,7 @@ async fn device_bootstrap_shares_the_bounded_password_admission_and_body_limit()
             }),
             None,
             None,
-            "http://photos.test",
+            "http://localhost",
         ),
     )
     .await;
@@ -714,7 +791,7 @@ async fn device_bootstrap_shares_the_bounded_password_admission_and_body_limit()
             }),
             None,
             None,
-            "http://photos.test",
+            "http://localhost",
         ),
     )
     .await;

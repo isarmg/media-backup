@@ -502,7 +502,7 @@ mod tests {
     impl TestSandbox {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!(
-                "photo-mobile-v02-{}-{}",
+                "media-mobile-v02-{}-{}",
                 std::process::id(),
                 NEXT_SANDBOX.fetch_add(1, Ordering::Relaxed)
             ));
@@ -554,20 +554,20 @@ mod tests {
     }
 
     #[test]
-    fn complete_v01_config_is_rejected_before_any_filesystem_write() {
+    fn noncurrent_config_is_rejected_before_any_filesystem_write() {
         let container = TestSandbox::new();
-        let absent_sandbox = container.path().join("v02-sandbox-must-remain-absent");
+        let absent_sandbox = container.path().join("sandbox-must-remain-absent");
         let database = absent_sandbox.join(MOBILE_DATABASE_FILENAME);
-        let v01_config = json!({
-            "master_key_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            "dedupe_key_b64": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
+        let noncurrent_config = json!({
+            "unknown_key_material": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "unknown_dedupe_material": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=",
             "part_size": 16 * 1024 * 1024,
         });
 
         let database_c = CString::new(database.to_string_lossy().as_bytes()).unwrap();
-        let v01_config_c = CString::new(v01_config.to_string()).unwrap();
+        let noncurrent_config_c = CString::new(noncurrent_config.to_string()).unwrap();
         assert_eq!(
-            unsafe { mb_v0_2_r1_open(database_c.as_ptr(), v01_config_c.as_ptr()) },
+            unsafe { mb_v0_2_r1_open(database_c.as_ptr(), noncurrent_config_c.as_ptr()) },
             0
         );
         let error = LAST_ERROR.with(|value| value.borrow().to_string_lossy().into_owned());
@@ -585,9 +585,9 @@ mod tests {
 
         for (field, wrong) in [
             ("product", json!("another-product")),
-            ("application_version", json!("0.1.0")),
+            ("application_version", json!("noncurrent-version")),
             ("revision", json!(2)),
-            ("state_epoch", json!("media-backup-mobile-v0.1")),
+            ("state_epoch", json!("noncurrent-state-epoch")),
             ("part_size", json!(0)),
         ] {
             let mut config: Value = serde_json::from_str(&current_config_json()).unwrap();
@@ -601,49 +601,20 @@ mod tests {
     }
 
     #[test]
-    fn v02_sandbox_never_reads_writes_or_deletes_v01_state() {
-        let sandbox = TestSandbox::new();
-        let legacy_database = sandbox.path().join("agent.sqlite");
-        let legacy_staging = sandbox.path().join("backup-staging");
-        let legacy_marker = legacy_staging.join("encrypted-v01-part");
-        let legacy_database_bytes = b"v0.1 sqlite generation";
-        let legacy_staging_bytes = b"v0.1 staging generation";
-        fs::write(&legacy_database, legacy_database_bytes).unwrap();
-        fs::create_dir(&legacy_staging).unwrap();
-        fs::write(&legacy_marker, legacy_staging_bytes).unwrap();
-
-        let current_database = sandbox.path().join(MOBILE_DATABASE_FILENAME);
-        let current_staging = sandbox.path().join(MOBILE_STAGING_DIRECTORY);
-        let handle =
-            open_impl(&current_database.to_string_lossy(), &current_config_json()).unwrap();
-        fs::create_dir(&current_staging).unwrap();
-        assert_eq!(
-            next_impl(handle, &current_staging.to_string_lossy()).unwrap(),
-            Value::Null
-        );
-
-        assert!(open_impl(&legacy_database.to_string_lossy(), &current_config_json()).is_err());
-        assert!(next_impl(handle, &legacy_staging.to_string_lossy()).is_err());
-        assert_eq!(fs::read(&legacy_database).unwrap(), legacy_database_bytes);
-        assert_eq!(fs::read(&legacy_marker).unwrap(), legacy_staging_bytes);
-        mb_v0_2_r1_close(handle);
-    }
-
-    #[test]
     fn ffi_json_rejects_unknown_missing_and_wrong_identity_without_queue_writes() {
         let sandbox = TestSandbox::new();
         let database = sandbox.path().join(MOBILE_DATABASE_FILENAME);
         let handle = open_impl(&database.to_string_lossy(), &current_config_json()).unwrap();
 
         let mut unknown = current_enqueue_json();
-        unknown["master_key_b64"] = Value::String("legacy-secret".to_owned());
+        unknown["unknown_key_material"] = Value::String("unexpected".to_owned());
         assert!(enqueue_impl(handle, &unknown.to_string()).is_err());
 
         for (field, wrong) in [
             ("product", json!("another-product")),
-            ("application_version", json!("0.1.0")),
+            ("application_version", json!("noncurrent-version")),
             ("revision", json!(2)),
-            ("state_epoch", json!("media-backup-mobile-v0.1")),
+            ("state_epoch", json!("noncurrent-state-epoch")),
         ] {
             let mut input = current_enqueue_json();
             input[field] = wrong;
