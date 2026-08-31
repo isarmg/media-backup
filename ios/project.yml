@@ -16,6 +16,18 @@ targets:
       - PhotoBackup
     info:
       path: PhotoBackup/Info.plist
+      properties:
+        CFBundleDisplayName: 照片备份
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        NSPhotoLibraryUsageDescription: 用于读取您选择的照片和视频，并通过 HTTPS 备份到自己的服务器。
+        NSPhotoLibraryAddUsageDescription: 用于将您从服务器恢复的原始照片和视频写回系统照片库。
+        UIBackgroundModes:
+          - fetch
+          - processing
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.example.photobackup.v02.processing.v0-2-r1
     entitlements:
       path: PhotoBackup/PhotoBackup.entitlements
     dependencies:

@@ -13,6 +13,13 @@ test ! -e crates/mobile-ffi/include/photo_backup.h \
     || fail "the unversioned C header still exists"
 test -f crates/mobile-ffi/include/photo_backup_v0_2_r1.h \
     || fail "the v0.2 revision 1 C header is missing"
+for required_ios_property in \
+    'NSPhotoLibraryUsageDescription:' \
+    'NSPhotoLibraryAddUsageDescription:' \
+    'BGTaskSchedulerPermittedIdentifiers:'; do
+    grep -q -F "$required_ios_property" ios/project.yml \
+        || fail "the generated iOS Info.plist contract is missing: $required_ios_property"
+done
 
 if grep -R -I -n -E 'extern "C" fn pb_|@_silgen_name\("pb_' \
     crates/mobile-ffi/src ios/PhotoBackup android/app/src/main \
