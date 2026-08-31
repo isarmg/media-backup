@@ -1,6 +1,6 @@
 name: MediaBackup
 options:
-  bundleIdPrefix: com.example
+  bundleIdPrefix: org.sarmg
   deploymentTarget:
     iOS: "17.0"
 settings:
@@ -27,14 +27,14 @@ targets:
           - fetch
           - processing
         BGTaskSchedulerPermittedIdentifiers:
-          - com.example.mediabackup.v02.processing.v0-2-r1
+          - org.sarmg.mediabackup.processing.v0-2-r1
     entitlements:
       path: MediaBackup/MediaBackup.entitlements
     dependencies:
       - framework: Vendor/MediaBackupRust.xcframework
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.mediabackup.v02
+        PRODUCT_BUNDLE_IDENTIFIER: org.sarmg.mediabackup
         PRODUCT_NAME: MediaBackup
         CODE_SIGN_STYLE: Automatic
   MediaBackupTests:
@@ -46,7 +46,7 @@ targets:
       - target: MediaBackup
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.mediabackup.v02.tests
+        PRODUCT_BUNDLE_IDENTIFIER: org.sarmg.mediabackup.tests
         CODE_SIGN_STYLE: Automatic
 schemes:
   MediaBackup:

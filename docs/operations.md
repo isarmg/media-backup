@@ -151,6 +151,16 @@ cargo install cargo-ndk
 gradle -p clients/android testDebugUnitTest assembleDebug
 ```
 
+上述命令只生成不发布的 Debug APK，不得获得正式签名 Secret。正式 `v0.2.0` workflow 使用 application ID
+`org.sarmg.mediabackup`、alias `media-backup-android-release` 和受保护 `android-signing` Environment 中仅有的
+`MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_BASE64`、`MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_PASSWORD` 两个
+Secret 执行 `assembleRelease`。证书必须是 RSA 4096、`CA:FALSE`、Digital Signature/Code Signing，SHA-256
+必须精确为
+`0C:FC:28:11:D4:8C:DE:AB:3E:6D:85:70:29:D8:79:E0:01:AB:95:31:C0:67:84:B4:D4:8D:15:A8:47:77:14:21`。
+上传前 workflow 用 `apksigner` 验证唯一 signer，用 `aapt2` 验证 application ID，并确认 APK 只含
+`arm64-v8a/libmedia_backup_mobile.so`。缺 Secret、错误 alias/密码/指纹、Debug APK 或其他 ABI 均失败关闭。
+该全新身份不更新任何旧应用；旧签名、旧 package ID、旧 Secret 名和 fallback 均不进入当前仓库。
+
 iOS：
 
 ```bash

@@ -169,5 +169,23 @@ done
 ((setup_gradle_uses == setup_gradle_basic_cache)) ||
   fail "each setup-gradle action must set cache-provider: basic"
 
+release_workflow=.github/workflows/release.yml
+for required_release_marker in \
+  'environment: android-signing' \
+  'secrets.MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_BASE64' \
+  'secrets.MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_PASSWORD' \
+  'assembleRelease' \
+  'apksigner' \
+  'org.sarmg.mediabackup'; do
+  grep -q -F "$required_release_marker" "$release_workflow" ||
+    fail "$release_workflow is missing Android release marker: $required_release_marker"
+done
+if grep -R -I -n -E 'PHOTO_ANDROID_|assembleDebug|app-debug[.]apk' "$release_workflow"; then
+  fail "$release_workflow contains an old signing identity or debug APK publication path"
+fi
+if grep -q -F 'MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_' .github/workflows/build.yml; then
+  fail "ordinary CI must not receive formal Android signing Secrets"
+fi
+
 printf 'workflow supply-chain check passed (%d workflows, %d pinned actions)\n' \
   "${#workflow_files[@]}" "$total_uses"

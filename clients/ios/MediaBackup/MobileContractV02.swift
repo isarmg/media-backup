@@ -8,11 +8,11 @@ enum MobileContractV02 {
 
     static let databaseFilename = "agent-v0.2-r1.sqlite"
     static let stagingDirectory = "backup-staging-v0.2-r1"
-    static let keychainService = "com.example.mediabackup.v02.r1.keychain"
-    static let preferences = UserDefaults(suiteName: "com.example.mediabackup.v02.r1.preferences")!
+    static let keychainService = "org.sarmg.mediabackup.r1.keychain"
+    static let preferences = UserDefaults(suiteName: "org.sarmg.mediabackup.r1.preferences")!
     static let tokenKey = "bearer_token_v0_2_r1"
-    static let processingTask = "com.example.mediabackup.v02.processing.v0-2-r1"
-    static let uploadSession = "com.example.mediabackup.v02.upload.v0-2-r1"
+    static let processingTask = "org.sarmg.mediabackup.processing.v0-2-r1"
+    static let uploadSession = "org.sarmg.mediabackup.upload.v0-2-r1"
 
     static func requireIdentity(
         product: String,

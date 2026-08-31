@@ -1,4 +1,4 @@
-package com.example.mediabackup.v02
+package org.sarmg.mediabackup
 
 import android.Manifest
 import android.content.Context

@@ -1,4 +1,4 @@
-package com.example.mediabackup.v02
+package org.sarmg.mediabackup
 
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient

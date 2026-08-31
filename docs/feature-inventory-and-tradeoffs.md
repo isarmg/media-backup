@@ -163,6 +163,7 @@ React 管理页、配置与 systemd、发行 identity/manifest、CI/脚本、正
 | MED-D-013 | 达到 40 个新资源 scan limit 时使用 `replace_members=false`，否则全量替换已扫描相册成员 | `scan.limitReached`、`syncAlbum` | 保障 | 高 | 分批扫描会错误清空未遍历成员 | 40/41 items、空完整 album；Android 14 selected-media 可见子集当前无法与完整授权区分，存在移除不可见成员的边界 |
 | MED-D-014 | RemoteLibrary 分页 timeline、推进 sync cursor、恢复到 MediaStore、读取 thumbnail | `RemoteLibrary.kt` | 核心 | 高 | 用户无法浏览或取回备份 | 多页、cursor、download failure、权限；当前只检查 `plain-v1`/HTTP，不做恢复后 size/BLAKE3 校验；`resolve` 接受绝对 URL 并附带 Bearer，Server 必须只返回同源相对 path |
 | MED-D-015 | 收藏、归档、trash/restore、标签和重复组有移动 API/UI 接口 | `BackupApi`、`RemoteLibrary`、Compose | 可选 | 中 | 备份主链保留，整理能力下降 | 每个 mutation、刷新、错误回滚 |
+| MED-D-016 | 正式 Android APK 使用全新 `org.sarmg.mediabackup` identity 与唯一 RSA-4096、CA:FALSE 证书；Release Secret 与普通 CI 隔离 | Android Gradle、`release.yml`、`android-signing` Environment | 保障 | 高 | 发布 Debug/未签名/错误 signer APK，或旧应用身份被误当成当前版本 | `assembleRelease`；缺 Secret 失败；alias；唯一 signer；固定 SHA-256；aapt2 package；仅 arm64-v8a；普通 CI 无 Secret |
 
 ## 8. iOS/iPadOS 客户端
 
@@ -180,6 +181,7 @@ React 管理页、配置与 systemd、发行 identity/manifest、CI/脚本、正
 | MED-I-010 | RemoteLibrary 提供 timeline/sync、收藏归档、标签、重复数、trash 和恢复到 Photos | `RemoteLibrary.swift` | 核心 | 高 | 备份只能写不能查/恢复 | 多页、cursor、下载、Photos write permission |
 | MED-I-011 | 恢复选择 primary resource，把 HTTP 下载临时文件交给 PhotoKit 创建 asset | `restoreToPhotos` | 核心 | 高 | 核心“恢复”目标消失 | 无 primary、下载失败、照片/视频、权限；当前未接入 size/BLAKE3 校验 |
 | MED-I-012 | AppDelegate 注册 BGProcessingTask，expiration 会取消 Swift Task | `MediaBackupApp.swift` | 保障 | 中 | 删除后 iOS 不会按系统时机继续调度备份 | 当前未实现 `handleEventsForBackgroundURLSession`；`runBackup` 内部吞掉业务错误且外层仍报告 success，expiration 与正常结束也需防重复 completion |
+| MED-I-013 | iOS application、测试 target、BGTask、Keychain、preferences 与 upload session 均位于唯一 `org.sarmg.mediabackup` 当前命名空间 | `project.yml`、`MobileContractV02.swift` | 保障 | 中 | bundle 与持久域分叉，或继续依赖开发占位 identity | xcodegen/plist；bundle IDs；BGTask；Keychain/preferences；源码无开发占位 namespace |
 
 ## 9. React/Vite Administrator Web
 

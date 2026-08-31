@@ -57,7 +57,10 @@ gradle -p clients/android testDebugUnitTest assembleDebug
 ```
 
 构建脚本必须生成 `libmedia_backup_mobile.so`；Kotlin namespace 与 application ID 都是
-`com.example.mediabackup.v02`。`jniLibs` 只允许放置本次从当前 Rust workspace 生成的正式 ABI 文件。
+`org.sarmg.mediabackup`。`jniLibs` 只允许放置本次从当前 Rust workspace 生成的正式 ABI 文件。
+这个本地命令只验证 Debug 构建。正式 `assembleRelease` 必须显式提供当前 PKCS#12 路径和密码；开发者
+机器没有正式 Secret 时应当失败，不能自动落回 Debug key。证书 alias、SHA-256 和 APK application ID 由
+release workflow 再次独立验证。
 
 ## iOS 构建
 
@@ -71,7 +74,7 @@ xcodebuild -project MediaBackup.xcodeproj -scheme MediaBackup \
 ```
 
 `clients/ios/project.yml` 是 Xcode project 的事实源；生成的 `.xcodeproj` 和 Info.plist 不提交。权限文案、bundle
-ID、entitlements 和测试 target 都由 project.yml 统一生成。
+ID `org.sarmg.mediabackup`、entitlements 和测试 target 都由 project.yml 统一生成。
 
 ## 常见首次运行错误
 

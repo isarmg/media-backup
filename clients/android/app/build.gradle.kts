@@ -18,12 +18,41 @@ require(workspaceVersion == "0.2.0") {
     "The mobile v0.2 revision 1 contract requires workspace version 0.2.0; define a new epoch before bumping"
 }
 
+val releasePkcs12Path = providers
+    .environmentVariable("MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_PATH")
+    .orNull
+    ?.takeIf { it.isNotBlank() }
+val releasePkcs12Password = providers
+    .environmentVariable("MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_PASSWORD")
+    .orNull
+    ?.takeIf { it.isNotEmpty() }
+
+// `gradle build` also reaches Release tasks even though the requested task name
+// does not contain "Release". Inspect the resolved graph so no indirect command
+// can emit an unsigned formal APK.
+gradle.taskGraph.whenReady {
+    val buildsReleaseVariant = allTasks.any { task ->
+        task.project == project && task.name.contains("Release", ignoreCase = true)
+    }
+    if (buildsReleaseVariant) {
+        val signingPath = requireNotNull(releasePkcs12Path) {
+            "Release tasks require MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_PATH"
+        }
+        requireNotNull(releasePkcs12Password) {
+            "Release tasks require MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_PASSWORD"
+        }
+        require(file(signingPath).isFile) {
+            "MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_PATH must name a regular file"
+        }
+    }
+}
+
 android {
-    namespace = "com.example.mediabackup.v02"
+    namespace = "org.sarmg.mediabackup"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.mediabackup.v02"
+        applicationId = "org.sarmg.mediabackup"
         minSdk = 26
         targetSdk = 36
         versionCode = semanticVersion[0] * 1_000_000 + semanticVersion[1] * 1_000 + semanticVersion[2]
@@ -31,6 +60,27 @@ android {
 
         ndk {
             abiFilters += "arm64-v8a"
+        }
+    }
+
+    signingConfigs {
+        releasePkcs12Path?.let { signingPath ->
+            releasePkcs12Password?.let { signingPassword ->
+                create("release") {
+                    storeFile = file(signingPath)
+                    storePassword = signingPassword
+                    keyAlias = "media-backup-android-release"
+                    keyPassword = signingPassword
+                    storeType = "PKCS12"
+                }
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            isDebuggable = false
+            signingConfigs.findByName("release")?.let { signingConfig = it }
         }
     }
 

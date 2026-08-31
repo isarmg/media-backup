@@ -31,8 +31,13 @@ Worker 重启时从 durable state 继续，不能仅依赖 Compose 内存状态�
 ## Android Secret 与权限
 
 服务地址、用户可见设置与 Token 分级保存；Token 由 Keystore 支持的加密存储保护。日志、Intent、
-SavedState 和 crash report 不包含 Token。Android 版本化 package/app ID 只使用当前命名空间，不查找旧
+SavedState 和 crash report 不包含 Token。Android 正式 package/app ID 只使用当前命名空间，不查找旧
 preference、database 或 staging。
+
+正式 application ID 是 `org.sarmg.mediabackup`，Kotlin 路径、namespace、JNI 导出名和 APK badging 必须
+同时一致。Debug APK 只用于 CI/开发，永远不取得正式 Secret；Release 使用受保护 Environment 中两个
+PKCS#12 Secret，并在发布前核对唯一 signer、固定证书指纹和唯一 `arm64-v8a` JNI。因为本项目不兼容旧
+代码，新 identity 不提供旧 package/证书的升级安装路径，也不保留旧 JNI 符号。
 
 ## iOS 扫描
 

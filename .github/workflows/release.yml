@@ -13,6 +13,9 @@ on:
 
 env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  MEDIA_BACKUP_ANDROID_APPLICATION_ID: org.sarmg.mediabackup
+  MEDIA_BACKUP_ANDROID_SIGNING_KEY_ALIAS: media-backup-android-release
+  MEDIA_BACKUP_ANDROID_SIGNING_CERT_SHA256: 0cfc2811d48cdeab3e6d857029d879e001ab9531c06784b4d48d15a847771421
 
 concurrency:
   group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -91,6 +94,7 @@ jobs:
   android:
     name: Android APK
     needs: validate
+    environment: android-signing
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -122,12 +126,50 @@ jobs:
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
           cargo ndk -t arm64-v8a -o clients/android/app/src/main/jniLibs build -p media-backup-mobile --release
-      - run: gradle -p clients/android assembleDebug
-      - name: Package APK
+      - name: Materialize and validate the current signing identity
+        env:
+          MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_BASE64: ${{ secrets.MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_BASE64 }}
+          MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_PASSWORD: ${{ secrets.MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_PASSWORD }}
         run: |
+          test -n "$MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_BASE64"
+          test -n "$MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_PASSWORD"
+          umask 077
+          printf '%s' "$MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_BASE64" \
+            | base64 --decode >"$RUNNER_TEMP/media-backup-android-release.p12"
+          test -s "$RUNNER_TEMP/media-backup-android-release.p12"
+          alias_line="$(
+            openssl pkcs12 \
+              -in "$RUNNER_TEMP/media-backup-android-release.p12" \
+              -passin env:MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_PASSWORD \
+              -clcerts -nokeys \
+              | sed -n 's/^    friendlyName: //p'
+          )"
+          test "$alias_line" = "$MEDIA_BACKUP_ANDROID_SIGNING_KEY_ALIAS"
+      - name: Build the signed release APK
+        env:
+          MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_PATH: ${{ runner.temp }}/media-backup-android-release.p12
+          MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_PASSWORD: ${{ secrets.MEDIA_BACKUP_ANDROID_SIGNING_PKCS12_PASSWORD }}
+        run: gradle -p clients/android assembleRelease
+      - name: Verify and package the signed APK
+        run: |
+          set -euo pipefail
           version="${RELEASE_TAG#v}"
+          apk="clients/android/app/build/outputs/apk/release/app-release.apk"
+          test -s "$apk"
+          signer_output="$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$apk")"
+          printf '%s\n' "$signer_output"
+          test "$(printf '%s\n' "$signer_output" | grep -c '^Signer #[0-9].*certificate SHA-256 digest:')" -eq 1
+          actual_fingerprint="$(
+            printf '%s\n' "$signer_output" \
+              | sed -n 's/^Signer #1 certificate SHA-256 digest: //p'
+          )"
+          test "${actual_fingerprint,,}" = "$MEDIA_BACKUP_ANDROID_SIGNING_CERT_SHA256"
+          badging="$("$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$apk")"
+          printf '%s\n' "$badging" | grep -F "package: name='$MEDIA_BACKUP_ANDROID_APPLICATION_ID'"
+          test "$(zipinfo -1 "$apk" | awk -F/ '$1 == "lib" { print $2 }' | sort -u)" = "arm64-v8a"
+          zipinfo -1 "$apk" | grep -Fx 'lib/arm64-v8a/libmedia_backup_mobile.so'
           mkdir -p dist
-          cp clients/android/app/build/outputs/apk/debug/app-debug.apk "dist/media-backup-android-${version}-arm64-debug.apk"
+          install -m 0444 "$apk" "dist/media-backup-android-${version}-arm64.apk"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-android

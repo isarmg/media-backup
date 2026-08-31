@@ -315,7 +315,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_openV02R1(
+    pub extern "system" fn Java_org_sarmg_mediabackup_NativeBridgeV02_openV02R1(
         mut env: JNIEnv,
         _class: JClass,
         database_path: JString,
@@ -331,7 +331,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_closeV02R1(
+    pub extern "system" fn Java_org_sarmg_mediabackup_NativeBridgeV02_closeV02R1(
         _env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -340,7 +340,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_needsV02R1(
+    pub extern "system" fn Java_org_sarmg_mediabackup_NativeBridgeV02_needsV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -361,7 +361,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_enqueueV02R1(
+    pub extern "system" fn Java_org_sarmg_mediabackup_NativeBridgeV02_enqueueV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -373,7 +373,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_nextV02R1(
+    pub extern "system" fn Java_org_sarmg_mediabackup_NativeBridgeV02_nextV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -396,7 +396,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_markUploadV02R1(
+    pub extern "system" fn Java_org_sarmg_mediabackup_NativeBridgeV02_markUploadV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -414,7 +414,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_markPartV02R1(
+    pub extern "system" fn Java_org_sarmg_mediabackup_NativeBridgeV02_markPartV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -433,7 +433,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_markCompleteV02R1(
+    pub extern "system" fn Java_org_sarmg_mediabackup_NativeBridgeV02_markCompleteV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -451,7 +451,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_markFailedV02R1(
+    pub extern "system" fn Java_org_sarmg_mediabackup_NativeBridgeV02_markFailedV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -470,7 +470,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_statsV02R1(
+    pub extern "system" fn Java_org_sarmg_mediabackup_NativeBridgeV02_statsV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,

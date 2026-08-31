@@ -111,11 +111,14 @@ MediaStore/PhotoKit 写入系统照片库。当前 Android/iOS 宿主会检查 H
   -> 真实二进制 verify-release
   -> 打包 + SHA256SUMS
   -> 解包部署测试与篡改负例
+  -> Android 从受保护 Environment 取得全新 PKCS#12，assembleRelease
+  -> apksigner 唯一 signer/固定指纹 + aapt2 application ID + arm64-v8a ABI 复验
   -> GitHub Release（禁止覆盖既有资产）
 ```
 
 Android 与 iOS 制品使用同一版本和移动 epoch；静态门禁发现的身份/ABI 漂移会阻止发行，运行行为仍需
-各平台测试覆盖，不能把静态字符串门禁当成完整端到端证明。
+各平台测试覆盖，不能把静态字符串门禁当成完整端到端证明。普通 CI 只构建 Debug/unsigned 移动制品，
+不得取得 Android 正式 Secret；当前签名身份不接受旧 package、旧证书或旧 Secret 名作为 fallback。
 
 ## 9. 备份、恢复和升级流程
 
