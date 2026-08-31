@@ -12,7 +12,7 @@ use std::{
     },
 };
 
-use photo_backup_agent_core::{
+use media_backup_agent_core::{
     Agent, AgentConfig, EnqueueResource, MOBILE_APPLICATION_VERSION, MOBILE_DATABASE_FILENAME,
     MOBILE_PRODUCT, MOBILE_REVISION, MOBILE_STAGING_DIRECTORY, MOBILE_STATE_EPOCH,
 };
@@ -139,7 +139,7 @@ unsafe fn read_c_string(value: *const c_char) -> Result<String, String> {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pb_v0_2_r1_open(
+pub unsafe extern "C" fn mb_v0_2_r1_open(
     database_path: *const c_char,
     config_json: *const c_char,
 ) -> u64 {
@@ -155,14 +155,14 @@ pub unsafe extern "C" fn pb_v0_2_r1_open(
 }
 
 #[no_mangle]
-pub extern "C" fn pb_v0_2_r1_close(handle: u64) {
+pub extern "C" fn mb_v0_2_r1_close(handle: u64) {
     if let Ok(mut registry) = agents().lock() {
         registry.remove(&handle);
     }
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pb_v0_2_r1_needs(
+pub unsafe extern "C" fn mb_v0_2_r1_needs(
     handle: u64,
     source_asset_id: *const c_char,
     source_resource_id: *const c_char,
@@ -187,19 +187,19 @@ pub unsafe extern "C" fn pb_v0_2_r1_needs(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pb_v0_2_r1_enqueue(handle: u64, input_json: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn mb_v0_2_r1_enqueue(handle: u64, input_json: *const c_char) -> *mut c_char {
     let result = read_c_string(input_json).and_then(|input| enqueue_impl(handle, &input));
     c_string(envelope(result))
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pb_v0_2_r1_next(handle: u64, staging_root: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn mb_v0_2_r1_next(handle: u64, staging_root: *const c_char) -> *mut c_char {
     let result = read_c_string(staging_root).and_then(|root| next_impl(handle, &root));
     c_string(envelope(result))
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pb_v0_2_r1_mark_upload(
+pub unsafe extern "C" fn mb_v0_2_r1_mark_upload(
     handle: u64,
     job_id: *const c_char,
     upload_id: *const c_char,
@@ -218,7 +218,7 @@ pub unsafe extern "C" fn pb_v0_2_r1_mark_upload(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pb_v0_2_r1_mark_part(
+pub unsafe extern "C" fn mb_v0_2_r1_mark_part(
     handle: u64,
     job_id: *const c_char,
     part_index: u32,
@@ -235,7 +235,7 @@ pub unsafe extern "C" fn pb_v0_2_r1_mark_part(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pb_v0_2_r1_mark_complete(
+pub unsafe extern "C" fn mb_v0_2_r1_mark_complete(
     handle: u64,
     job_id: *const c_char,
 ) -> *mut c_char {
@@ -251,7 +251,7 @@ pub unsafe extern "C" fn pb_v0_2_r1_mark_complete(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pb_v0_2_r1_mark_failed(
+pub unsafe extern "C" fn mb_v0_2_r1_mark_failed(
     handle: u64,
     job_id: *const c_char,
     error: *const c_char,
@@ -271,7 +271,7 @@ pub unsafe extern "C" fn pb_v0_2_r1_mark_failed(
 }
 
 #[no_mangle]
-pub extern "C" fn pb_v0_2_r1_stats(handle: u64) -> *mut c_char {
+pub extern "C" fn mb_v0_2_r1_stats(handle: u64) -> *mut c_char {
     let result = with_agent(handle, |agent| {
         agent
             .stats()
@@ -282,12 +282,12 @@ pub extern "C" fn pb_v0_2_r1_stats(handle: u64) -> *mut c_char {
 }
 
 #[no_mangle]
-pub extern "C" fn pb_v0_2_r1_last_error() -> *const c_char {
+pub extern "C" fn mb_v0_2_r1_last_error() -> *const c_char {
     LAST_ERROR.with(|value| value.borrow().as_ptr())
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn pb_v0_2_r1_string_free(value: *mut c_char) {
+pub unsafe extern "C" fn mb_v0_2_r1_string_free(value: *mut c_char) {
     if !value.is_null() {
         drop(CString::from_raw(value));
     }
@@ -315,7 +315,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_photobackup_v02_NativeBridgeV02_openV02R1(
+    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_openV02R1(
         mut env: JNIEnv,
         _class: JClass,
         database_path: JString,
@@ -331,16 +331,16 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_photobackup_v02_NativeBridgeV02_closeV02R1(
+    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_closeV02R1(
         _env: JNIEnv,
         _class: JClass,
         handle: jlong,
     ) {
-        pb_v0_2_r1_close(handle as u64);
+        mb_v0_2_r1_close(handle as u64);
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_photobackup_v02_NativeBridgeV02_needsV02R1(
+    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_needsV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -361,7 +361,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_photobackup_v02_NativeBridgeV02_enqueueV02R1(
+    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_enqueueV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -373,7 +373,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_photobackup_v02_NativeBridgeV02_nextV02R1(
+    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_nextV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -396,7 +396,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_photobackup_v02_NativeBridgeV02_markUploadV02R1(
+    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_markUploadV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -414,7 +414,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_photobackup_v02_NativeBridgeV02_markPartV02R1(
+    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_markPartV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -433,7 +433,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_photobackup_v02_NativeBridgeV02_markCompleteV02R1(
+    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_markCompleteV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -451,7 +451,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_photobackup_v02_NativeBridgeV02_markFailedV02R1(
+    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_markFailedV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -470,7 +470,7 @@ mod android {
     }
 
     #[no_mangle]
-    pub extern "system" fn Java_com_example_photobackup_v02_NativeBridgeV02_statsV02R1(
+    pub extern "system" fn Java_com_example_mediabackup_v02_NativeBridgeV02_statsV02R1(
         mut env: JNIEnv,
         _class: JClass,
         handle: jlong,
@@ -567,7 +567,7 @@ mod tests {
         let database_c = CString::new(database.to_string_lossy().as_bytes()).unwrap();
         let v01_config_c = CString::new(v01_config.to_string()).unwrap();
         assert_eq!(
-            unsafe { pb_v0_2_r1_open(database_c.as_ptr(), v01_config_c.as_ptr()) },
+            unsafe { mb_v0_2_r1_open(database_c.as_ptr(), v01_config_c.as_ptr()) },
             0
         );
         let error = LAST_ERROR.with(|value| value.borrow().to_string_lossy().into_owned());
@@ -587,7 +587,7 @@ mod tests {
             ("product", json!("another-product")),
             ("application_version", json!("0.1.0")),
             ("revision", json!(2)),
-            ("state_epoch", json!("photo-backup-mobile-v0.1")),
+            ("state_epoch", json!("media-backup-mobile-v0.1")),
             ("part_size", json!(0)),
         ] {
             let mut config: Value = serde_json::from_str(&current_config_json()).unwrap();
@@ -626,7 +626,7 @@ mod tests {
         assert!(next_impl(handle, &legacy_staging.to_string_lossy()).is_err());
         assert_eq!(fs::read(&legacy_database).unwrap(), legacy_database_bytes);
         assert_eq!(fs::read(&legacy_marker).unwrap(), legacy_staging_bytes);
-        pb_v0_2_r1_close(handle);
+        mb_v0_2_r1_close(handle);
     }
 
     #[test]
@@ -643,7 +643,7 @@ mod tests {
             ("product", json!("another-product")),
             ("application_version", json!("0.1.0")),
             ("revision", json!(2)),
-            ("state_epoch", json!("photo-backup-mobile-v0.1")),
+            ("state_epoch", json!("media-backup-mobile-v0.1")),
         ] {
             let mut input = current_enqueue_json();
             input[field] = wrong;
@@ -665,6 +665,6 @@ mod tests {
         })
         .unwrap();
         assert_eq!(stats.discovered, 0);
-        pb_v0_2_r1_close(handle);
+        mb_v0_2_r1_close(handle);
     }
 }

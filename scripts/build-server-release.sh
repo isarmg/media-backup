@@ -8,8 +8,8 @@ readonly source_revision="${2:-}"
 readonly output_arg="${3:-}"
 readonly version="0.2.0"
 readonly target="x86_64-unknown-linux-gnu"
-readonly package="photo-backup-server-$version-$target"
-readonly release_contract_sha256="3a65b1a129118beeafe552c42d27812320d08bdde7966cedc9ac1e5476e995e9"
+readonly package="media-backup-server-$version-$target"
+readonly release_contract_sha256="aee2762ec7bf9b139b2a8658ac2832423eba6489399e12584b28695c2573f1f2"
 
 staging_root=""
 archive_staging=""
@@ -31,7 +31,7 @@ cleanup() {
   fi
   if [[ -n "$archive_staging" && -f "$archive_staging" && ! -L "$archive_staging" ]]; then
     case "$archive_staging" in
-      "$output_dir"/.photo-backup-server-*.tmp)
+      "$output_dir"/.media-backup-server-*.tmp)
         [[ -n "$output_dir" ]] && rm -f -- "$archive_staging"
         ;;
       *) printf 'release build error: refusing unexpected archive cleanup\n' >&2 ;;
@@ -69,34 +69,34 @@ mkdir -m 0755 -- \
   "$release_root/share/web" \
   "$release_root/systemd"
 
-install -m 0755 -- "$binary" "$release_root/bin/photo-backup-server"
+install -m 0755 -- "$binary" "$release_root/bin/media-backup-server"
 install -m 0755 -- \
   "$project_dir/scripts/setup-wsl.sh" \
   "$project_dir/scripts/start-server-wsl.sh" \
   "$project_dir/scripts/run-server-wsl.sh" \
   "$project_dir/scripts/verify-server-wsl.sh" \
   "$release_root/scripts/"
-install -m 0644 -- "$project_dir/scripts/photo-backup.service" \
-  "$release_root/systemd/photo-backup.service"
-install -m 0644 -- "$project_dir/.env.example" \
-  "$release_root/config/photo-backup.env.example"
-install -m 0644 -- "$project_dir/docs/SERVER_RELEASE.md" "$release_root/README.md"
-install -m 0644 -- "$project_dir/IMMICH_COMPARISON.md" \
-  "$release_root/docs/IMMICH_COMPARISON.md"
+install -m 0644 -- "$project_dir/scripts/media-backup.service" \
+  "$release_root/systemd/media-backup.service"
+install -m 0644 -- "$project_dir/config/media-backup.env.example" \
+  "$release_root/config/media-backup.env.example"
+install -m 0644 -- "$project_dir/docs/operations.md" "$release_root/README.md"
+install -m 0644 -- "$project_dir/docs/feature-inventory-and-tradeoffs.md" \
+  "$release_root/docs/feature-inventory-and-tradeoffs.md"
 install -m 0644 -- "$project_dir/LICENSE" "$release_root/LICENSE"
-install -m 0644 -- "$project_dir/crates/mobile-ffi/include/photo_backup_v0_2_r1.h" \
-  "$release_root/include/photo_backup_v0_2_r1.h"
-install -m 0644 -- "$project_dir/crates/server/src/admin.html" \
+install -m 0644 -- "$project_dir/crates/mobile-ffi/include/media_backup_v0_2_r1.h" \
+  "$release_root/include/media_backup_v0_2_r1.h"
+install -m 0644 -- "$project_dir/clients/web/admin.html" \
   "$release_root/share/web/admin.html"
-install -m 0644 -- "$project_dir/crates/server/src/admin.css" \
+install -m 0644 -- "$project_dir/clients/web/admin.css" \
   "$release_root/share/web/admin.css"
 install -m 0644 -- "$project_dir/vendor/sarmg-design/bundle.css" \
   "$release_root/share/web/sarmg-design.css"
 
 python3 "$project_dir/scripts/write-release-manifest.py" "$release_root" "$source_revision"
-verification="$("$release_root/bin/photo-backup-server" release-verify "$release_root")" ||
+verification="$("$release_root/bin/media-backup-server" release-verify "$release_root")" ||
   fail "the real server binary rejected the assembled release"
-[[ "$verification" == PHOTO_BACKUP_RELEASE_VERIFIED_V1$'\tphoto-backup-server\t0.2.0\t'"$source_revision"$'\tx86_64-unknown-linux-gnu\t'"$release_contract_sha256" ]] ||
+[[ "$verification" == MEDIA_BACKUP_RELEASE_VERIFIED_V1$'\tmedia-backup-server\t0.2.0\t'"$source_revision"$'\tx86_64-unknown-linux-gnu\t'"$release_contract_sha256" ]] ||
   fail "release verification returned an unexpected identity"
 
 archive_staging="$output_dir/.$package.tar.gz.$BASHPID.tmp"

@@ -3,7 +3,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use photo_backup_protocol::ErrorResponse;
+use media_backup_protocol::ErrorResponse;
 use std::fmt;
 
 #[derive(Debug)]

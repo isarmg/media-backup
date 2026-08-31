@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use axum::http::StatusCode;
-use photo_backup_protocol::CreateUploadRequest;
+use media_backup_protocol::CreateUploadRequest;
 use serde_json::Value;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;

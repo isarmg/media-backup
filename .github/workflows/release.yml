@@ -61,10 +61,10 @@ jobs:
       - name: Build, package, and verify server
         run: |
           revision="$(git rev-parse "${RELEASE_TAG}^{commit}")"
-          PHOTO_BACKUP_SOURCE_REVISION="$revision" cargo build --release --locked -p photo-backup-server
+          MEDIA_BACKUP_SOURCE_REVISION="$revision" cargo build --release --locked -p media-backup-server
           mkdir -p "$PWD/dist"
-          archive="$(./scripts/build-server-release.sh "$PWD/target/release/photo-backup-server" "$revision" "$PWD/dist")"
-          PHOTO_BACKUP_VERIFY_SYSTEMD=1 ./scripts/test-deployment.sh "$archive"
+          archive="$(./scripts/build-server-release.sh "$PWD/target/release/media-backup-server" "$revision" "$PWD/dist")"
+          MEDIA_BACKUP_VERIFY_SYSTEMD=1 ./scripts/test-deployment.sh "$archive"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-server
@@ -103,13 +103,13 @@ jobs:
       - name: Build Rust Android library
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
-          cargo ndk -t arm64-v8a -o android/app/src/main/jniLibs build -p photo-backup-mobile --release
+          cargo ndk -t arm64-v8a -o clients/android/app/src/main/jniLibs build -p media-backup-mobile --release
       - run: gradle -p android assembleDebug
       - name: Package APK
         run: |
           version="${RELEASE_TAG#v}"
           mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk "dist/photo-backup-android-${version}-arm64-debug.apk"
+          cp clients/android/app/build/outputs/apk/debug/app-debug.apk "dist/media-backup-android-${version}-arm64-debug.apk"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-android
@@ -138,12 +138,12 @@ jobs:
       - run: ./scripts/build-ios-rust.sh
       - run: cd ios && xcodegen generate
       - name: Build without signing
-        run: xcodebuild -project ios/PhotoBackup.xcodeproj -scheme PhotoBackup -sdk iphoneos -configuration Release CODE_SIGNING_ALLOWED=NO -derivedDataPath ios/DerivedData build
+        run: xcodebuild -project clients/ios/MediaBackup.xcodeproj -scheme MediaBackup -sdk iphoneos -configuration Release CODE_SIGNING_ALLOWED=NO -derivedDataPath clients/ios/DerivedData build
       - name: Package app
         run: |
           version="${RELEASE_TAG#v}"
           mkdir -p dist
-          tar -C ios/DerivedData/Build/Products/Release-iphoneos -czf "dist/photo-backup-ios-${version}-unsigned.tar.gz" PhotoBackup.app
+          tar -C clients/ios/DerivedData/Build/Products/Release-iphoneos -czf "dist/media-backup-ios-${version}-unsigned.tar.gz" MediaBackup.app
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-ios

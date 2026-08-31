@@ -13,20 +13,21 @@ use sha2::{Digest, Sha256};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 const MANIFEST_VERSION: u32 = 1;
-const PRODUCT: &str = "photo-backup-server";
+const PRODUCT: &str = "media-backup-server";
 const VERSION: &str = "0.2.0";
 const TARGET: &str = "x86_64-unknown-linux-gnu";
-const API_VERSION: &str = photo_backup_protocol::API_VERSION;
+const API_VERSION: &str = media_backup_protocol::API_VERSION;
 const STORAGE_ENCODING: &str = "plain-v1";
-const MOBILE_FFI_EPOCH: &str = "photo-backup-mobile-v0.2-r1";
+const MOBILE_FFI_EPOCH: &str = "media-backup-mobile-v0.2-r1";
 const MANIFEST_FILENAME: &str = "release-manifest.json";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
-pub(crate) const PRODUCTION_RELEASE_ROOT: &str = "/opt/isarmg/photo-backup/releases/0.2.0";
-const RELOCATABLE_RELEASE_SUFFIX: &str = "opt/isarmg/photo-backup/releases/0.2.0";
+pub(crate) const PRODUCTION_RELEASE_ROOT: &str = "/opt/isarmg/media-backup/releases/0.2.0";
+const RELOCATABLE_RELEASE_SUFFIX: &str = "opt/isarmg/media-backup/releases/0.2.0";
 
-const MOBILE_FFI_HEADER: &[u8] = include_bytes!("../../mobile-ffi/include/photo_backup_v0_2_r1.h");
-const ADMIN_HTML: &[u8] = include_bytes!("admin.html");
-const ADMIN_CSS: &[u8] = include_bytes!("admin.css");
+const MOBILE_FFI_HEADER: &[u8] = include_bytes!("../../mobile-ffi/include/media_backup_v0_2_r1.h");
+// 发布身份直接绑定当前客户端源码，而不是信任另行复制的 Web 文件。
+const ADMIN_HTML: &[u8] = include_bytes!("../../../clients/web/admin.html");
+const ADMIN_CSS: &[u8] = include_bytes!("../../../clients/web/admin.css");
 const ADMIN_DESIGN_CSS: &[u8] = include_bytes!("../../../vendor/sarmg-design/bundle.css");
 
 const EXPECTED_DIRECTORIES: &[&str] = &[
@@ -42,11 +43,11 @@ const EXPECTED_DIRECTORIES: &[&str] = &[
 
 const EXPECTED_FILES: &[(&str, u32)] = &[
     ("LICENSE", 0o644),
-    ("bin/photo-backup-server", 0o755),
-    ("config/photo-backup.env.example", 0o644),
-    ("docs/IMMICH_COMPARISON.md", 0o644),
+    ("bin/media-backup-server", 0o755),
+    ("config/media-backup.env.example", 0o644),
+    ("docs/feature-inventory-and-tradeoffs.md", 0o644),
     ("README.md", 0o644),
-    ("include/photo_backup_v0_2_r1.h", 0o644),
+    ("include/media_backup_v0_2_r1.h", 0o644),
     ("scripts/run-server-wsl.sh", 0o755),
     ("scripts/setup-wsl.sh", 0o755),
     ("scripts/start-server-wsl.sh", 0o755),
@@ -54,7 +55,7 @@ const EXPECTED_FILES: &[(&str, u32)] = &[
     ("share/web/admin.css", 0o644),
     ("share/web/admin.html", 0o644),
     ("share/web/sarmg-design.css", 0o644),
-    ("systemd/photo-backup.service", 0o644),
+    ("systemd/media-backup.service", 0o644),
 ];
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -106,8 +107,8 @@ pub(crate) fn identity() -> ReleaseIdentity {
     ReleaseIdentity {
         product: PRODUCT.to_owned(),
         version: VERSION.to_owned(),
-        source_revision: env!("PHOTO_BACKUP_SOURCE_REVISION").to_owned(),
-        target: env!("PHOTO_BACKUP_BUILD_TARGET").to_owned(),
+        source_revision: env!("MEDIA_BACKUP_SOURCE_REVISION").to_owned(),
+        target: env!("MEDIA_BACKUP_BUILD_TARGET").to_owned(),
         api_version: API_VERSION.to_owned(),
         storage_encoding: STORAGE_ENCODING.to_owned(),
         server_schema_revision: crate::database::CURRENT_SCHEMA_REVISION,
@@ -133,7 +134,7 @@ pub(crate) fn verify_installed(root: &Path) -> Result<ReleaseIdentity> {
 
 pub(crate) fn verify_runtime(root: &Path) -> Result<ReleaseIdentity> {
     let root = validate_runtime_root(root)?;
-    let expected_executable = root.join("bin/photo-backup-server");
+    let expected_executable = root.join("bin/media-backup-server");
     let executing = fs::canonicalize(
         std::env::current_exe().context("resolve executing server binary for release startup")?,
     )
@@ -147,8 +148,8 @@ pub(crate) fn verify_runtime(root: &Path) -> Result<ReleaseIdentity> {
         for directory in [
             "/opt",
             "/opt/isarmg",
-            "/opt/isarmg/photo-backup",
-            "/opt/isarmg/photo-backup/releases",
+            "/opt/isarmg/media-backup",
+            "/opt/isarmg/media-backup/releases",
         ] {
             require_directory(
                 Path::new(directory),
@@ -165,8 +166,8 @@ pub(crate) fn verify_runtime(root: &Path) -> Result<ReleaseIdentity> {
 
 pub(crate) fn ensure_unbound_development_serve() -> Result<()> {
     ensure!(
-        env!("PHOTO_BACKUP_SOURCE_REVISION") == "unversioned",
-        "a source-bound Photo Backup release cannot use ordinary serve; use serve-release RELEASE_ROOT"
+        env!("MEDIA_BACKUP_SOURCE_REVISION") == "unversioned",
+        "a source-bound Media Backup release cannot use ordinary serve; use serve-release RELEASE_ROOT"
     );
     Ok(())
 }
@@ -190,7 +191,7 @@ fn validate_runtime_root(root: &Path) -> Result<PathBuf> {
     );
     ensure!(
         canonical.ends_with(RELOCATABLE_RELEASE_SUFFIX),
-        "RELEASE_ROOT must end in the fixed Photo Backup 0.2.0 physical release path"
+        "RELEASE_ROOT must end in the fixed Media Backup 0.2.0 physical release path"
     );
     Ok(canonical)
 }
@@ -267,7 +268,7 @@ fn verify_with_ownership(root: &Path, require_root_owned: bool) -> Result<Releas
             "release file size or SHA-256 mismatch for {}",
             entry.path
         );
-        if entry.path == "bin/photo-backup-server" {
+        if entry.path == "bin/media-backup-server" {
             binary_record = Some((entry.size, entry.sha256.clone()));
         }
         declared_paths.insert(entry.path.clone());
@@ -298,7 +299,7 @@ fn verify_with_ownership(root: &Path, require_root_owned: bool) -> Result<Releas
     );
 
     let header = read_small_regular_file(
-        &root.join("include/photo_backup_v0_2_r1.h"),
+        &root.join("include/media_backup_v0_2_r1.h"),
         0o644,
         1024 * 1024,
         require_root_owned,
@@ -360,7 +361,7 @@ fn verify_with_ownership(root: &Path, require_root_owned: bool) -> Result<Releas
 
 pub(crate) fn verification_line(identity: &ReleaseIdentity) -> String {
     format!(
-        "PHOTO_BACKUP_RELEASE_VERIFIED_V1\t{}\t{}\t{}\t{}\t{}",
+        "MEDIA_BACKUP_RELEASE_VERIFIED_V1\t{}\t{}\t{}\t{}\t{}",
         identity.product,
         identity.version,
         identity.source_revision,
@@ -715,13 +716,13 @@ mod tests {
         let identity = identity();
         assert_eq!(identity.product, PRODUCT);
         assert_eq!(identity.version, env!("CARGO_PKG_VERSION"));
-        assert_eq!(identity.target, env!("PHOTO_BACKUP_BUILD_TARGET"));
-        assert_eq!(identity.api_version, photo_backup_protocol::API_VERSION);
+        assert_eq!(identity.target, env!("MEDIA_BACKUP_BUILD_TARGET"));
+        assert_eq!(identity.api_version, media_backup_protocol::API_VERSION);
         assert_eq!(identity.storage_encoding, "plain-v1");
         assert_eq!(identity.server_schema_revision, 1);
         assert_eq!(
             identity.release_contract_sha256,
-            "3a65b1a129118beeafe552c42d27812320d08bdde7966cedc9ac1e5476e995e9"
+            "aee2762ec7bf9b139b2a8658ac2832423eba6489399e12584b28695c2573f1f2"
         );
     }
 
@@ -748,10 +749,10 @@ mod tests {
 
     #[test]
     fn release_paths_and_hashes_are_canonical() {
-        assert!(validate_relative_path("bin/photo-backup-server").is_ok());
-        assert!(validate_relative_path("../photo-backup-server").is_err());
-        assert!(validate_relative_path("/bin/photo-backup-server").is_err());
-        assert!(validate_relative_path("bin\\photo-backup-server").is_err());
+        assert!(validate_relative_path("bin/media-backup-server").is_ok());
+        assert!(validate_relative_path("../media-backup-server").is_err());
+        assert!(validate_relative_path("/bin/media-backup-server").is_err());
+        assert!(validate_relative_path("bin\\media-backup-server").is_err());
         assert!(is_source_revision(
             "0123456789abcdef0123456789abcdef01234567"
         ));

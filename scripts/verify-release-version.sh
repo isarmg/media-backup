@@ -4,7 +4,7 @@ set -euo pipefail
 release_tag="${1:-${GITHUB_REF_NAME:-}}"
 
 if [[ "$release_tag" != "v0.2.0" ]]; then
-  echo "This release workflow only accepts the immutable Photo Backup v0.2.0 tag (received: ${release_tag:-<empty>})." >&2
+  echo "This release workflow only accepts the immutable Media Backup v0.2.0 tag (received: ${release_tag:-<empty>})." >&2
   exit 1
 fi
 
@@ -20,7 +20,7 @@ cargo_version="$({
     }
   ' Cargo.toml
 })"
-ios_version="$(sed -n 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"\([^"]*\)"/\1/p' ios/project.yml | head -n 1)"
+ios_version="$(sed -n 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"\([^"]*\)"/\1/p' clients/ios/project.yml | head -n 1)"
 
 if [[ -z "$cargo_version" || -z "$ios_version" ]]; then
   echo "Unable to read the Cargo or iOS project version." >&2

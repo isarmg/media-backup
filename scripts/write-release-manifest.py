@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create the strict Photo Backup 0.2 server release manifest."""
+"""Create the strict Media Backup 0.2 server release manifest."""
 
 from __future__ import annotations
 
@@ -30,11 +30,11 @@ IDENTITY_KEYS = {
 
 EXPECTED_FILES = {
     "LICENSE": 0o644,
-    "bin/photo-backup-server": 0o755,
-    "config/photo-backup.env.example": 0o644,
-    "docs/IMMICH_COMPARISON.md": 0o644,
+    "bin/media-backup-server": 0o755,
+    "config/media-backup.env.example": 0o644,
+    "docs/feature-inventory-and-tradeoffs.md": 0o644,
     "README.md": 0o644,
-    "include/photo_backup_v0_2_r1.h": 0o644,
+    "include/media_backup_v0_2_r1.h": 0o644,
     "scripts/run-server-wsl.sh": 0o755,
     "scripts/setup-wsl.sh": 0o755,
     "scripts/start-server-wsl.sh": 0o755,
@@ -42,7 +42,7 @@ EXPECTED_FILES = {
     "share/web/admin.css": 0o644,
     "share/web/admin.html": 0o644,
     "share/web/sarmg-design.css": 0o644,
-    "systemd/photo-backup.service": 0o644,
+    "systemd/media-backup.service": 0o644,
 }
 
 
@@ -68,7 +68,7 @@ def main() -> None:
     if len(revision) != 40 or any(character not in "0123456789abcdef" for character in revision):
         fail("source revision must be 40 lowercase hexadecimal characters")
 
-    binary = root / "bin/photo-backup-server"
+    binary = root / "bin/media-backup-server"
     completed = subprocess.run(
         [str(binary), "release-identity"],
         check=True,
@@ -85,14 +85,14 @@ def main() -> None:
     if not isinstance(identity, dict) or set(identity) != IDENTITY_KEYS:
         fail("binary release identity has an unknown or missing field")
     fixed_identity = {
-        "product": "photo-backup-server",
+        "product": "media-backup-server",
         "version": "0.2.0",
         "source_revision": revision,
         "target": "x86_64-unknown-linux-gnu",
         "api_version": "v2",
         "storage_encoding": "plain-v1",
         "server_schema_revision": 1,
-        "mobile_ffi_epoch": "photo-backup-mobile-v0.2-r1",
+        "mobile_ffi_epoch": "media-backup-mobile-v0.2-r1",
     }
     for field, expected in fixed_identity.items():
         if identity.get(field) != expected:

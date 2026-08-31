@@ -1,5 +1,5 @@
 [package]
-name = "photo-backup-agent-core"
+name = "media-backup-agent-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -8,8 +8,8 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 libc.workspace = true
-photo-backup-crypto = { path = "../crypto" }
-photo-backup-protocol = { path = "../protocol" }
+media-backup-crypto = { path = "../crypto" }
+media-backup-protocol = { path = "../protocol" }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true

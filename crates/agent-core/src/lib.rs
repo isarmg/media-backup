@@ -7,8 +7,8 @@ use std::{
 
 mod database;
 
-use photo_backup_crypto::prepare_file;
-use photo_backup_protocol::{CreateUploadRequest, MediaKind, StorageEncoding};
+use media_backup_crypto::prepare_file;
+use media_backup_protocol::{CreateUploadRequest, MediaKind, StorageEncoding};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -21,7 +21,7 @@ pub enum AgentError {
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
     #[error("content preparation error: {0}")]
-    Content(#[from] photo_backup_crypto::ContentError),
+    Content(#[from] media_backup_crypto::ContentError),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("agent database is not exactly current: {0}")]
@@ -34,10 +34,10 @@ pub enum AgentError {
     InvalidContract(String),
 }
 
-pub const MOBILE_PRODUCT: &str = "photo-backup";
+pub const MOBILE_PRODUCT: &str = "media-backup";
 pub const MOBILE_APPLICATION_VERSION: &str = "0.2.0";
 pub const MOBILE_REVISION: u32 = 1;
-pub const MOBILE_STATE_EPOCH: &str = "photo-backup-mobile-v0.2-r1";
+pub const MOBILE_STATE_EPOCH: &str = "media-backup-mobile-v0.2-r1";
 pub const MOBILE_DATABASE_FILENAME: &str = "agent-v0.2-r1.sqlite";
 pub const MOBILE_STAGING_DIRECTORY: &str = "backup-staging-v0.2-r1";
 
@@ -627,7 +627,7 @@ mod tests {
 
     #[test]
     fn prepared_job_contains_original_plaintext_parts() {
-        let root = std::env::temp_dir().join(format!("photo-backup-agent-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("media-backup-agent-{}", Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let source = root.join("photo.jpg");
         let original = b"server storage must contain these exact original bytes";
@@ -759,7 +759,7 @@ mod tests {
         for (name, statement) in [
             (
                 "wrong-application",
-                "UPDATE product_metadata SET application = 'photo-backup'",
+                "UPDATE product_metadata SET application = 'media-backup'",
             ),
             (
                 "old-version",

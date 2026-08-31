@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
-const APPLICATION: &str = "photo-backup-agent";
+const APPLICATION: &str = "media-backup-agent";
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const CURRENT_SCHEMA: &str = include_str!("current_schema.sql");
 pub(super) const CURRENT_SCHEMA_REVISION: i64 = 1;

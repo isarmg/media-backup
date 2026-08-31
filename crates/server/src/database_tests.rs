@@ -11,7 +11,7 @@ use sqlx::SqlitePool;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use photo_backup_protocol::{CreateUploadRequest, MediaKind, StorageEncoding, UploadPartSpec};
+use media_backup_protocol::{CreateUploadRequest, MediaKind, StorageEncoding, UploadPartSpec};
 
 use crate::{
     config::Config,
@@ -33,13 +33,13 @@ struct TestWorkspace {
 
 impl TestWorkspace {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("photo-backup-sqlite-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("media-backup-sqlite-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("create test workspace");
         Self { root }
     }
 
     fn database(&self) -> PathBuf {
-        self.root.join("photo-backup.db")
+        self.root.join("media-backup.db")
     }
 
     fn data(&self) -> PathBuf {
@@ -501,8 +501,8 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
     assert_eq!(storage_snapshot(&workspace.data()), empty_storage);
 
     for (index, invalid_storage_path) in [
-        "/tmp/photo-backup-outside",
-        "../photo-backup-outside",
+        "/tmp/media-backup-outside",
+        "../media-backup-outside",
         "blobs//invalid",
         "uploads/account",
     ]
@@ -731,7 +731,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
     );
     assert_eq!(storage_snapshot(&workspace.data()), pre_upload_storage);
 
-    let content = b"photo-backup-sqlite-regression";
+    let content = b"media-backup-sqlite-regression";
     let content_hash = blake3::hash(content).to_hex().to_string();
     let created_upload = json_body(
         send(

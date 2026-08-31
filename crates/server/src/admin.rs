@@ -20,8 +20,8 @@ use uuid::Uuid;
 
 use crate::{error::AppError, password, routes::AppState};
 
-const SECURE_ADMIN_COOKIE: &str = "__Host-photo_session";
-const DEVELOPMENT_ADMIN_COOKIE: &str = "photo_session";
+const SECURE_ADMIN_COOKIE: &str = "__Host-media_session";
+const DEVELOPMENT_ADMIN_COOKIE: &str = "media_session";
 const MAX_ADMIN_SESSIONS: i64 = 32;
 const MAX_CSRF_TOKENS_PER_SESSION: i64 = 8;
 const SESSION_TOUCH_INTERVAL_SECONDS: i64 = 60;
@@ -306,7 +306,7 @@ pub(crate) async fn login(
 pub(crate) async fn logout(
     State(state): State<AppState>,
     Extension(identity): Extension<AdminIdentity>,
-    Json(_request): Json<photo_backup_protocol::EmptyRequest>,
+    Json(_request): Json<media_backup_protocol::EmptyRequest>,
 ) -> Result<Response, AppError> {
     sqlx::query("UPDATE auth_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
         .bind(now_seconds()?)
@@ -837,8 +837,9 @@ fn expire_session_response(state: &AppState, status: StatusCode) -> Response {
     response
 }
 
-const ADMIN_HTML: &str = include_str!("admin.html");
-const ADMIN_CSS: &str = include_str!("admin.css");
+// clients/web 是管理客户端的唯一源码位置；嵌入可避免运行时出现前后端版本漂移。
+const ADMIN_HTML: &str = include_str!("../../../clients/web/admin.html");
+const ADMIN_CSS: &str = include_str!("../../../clients/web/admin.css");
 const ADMIN_DESIGN_CSS: &str = include_str!("../../../vendor/sarmg-design/bundle.css");
 
 #[cfg(test)]

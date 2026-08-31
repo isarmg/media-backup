@@ -17,7 +17,7 @@ use sqlx::{
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
-const APPLICATION: &str = "photo-backup";
+const APPLICATION: &str = "media-backup";
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const CURRENT_SCHEMA: &str = include_str!("current_schema.sql");
 pub(crate) const CURRENT_SCHEMA_REVISION: i64 = 1;

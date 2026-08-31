@@ -39,14 +39,14 @@ pub async fn prometheus(
     .await?;
     let body = format!(
         concat!(
-            "# HELP photo_backup_accounts Enabled accounts.\n",
-            "# TYPE photo_backup_accounts gauge\nphoto_backup_accounts {}\n",
-            "# TYPE photo_backup_devices gauge\nphoto_backup_devices {}\n",
-            "# TYPE photo_backup_assets gauge\nphoto_backup_assets {}\n",
-            "# TYPE photo_backup_trashed_assets gauge\nphoto_backup_trashed_assets {}\n",
-            "# TYPE photo_backup_active_uploads gauge\nphoto_backup_active_uploads {}\n",
-            "# TYPE photo_backup_stored_bytes gauge\nphoto_backup_stored_bytes {}\n",
-            "# TYPE photo_backup_api_keys gauge\nphoto_backup_api_keys {}\n"
+            "# HELP media_backup_accounts Enabled accounts.\n",
+            "# TYPE media_backup_accounts gauge\nmedia_backup_accounts {}\n",
+            "# TYPE media_backup_devices gauge\nmedia_backup_devices {}\n",
+            "# TYPE media_backup_assets gauge\nmedia_backup_assets {}\n",
+            "# TYPE media_backup_trashed_assets gauge\nmedia_backup_trashed_assets {}\n",
+            "# TYPE media_backup_active_uploads gauge\nmedia_backup_active_uploads {}\n",
+            "# TYPE media_backup_stored_bytes gauge\nmedia_backup_stored_bytes {}\n",
+            "# TYPE media_backup_api_keys gauge\nmedia_backup_api_keys {}\n"
         ),
         row.get::<i64, _>("accounts"),
         row.get::<i64, _>("devices"),

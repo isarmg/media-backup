@@ -1,5 +1,5 @@
 [package]
-name = "photo-backup-server"
+name = "media-backup-server"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -12,7 +12,7 @@ axum.workspace = true
 base64.workspace = true
 blake3.workspace = true
 libc.workspace = true
-photo-backup-protocol = { path = "../protocol" }
+media-backup-protocol = { path = "../protocol" }
 rand.workspace = true
 rusqlite.workspace = true
 rustix.workspace = true

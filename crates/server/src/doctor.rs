@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{ensure, Context};
-use photo_backup_protocol::CreateUploadRequest;
+use media_backup_protocol::CreateUploadRequest;
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 use uuid::Uuid;
@@ -522,13 +522,13 @@ fn database_write_rollback_probe(path: &Path) -> anyhow::Result<()> {
     connection.busy_timeout(Duration::from_secs(2))?;
     connection.execute_batch(
         "BEGIN IMMEDIATE;
-         CREATE TABLE __photo_backup_doctor_probe(value INTEGER NOT NULL);
-         INSERT INTO __photo_backup_doctor_probe(value) VALUES(1);
-         SELECT value FROM __photo_backup_doctor_probe;
+         CREATE TABLE __media_backup_doctor_probe(value INTEGER NOT NULL);
+         INSERT INTO __media_backup_doctor_probe(value) VALUES(1);
+         SELECT value FROM __media_backup_doctor_probe;
          ROLLBACK;",
     )?;
     let exists: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM sqlite_schema WHERE name='__photo_backup_doctor_probe'",
+        "SELECT COUNT(*) FROM sqlite_schema WHERE name='__media_backup_doctor_probe'",
         [],
         |row| row.get(0),
     )?;
@@ -538,17 +538,17 @@ fn database_write_rollback_probe(path: &Path) -> anyhow::Result<()> {
 
 fn storage_write_cleanup_probe(data_dir: &Path) -> anyhow::Result<()> {
     let rooted = RootedFs::new(data_dir)?;
-    let relative = PathBuf::from(format!(".photo-backup-doctor-{}", Uuid::new_v4()));
+    let relative = PathBuf::from(format!(".media-backup-doctor-{}", Uuid::new_v4()));
     let mut file = rooted.create_new_std(&relative)?;
     let probe_result = (|| -> anyhow::Result<()> {
-        file.write_all(b"photo-backup-doctor-v1")?;
+        file.write_all(b"media-backup-doctor-v1")?;
         file.sync_all()?;
         drop(file);
         let mut file = rooted.open_read_std(&relative)?;
         let mut contents = Vec::new();
         file.read_to_end(&mut contents)?;
         ensure!(
-            contents == b"photo-backup-doctor-v1",
+            contents == b"media-backup-doctor-v1",
             "storage read/write probe failed"
         );
         Ok(())

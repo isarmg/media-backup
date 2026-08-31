@@ -509,7 +509,7 @@ async fn production_cookie_uses_host_prefix_and_complete_security_attributes() {
         .unwrap()
         .to_str()
         .unwrap();
-    assert!(cookie.starts_with("__Host-photo_session="));
+    assert!(cookie.starts_with("__Host-media_session="));
     assert!(cookie.contains("; Path=/"));
     assert!(cookie.contains("; Secure"));
     assert!(cookie.contains("; HttpOnly"));

@@ -1,5 +1,5 @@
 [package]
-name = "photo-backup-mobile"
+name = "media-backup-mobile"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,7 +9,7 @@ license.workspace = true
 crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
-photo-backup-agent-core = { path = "../agent-core" }
+media-backup-agent-core = { path = "../agent-core" }
 serde_json.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]

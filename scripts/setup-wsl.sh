@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly product="photo-backup-server"
+readonly product="media-backup-server"
 readonly version="0.2.0"
 readonly target="x86_64-unknown-linux-gnu"
-readonly release_contract_sha256="3a65b1a129118beeafe552c42d27812320d08bdde7966cedc9ac1e5476e995e9"
+readonly release_contract_sha256="aee2762ec7bf9b139b2a8658ac2832423eba6489399e12584b28695c2573f1f2"
 readonly service_user="isarmg-photo"
 readonly service_group="isarmg-photo"
-readonly app_dir="/opt/isarmg/photo-backup"
+readonly app_dir="/opt/isarmg/media-backup"
 readonly releases_dir="$app_dir/releases"
-readonly state_dir="/var/lib/isarmg/photo-backup"
-readonly config_file="/etc/isarmg/photo-backup.env"
-readonly unit_file="/etc/systemd/system/photo-backup.service"
+readonly state_dir="/var/lib/isarmg/media-backup"
+readonly config_file="/etc/isarmg/media-backup.env"
+readonly unit_file="/etc/systemd/system/media-backup.service"
 readonly initial_secret_marker="# INITIAL-SECRETS-MUST-BE-REPLACED"
 
-setup_root="${PHOTO_BACKUP_SETUP_ROOT:-/}"
-test_mode="${PHOTO_BACKUP_SETUP_TEST:-0}"
+setup_root="${MEDIA_BACKUP_SETUP_ROOT:-/}"
+test_mode="${MEDIA_BACKUP_SETUP_TEST:-0}"
 release_staging=""
 unit_staging=""
 
@@ -35,7 +35,7 @@ rooted() {
 cleanup() {
   if [[ -n "$unit_staging" && -f "$unit_staging" && ! -L "$unit_staging" ]]; then
     case "$unit_staging" in
-      "$(rooted "/etc/systemd/system")"/.photo-backup.service.install-*) rm -f -- "$unit_staging" ;;
+      "$(rooted "/etc/systemd/system")"/.media-backup.service.install-*) rm -f -- "$unit_staging" ;;
       *) printf 'setup error: refusing to clean unexpected unit staging path\n' >&2 ;;
     esac
   fi
@@ -49,7 +49,7 @@ cleanup() {
 trap cleanup EXIT
 
 [[ "$test_mode" == "0" || "$test_mode" == "1" ]] ||
-  die "PHOTO_BACKUP_SETUP_TEST must be 0 or 1"
+  die "MEDIA_BACKUP_SETUP_TEST must be 0 or 1"
 if [[ "$test_mode" == "1" ]]; then
   [[ "$setup_root" != "/" ]] || die "test mode refuses the real filesystem root"
 else
@@ -57,7 +57,7 @@ else
   [[ "$EUID" -eq 0 ]] || die "run this setup script as root (or with sudo)"
 fi
 
-[[ "$setup_root" = /* ]] || die "PHOTO_BACKUP_SETUP_ROOT must be absolute"
+[[ "$setup_root" = /* ]] || die "MEDIA_BACKUP_SETUP_ROOT must be absolute"
 [[ -d "$setup_root" && ! -L "$setup_root" ]] || die "setup root must be a real directory"
 setup_root="$(cd "$setup_root" && pwd -P)"
 shopt -s nullglob dotglob
@@ -152,28 +152,28 @@ expected_identity_keys = {
     "release_contract_sha256",
 }
 expected_identity = {
-    "product": "photo-backup-server",
+    "product": "media-backup-server",
     "version": "0.2.0",
     "target": "x86_64-unknown-linux-gnu",
     "api_version": "v2",
     "storage_encoding": "plain-v1",
     "server_schema_revision": 1,
     "server_schema_sha256": "a464584cf7a55f9e50cb85bb539b1f42a9285f707440bb0bcfcd31a6b3a083c0",
-    "mobile_ffi_epoch": "photo-backup-mobile-v0.2-r1",
+    "mobile_ffi_epoch": "media-backup-mobile-v0.2-r1",
     "mobile_ffi_header_sha256": "f5402b3d56e4ecefdfea2c3e849cfc05105fac27b5c6006c8215bfb9fde03dd1",
     "web_assets_sha256": "6c1c04b220464b62e227395fe5b9b6e320a90b8d1d85e768505059a0fafecb88",
-    "release_contract_sha256": "3a65b1a129118beeafe552c42d27812320d08bdde7966cedc9ac1e5476e995e9",
+    "release_contract_sha256": "aee2762ec7bf9b139b2a8658ac2832423eba6489399e12584b28695c2573f1f2",
 }
 expected_directories = {
     "bin", "config", "docs", "include", "scripts", "share", "share/web", "systemd",
 }
 expected_files = {
     "LICENSE": 0o644,
-    "bin/photo-backup-server": 0o755,
-    "config/photo-backup.env.example": 0o644,
-    "docs/IMMICH_COMPARISON.md": 0o644,
+    "bin/media-backup-server": 0o755,
+    "config/media-backup.env.example": 0o644,
+    "docs/feature-inventory-and-tradeoffs.md": 0o644,
     "README.md": 0o644,
-    "include/photo_backup_v0_2_r1.h": 0o644,
+    "include/media_backup_v0_2_r1.h": 0o644,
     "scripts/run-server-wsl.sh": 0o755,
     "scripts/setup-wsl.sh": 0o755,
     "scripts/start-server-wsl.sh": 0o755,
@@ -181,7 +181,7 @@ expected_files = {
     "share/web/admin.css": 0o644,
     "share/web/admin.html": 0o644,
     "share/web/sarmg-design.css": 0o644,
-    "systemd/photo-backup.service": 0o644,
+    "systemd/media-backup.service": 0o644,
 }
 
 def fail(message):
@@ -293,7 +293,7 @@ verified_revision=""
 verify_release() {
   local release_path="$1"
   local ownership_mode="$2"
-  local binary="$release_path/bin/photo-backup-server"
+  local binary="$release_path/bin/media-backup-server"
   local command="release-verify"
   local output
   local marker
@@ -311,7 +311,7 @@ verify_release() {
   output="$("$binary" "$command" "$release_path")" || die "release binary rejected its manifest"
   [[ "$output" != *$'\n'* ]] || die "release verifier returned multiple lines"
   IFS=$'\t' read -r marker output_product output_version output_revision output_target output_contract extra <<<"$output"
-  [[ -z "${extra:-}" && "$marker" == "PHOTO_BACKUP_RELEASE_VERIFIED_V1" &&
+  [[ -z "${extra:-}" && "$marker" == "MEDIA_BACKUP_RELEASE_VERIFIED_V1" &&
     "$output_product" == "$product" && "$output_version" == "$version" &&
     "$output_revision" =~ ^[0-9a-f]{40}$ && "$output_target" == "$target" &&
     "$output_contract" == "$release_contract_sha256" ]] ||
@@ -465,8 +465,8 @@ else
     printf '%s\n' \
       "$initial_secret_marker" \
       '# Replace both generated secrets, then remove the marker above before first start.' \
-      'DATABASE_URL=sqlite:///var/lib/isarmg/photo-backup/db/app.db' \
-      'DATA_DIR=/var/lib/isarmg/photo-backup/data' \
+      'DATABASE_URL=sqlite:///var/lib/isarmg/media-backup/db/app.db' \
+      'DATA_DIR=/var/lib/isarmg/media-backup/data' \
       'BIND=127.0.0.1:8080' \
       'ADMIN_USERNAME=admin' \
       "ADMIN_PASSWORD=$admin_password" \
@@ -477,7 +477,7 @@ else
       'ADMIN_SESSION_IDLE_SECONDS=1800' \
       'ADMIN_SESSION_ABSOLUTE_SECONDS=43200' \
       "METRICS_TOKEN=$metrics_token" \
-      'RUST_LOG=photo_backup_server=info,tower_http=info' >"$config_path"
+      'RUST_LOG=media_backup_server=info,tower_http=info' >"$config_path"
   ) 2>/dev/null; then
     config_created=1
   elif [[ ! -f "$config_path" || -L "$config_path" ]]; then
@@ -491,8 +491,8 @@ if [[ "$test_mode" == "0" ]]; then
   chown root:root "$config_path"
 fi
 
-unit_staging="$(mktemp -- "$(rooted "/etc/systemd/system")/.photo-backup.service.install-XXXXXX")"
-install -m 0644 "$release_path/systemd/photo-backup.service" "$unit_staging"
+unit_staging="$(mktemp -- "$(rooted "/etc/systemd/system")/.media-backup.service.install-XXXXXX")"
+install -m 0644 "$release_path/systemd/media-backup.service" "$unit_staging"
 mv -T -n -- "$unit_staging" "$unit_path"
 [[ ! -e "$unit_staging" ]] || die "systemd unit destination appeared concurrently"
 unit_staging=""
@@ -502,7 +502,7 @@ if [[ "$test_mode" == "0" ]]; then
 fi
 
 if [[ "$test_mode" == "0" ]]; then
-  "$release_path/bin/photo-backup-server" release-verify-installed "$release_path" >/dev/null
+  "$release_path/bin/media-backup-server" release-verify-installed "$release_path" >/dev/null
   systemctl daemon-reload
 fi
 
@@ -513,5 +513,5 @@ else
 fi
 printf 'Before first start, use sudoedit %s to replace both generated secrets and remove %s.\n' \
   "$config_file" "$initial_secret_marker"
-printf 'Installed Photo Backup %s from source revision %s; the service was not started.\n' \
+printf 'Installed Media Backup %s from source revision %s; the service was not started.\n' \
   "$version" "$source_revision"

@@ -53,7 +53,7 @@ impl RuntimeLock {
                 Mode::empty(),
                 resolve,
             )
-            .with_context(|| "open Photo Backup runtime lock parent without following links")?;
+            .with_context(|| "open Media Backup runtime lock parent without following links")?;
             match statat(
                 &parent_fd,
                 &location.resource_name,
@@ -63,19 +63,19 @@ impl RuntimeLock {
                     let actual = FileType::from_raw_mode(metadata.st_mode);
                     ensure!(
                         actual == location.kind.file_type(),
-                        "Photo Backup runtime resource is a symbolic link or has the wrong type"
+                        "Media Backup runtime resource is a symbolic link or has the wrong type"
                     );
                     if actual == FileType::RegularFile {
                         ensure!(
                             metadata.st_nlink == 1,
-                            "Photo Backup SQLite resource has multiple hard links"
+                            "Media Backup SQLite resource has multiple hard links"
                         );
                     }
                 }
                 Err(Errno::NOENT) => {}
                 Err(error) => {
                     return Err(std::io::Error::from(error))
-                        .context("inspect Photo Backup runtime resource")
+                        .context("inspect Media Backup runtime resource")
                 }
             }
             let fd = openat2(
@@ -85,7 +85,7 @@ impl RuntimeLock {
                 Mode::from_raw_mode(0o600),
                 resolve,
             )
-            .with_context(|| "open Photo Backup runtime lock")?;
+            .with_context(|| "open Media Backup runtime lock")?;
             let metadata = fstat(&fd)?;
             ensure!(
                 FileType::from_raw_mode(metadata.st_mode) == FileType::RegularFile
@@ -95,10 +95,10 @@ impl RuntimeLock {
             match flock(&fd, FlockOperation::NonBlockingLockExclusive) {
                 Ok(()) => files.push(File::from(fd)),
                 Err(Errno::WOULDBLOCK) => {
-                    anyhow::bail!("Photo Backup service or diagnostic command is already running")
+                    anyhow::bail!("Media Backup service or diagnostic command is already running")
                 }
                 Err(error) => {
-                    return Err(std::io::Error::from(error)).context("lock Photo Backup runtime")
+                    return Err(std::io::Error::from(error)).context("lock Media Backup runtime")
                 }
             }
         }
@@ -110,7 +110,7 @@ impl RuntimeLock {
 impl RuntimeLock {
     pub(crate) fn acquire(database_url: &str, _data_dir: &Path) -> anyhow::Result<Self> {
         sqlite_database_path(database_url)?;
-        anyhow::bail!("secure Photo Backup runtime locking requires Linux openat2")
+        anyhow::bail!("secure Media Backup runtime locking requires Linux openat2")
     }
 }
 
@@ -166,7 +166,7 @@ fn lock_location(resource: &Path, label: &str, kind: ResourceKind) -> anyhow::Re
         .to_os_string();
     let mut lock_name = std::ffi::OsString::from(".");
     lock_name.push(&resource_name);
-    lock_name.push(".photo-backup.lock");
+    lock_name.push(".media-backup.lock");
     let parent = clean
         .parent()
         .with_context(|| format!("{label} must have a parent directory"))?
@@ -187,11 +187,11 @@ pub(crate) fn sqlite_database_path(database_url: &str) -> anyhow::Result<PathBuf
         .context("DATABASE_URL must use the sqlite scheme")?;
     ensure!(
         !value.is_empty() && value != ":memory:",
-        "Photo Backup requires a file SQLite database"
+        "Media Backup requires a file SQLite database"
     );
     ensure!(
         !value.contains(['?', '#', '%', '\0']),
-        "Photo Backup requires a plain unescaped SQLite file URL"
+        "Media Backup requires a plain unescaped SQLite file URL"
     );
     let path = PathBuf::from(value);
     ensure!(path.is_absolute(), "SQLite database path must be absolute");
@@ -259,7 +259,7 @@ mod tests {
         symlink(&real, root.join("linked-parent")).unwrap();
         let database = database_url(&root.join("app.sqlite3"));
         assert!(RuntimeLock::acquire(&database, &root.join("linked-parent/data")).is_err());
-        assert!(!root.join("linked-parent/.data.photo-backup.lock").exists());
+        assert!(!root.join("linked-parent/.data.media-backup.lock").exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -297,9 +297,9 @@ mod tests {
         std::fs::remove_file(&database_alias).unwrap();
         let disposable = root.join("disposable.sqlite3");
         RuntimeLock::acquire(&database_url(&disposable), &data_a).unwrap();
-        let lock = root.join(".disposable.sqlite3.photo-backup.lock");
+        let lock = root.join(".disposable.sqlite3.media-backup.lock");
         let aliased_database = root.join("lock-alias.sqlite3");
-        let lock_alias = root.join(".lock-alias.sqlite3.photo-backup.lock");
+        let lock_alias = root.join(".lock-alias.sqlite3.media-backup.lock");
         std::fs::hard_link(lock, lock_alias).unwrap();
         assert!(RuntimeLock::acquire(&database_url(&aliased_database), &data_b).is_err());
         std::fs::remove_dir_all(root).unwrap();

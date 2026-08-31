@@ -9,7 +9,7 @@ use axum::{
     body::{Body, HttpBody},
     http::StatusCode,
 };
-use photo_backup_protocol::UploadPartSpec;
+use media_backup_protocol::UploadPartSpec;
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncWriteExt},
@@ -460,7 +460,7 @@ impl LocalStorage {
             ));
         }
         self.files.ensure_dir(directory.as_path())?;
-        let probe = directory.join(&format!(".photo-backup-write-test-{}", Uuid::new_v4()));
+        let probe = directory.join(&format!(".media-backup-write-test-{}", Uuid::new_v4()));
         let (mut temporary, mut file) = TemporaryPart::create(self.files.clone(), probe)?;
         file.write_all(b"ok").await?;
         file.sync_all().await?;
@@ -479,10 +479,10 @@ impl LocalStorage {
 
     /// Exercise the same local create/write/fsync/remove path required by uploads.
     pub async fn probe_readiness(&self) -> Result<(), AppError> {
-        let probe = PathBuf::from(format!(".photo-backup-readiness-{}", Uuid::new_v4()));
+        let probe = PathBuf::from(format!(".media-backup-readiness-{}", Uuid::new_v4()));
         let (mut temporary, mut file) = TemporaryPart::create(self.files.clone(), probe)?;
         let operation = async {
-            file.write_all(b"photo-backup-readiness-v1").await?;
+            file.write_all(b"media-backup-readiness-v1").await?;
             file.sync_all().await?;
             Ok::<(), AppError>(())
         }
@@ -739,7 +739,7 @@ mod tests {
 
     impl TestRoot {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("photo-backup-parts-{}", Uuid::new_v4()));
+            let path = std::env::temp_dir().join(format!("media-backup-parts-{}", Uuid::new_v4()));
             Self { path }
         }
     }

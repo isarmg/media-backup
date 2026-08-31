@@ -8,7 +8,7 @@ use axum::{
     Json, Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use photo_backup_protocol::{
+use media_backup_protocol::{
     BootstrapRequest, BootstrapResponse, CompleteUploadResponse, CreateUploadRequest,
     CreateUploadResponse, EmptyRequest, MediaKind, ResourceManifest, StorageEncoding,
     UploadDisposition, UploadPartSpec, UploadStatusResponse, API_BASE_PATH,
@@ -648,7 +648,7 @@ async fn resource_content(
             .map_err(|_| AppError::bad_request("invalid content length"))?,
     );
     response.headers_mut().insert(
-        "x-photo-backup-storage-encoding",
+        "x-media-backup-storage-encoding",
         HeaderValue::from_static("plain-v1"),
     );
     Ok(response)

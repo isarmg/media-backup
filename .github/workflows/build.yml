@@ -33,10 +33,10 @@ jobs:
       - name: Build and test the real server release archive
         run: |
           revision="$(git rev-parse HEAD)"
-          PHOTO_BACKUP_SOURCE_REVISION="$revision" cargo build --release --locked -p photo-backup-server
+          MEDIA_BACKUP_SOURCE_REVISION="$revision" cargo build --release --locked -p media-backup-server
           mkdir -p "$PWD/dist"
-          archive="$(./scripts/build-server-release.sh "$PWD/target/release/photo-backup-server" "$revision" "$PWD/dist")"
-          PHOTO_BACKUP_VERIFY_SYSTEMD=1 ./scripts/test-deployment.sh "$archive"
+          archive="$(./scripts/build-server-release.sh "$PWD/target/release/media-backup-server" "$revision" "$PWD/dist")"
+          MEDIA_BACKUP_VERIFY_SYSTEMD=1 ./scripts/test-deployment.sh "$archive"
 
   android:
     name: Android APK
@@ -68,12 +68,12 @@ jobs:
       - name: Build Rust Android library
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
-          cargo ndk -t arm64-v8a -o android/app/src/main/jniLibs build -p photo-backup-mobile --release
+          cargo ndk -t arm64-v8a -o clients/android/app/src/main/jniLibs build -p media-backup-mobile --release
       - run: gradle -p android testDebugUnitTest assembleDebug
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: photo-backup-android-debug
-          path: android/app/build/outputs/apk/debug/*.apk
+          name: media-backup-android-debug
+          path: clients/android/app/build/outputs/apk/debug/*.apk
 
   ios:
     name: iOS unsigned build
@@ -98,10 +98,10 @@ jobs:
         run: |
           simulator_udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/{print $2; exit}')"
           test -n "$simulator_udid"
-          xcodebuild -project ios/PhotoBackup.xcodeproj -scheme PhotoBackup -sdk iphonesimulator -destination "id=$simulator_udid" CODE_SIGNING_ALLOWED=NO -derivedDataPath ios/DerivedData test
+          xcodebuild -project clients/ios/MediaBackup.xcodeproj -scheme MediaBackup -sdk iphonesimulator -destination "id=$simulator_udid" CODE_SIGNING_ALLOWED=NO -derivedDataPath clients/ios/DerivedData test
       - name: Build without signing
-        run: xcodebuild -project ios/PhotoBackup.xcodeproj -scheme PhotoBackup -sdk iphoneos -configuration Release CODE_SIGNING_ALLOWED=NO -derivedDataPath ios/DerivedData build
+        run: xcodebuild -project clients/ios/MediaBackup.xcodeproj -scheme MediaBackup -sdk iphoneos -configuration Release CODE_SIGNING_ALLOWED=NO -derivedDataPath clients/ios/DerivedData build
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: photo-backup-ios-unsigned
-          path: ios/DerivedData/Build/Products/Release-iphoneos/PhotoBackup.app
+          name: media-backup-ios-unsigned
+          path: clients/ios/DerivedData/Build/Products/Release-iphoneos/MediaBackup.app

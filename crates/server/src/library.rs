@@ -4,7 +4,7 @@ use axum::{
     Json,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use photo_backup_protocol::{
+use media_backup_protocol::{
     AlbumRecord, AssetSummary, CreateTagRequest, DuplicateGroup, EmptyRequest, MediaKind,
     ResourceSummary, SetTagAssetsRequest, StorageEncoding, SyncAlbumRequest, SyncEvent, SyncPage,
     TagRecord, TimelinePage, UpdateAssetRequest, API_BASE_PATH,

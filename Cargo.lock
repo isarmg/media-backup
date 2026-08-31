@@ -1110,14 +1110,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
-name = "photo-backup-agent-core"
+name = "media-backup-agent-core"
 version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
  "libc",
- "photo-backup-crypto",
- "photo-backup-protocol",
+ "media-backup-crypto",
+ "media-backup-protocol",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1128,25 +1128,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "photo-backup-crypto"
+name = "media-backup-crypto"
 version = "0.2.0"
 dependencies = [
  "blake3",
- "photo-backup-protocol",
+ "media-backup-protocol",
  "thiserror 2.0.20",
 ]
 
 [[package]]
-name = "photo-backup-mobile"
+name = "media-backup-mobile"
 version = "0.2.0"
 dependencies = [
  "jni",
- "photo-backup-agent-core",
+ "media-backup-agent-core",
  "serde_json",
 ]
 
 [[package]]
-name = "photo-backup-protocol"
+name = "media-backup-protocol"
 version = "0.2.0"
 dependencies = [
  "serde",
@@ -1155,7 +1155,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "photo-backup-server"
+name = "media-backup-server"
 version = "0.2.0"
 dependencies = [
  "anyhow",
@@ -1164,7 +1164,7 @@ dependencies = [
  "base64",
  "blake3",
  "libc",
- "photo-backup-protocol",
+ "media-backup-protocol",
  "rand",
  "rusqlite",
  "rustix",

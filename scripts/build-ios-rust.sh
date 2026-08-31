@@ -2,19 +2,19 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VENDOR="$ROOT/ios/Vendor"
-rm -rf "$VENDOR/PhotoBackupRust.xcframework"
+VENDOR="$ROOT/clients/ios/Vendor"
+rm -rf "$VENDOR/MediaBackupRust.xcframework"
 mkdir -p "$VENDOR/device/headers" "$VENDOR/simulator/headers"
 
 cd "$ROOT"
-cargo build -p photo-backup-mobile --release --target aarch64-apple-ios
-cargo build -p photo-backup-mobile --release --target aarch64-apple-ios-sim
-cp crates/mobile-ffi/include/photo_backup_v0_2_r1.h "$VENDOR/device/headers/"
-cp crates/mobile-ffi/include/photo_backup_v0_2_r1.h "$VENDOR/simulator/headers/"
+cargo build -p media-backup-mobile --release --target aarch64-apple-ios
+cargo build -p media-backup-mobile --release --target aarch64-apple-ios-sim
+cp crates/mobile-ffi/include/media_backup_v0_2_r1.h "$VENDOR/device/headers/"
+cp crates/mobile-ffi/include/media_backup_v0_2_r1.h "$VENDOR/simulator/headers/"
 
 xcodebuild -create-xcframework \
-  -library target/aarch64-apple-ios/release/libphoto_backup_mobile.a \
+  -library target/aarch64-apple-ios/release/libmedia_backup_mobile.a \
   -headers "$VENDOR/device/headers" \
-  -library target/aarch64-apple-ios-sim/release/libphoto_backup_mobile.a \
+  -library target/aarch64-apple-ios-sim/release/libmedia_backup_mobile.a \
   -headers "$VENDOR/simulator/headers" \
-  -output "$VENDOR/PhotoBackupRust.xcframework"
+  -output "$VENDOR/MediaBackupRust.xcframework"

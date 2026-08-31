@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use photo_backup_protocol::UploadPartSpec;
+use media_backup_protocol::UploadPartSpec;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -99,7 +99,7 @@ pub fn restore_file(
     expected_blake3: &str,
 ) -> Result<(), ContentError> {
     let mut input = File::open(downloaded)?;
-    let temporary = output.with_extension("photo-backup.tmp");
+    let temporary = output.with_extension("media-backup.tmp");
     let operation = (|| {
         let mut restored = File::create(&temporary)?;
         let mut hasher = blake3::Hasher::new();
@@ -134,7 +134,7 @@ mod tests {
 
     fn temporary(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "photo-backup-{name}-{}-{}",
+            "media-backup-{name}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
