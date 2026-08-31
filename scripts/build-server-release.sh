@@ -9,7 +9,7 @@ readonly output_arg="${3:-}"
 readonly version="0.2.0"
 readonly target="x86_64-unknown-linux-gnu"
 readonly package="media-backup-server-$version-$target"
-readonly release_contract_sha256="aee2762ec7bf9b139b2a8658ac2832423eba6489399e12584b28695c2573f1f2"
+readonly release_contract_sha256="58614dbf5e928423d10e6977bb99e3e53fd03b47678defd9e3b7a204e8540a9d"
 
 staging_root=""
 archive_staging=""
@@ -42,8 +42,21 @@ trap cleanup EXIT
 
 [[ -n "$binary" && -n "$source_revision" && -n "$output_arg" ]] ||
   fail "usage: build-server-release.sh BINARY SOURCE_REVISION OUTPUT_DIRECTORY"
+[[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]] ||
+  fail "formal server releases can only be assembled on Linux x86_64"
 [[ "$binary" = /* && -f "$binary" && -x "$binary" && ! -L "$binary" ]] ||
   fail "BINARY must be an absolute executable regular file"
+python3 - "$binary" <<'PY' || fail "BINARY must be a 64-bit little-endian x86_64 ELF executable"
+import pathlib
+import sys
+
+with pathlib.Path(sys.argv[1]).open("rb") as binary_file:
+    header = binary_file.read(20)
+assert len(header) == 20
+assert header[:4] == b"\x7fELF"
+assert header[4:6] == bytes((2, 1))
+assert int.from_bytes(header[18:20], "little") == 62
+PY
 [[ "$source_revision" =~ ^[0-9a-f]{40}$ ]] ||
   fail "SOURCE_REVISION must be 40 lowercase hexadecimal characters"
 [[ "$output_arg" = /* ]] || fail "OUTPUT_DIRECTORY must be absolute"
@@ -67,6 +80,7 @@ mkdir -m 0755 -- \
   "$release_root/scripts" \
   "$release_root/share" \
   "$release_root/share/web" \
+  "$release_root/share/web/assets" \
   "$release_root/systemd"
 
 install -m 0755 -- "$binary" "$release_root/bin/media-backup-server"
@@ -76,22 +90,22 @@ install -m 0755 -- \
   "$project_dir/scripts/run-server-wsl.sh" \
   "$project_dir/scripts/verify-server-wsl.sh" \
   "$release_root/scripts/"
-install -m 0644 -- "$project_dir/scripts/media-backup.service" \
+install -m 0644 -- "$project_dir/deploy/media-backup.service" \
   "$release_root/systemd/media-backup.service"
 install -m 0644 -- "$project_dir/config/media-backup.env.example" \
   "$release_root/config/media-backup.env.example"
-install -m 0644 -- "$project_dir/docs/operations.md" "$release_root/README.md"
+install -m 0644 -- "$project_dir/docs/server-release-readme.md" "$release_root/README.md"
 install -m 0644 -- "$project_dir/docs/feature-inventory-and-tradeoffs.md" \
   "$release_root/docs/feature-inventory-and-tradeoffs.md"
 install -m 0644 -- "$project_dir/LICENSE" "$release_root/LICENSE"
 install -m 0644 -- "$project_dir/crates/mobile-ffi/include/media_backup_v0_2_r1.h" \
   "$release_root/include/media_backup_v0_2_r1.h"
-install -m 0644 -- "$project_dir/clients/web/admin.html" \
-  "$release_root/share/web/admin.html"
-install -m 0644 -- "$project_dir/clients/web/admin.css" \
-  "$release_root/share/web/admin.css"
-install -m 0644 -- "$project_dir/vendor/sarmg-design/bundle.css" \
-  "$release_root/share/web/sarmg-design.css"
+install -m 0644 -- "$project_dir/clients/web/dist/index.html" \
+  "$release_root/share/web/index.html"
+install -m 0644 -- "$project_dir/clients/web/dist/assets/admin.js" \
+  "$release_root/share/web/assets/admin.js"
+install -m 0644 -- "$project_dir/clients/web/dist/assets/admin.css" \
+  "$release_root/share/web/assets/admin.css"
 
 python3 "$project_dir/scripts/write-release-manifest.py" "$release_root" "$source_revision"
 verification="$("$release_root/bin/media-backup-server" release-verify "$release_root")" ||
