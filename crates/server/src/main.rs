@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
         sarmg_server_runtime::ServerRuntime::builder(sarmg_server_runtime::ProductDescriptor {
             id: "media-backup".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-            foundation_revision: "394c0201d85c5a331cded87db4af8fa01f6b6258".into(),
+            foundation_revision: "1e889d08fa69fcf2b5fffe45e8cc42b68218f4f1".into(),
             profile: "server-control-plane".into(),
             capabilities: vec![
                 "admin-persistent".into(),

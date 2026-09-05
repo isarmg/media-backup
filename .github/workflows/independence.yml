@@ -13,7 +13,8 @@ jobs:
       - run: ./scripts/check-workflow-supply-chain.sh
       - run: |
           set -euo pipefail
-          if git grep -n -I -E 'UNION_|X-Union-|PluginManifest|ProcessContext|sarmg-platform|sarmg_platform' -- . ':(exclude).github/workflows/independence.yml'; then
+          # Current Foundation SQLite metadata is not retired runtime coupling.
+          if git grep -n -I -P 'UNION_|X-Union-|PluginManifest|ProcessContext|sarmg-platform|sarmg_platform(?!_metadata\b)' -- . ':(exclude).github/workflows/independence.yml'; then
             exit 1
           else
             grep_status=$?
