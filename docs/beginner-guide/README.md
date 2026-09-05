@@ -85,7 +85,7 @@ cargo run -p media-backup-server -- serve
 然后检查：
 
 ```bash
-curl --fail http://127.0.0.1:8080/health
+curl --fail http://127.0.0.1:8080/healthz
 ```
 
 正式源码绑定二进制拒绝普通 `serve`，只能通过已验证发行树执行 `serve-release`。
@@ -100,7 +100,7 @@ curl --fail http://127.0.0.1:8080/health
 
 ## 7. 理解认证
 
-- 浏览器管理员使用 `__Host-media_session` Cookie 与 Session 绑定 CSRF。
+- 浏览器管理员使用 `__Host-sarmg-media-backup-session` Cookie 与 Session 绑定 CSRF。
 - 移动设备使用 bootstrap 后取得的 Bearer Token。
 - 自动化使用可撤销 API Key。
 - `/metrics` 使用独立 `METRICS_TOKEN`。

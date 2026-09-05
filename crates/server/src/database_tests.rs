@@ -118,32 +118,38 @@ async fn test_state(database: &Path, data: &Path) -> (AppState, SqlitePool) {
         database_url,
         data_dir: data.to_path_buf(),
         bind: "127.0.0.1:0".parse().expect("test bind address"),
-        admin_username: ADMIN_USERNAME.to_owned(),
-        admin_password: ADMIN_PASSWORD.to_owned(),
+        bootstrap_admin_username: ADMIN_USERNAME.to_owned(),
+        bootstrap_admin_password: Some(ADMIN_PASSWORD.to_owned()),
         max_part_bytes: 1024 * 1024,
         upload_global_concurrency: 16,
         upload_per_account_concurrency: 4,
         metrics_token: None,
         require_https: false,
         development: true,
-        admin_session_idle_seconds: 1_800,
-        admin_session_absolute_seconds: 43_200,
         trusted_proxy_cidrs: Vec::new(),
     };
-    let state = AppState {
-        pool: pool.clone(),
-        storage,
-        config,
-        login_admission: crate::login_admission::LoginAdmission::default(),
-        upload_admission: crate::routes::UploadAdmission::new(16, 4),
-    };
-    crate::admin::ensure_admin_user(&state)
+    let state = crate::build_state(&config, pool.clone(), storage)
         .await
-        .expect("bootstrap persisted test administrator");
+        .expect("build Foundation-backed test state");
     upload_commit::reconcile_all(&state)
         .await
         .expect("reconcile uploads on test startup");
     (state, pool)
+}
+
+async fn test_router(state: AppState) -> Router {
+    let runtime =
+        sarmg_server_runtime::ServerRuntime::builder(sarmg_server_runtime::ProductDescriptor {
+            id: "media-backup".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            foundation_revision: "394c0201d85c5a331cded87db4af8fa01f6b6258".into(),
+            profile: "server-control-plane".into(),
+            capabilities: vec!["admin-persistent".into(), "server-runtime".into()],
+        })
+        .build()
+        .await
+        .expect("build test runtime");
+    router(state, runtime.handle()).expect("build current product router")
 }
 
 #[tokio::test]
@@ -330,12 +336,12 @@ fn empty_action_request(method: Method, uri: impl AsRef<str>, bearer: &str) -> R
 async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
     let workspace = TestWorkspace::new();
     let (state, pool) = test_state(&workspace.database(), &workspace.data()).await;
-    let app = router(state);
+    let app = test_router(state).await;
 
     let mutation_tables = [
         "accounts",
         "devices",
-        "auth_sessions",
+        "_sarmg_admin_sessions",
         "assets",
         "uploads",
         "upload_parts",
@@ -445,27 +451,26 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
     assert_eq!(administrator_session["authenticated"], true);
     assert_eq!(administrator_session["username"], ADMIN_USERNAME);
     assert_eq!(administrator_session["role"], "admin");
-    let administrator_id: String = sqlx::query_scalar("SELECT id FROM auth_users")
-        .fetch_one(&pool)
-        .await
-        .expect("persisted administrator id");
+    let administrator_id: String =
+        sqlx::query_scalar("SELECT administrator_id FROM _sarmg_administrators")
+            .fetch_one(&pool)
+            .await
+            .expect("persisted administrator id");
     assert_eq!(administrator_session["user_id"], administrator_id);
     let admin_csrf = administrator_session["csrf_token"]
         .as_str()
         .expect("admin CSRF token")
         .to_owned();
-    sqlx::query(
-        "UPDATE auth_sessions \
-         SET created_at = created_at - 60, last_seen_at = created_at - 60",
-    )
-    .execute(&pool)
-    .await
-    .expect("set admin session observation sentinel");
-    let admin_session_sentinel: i64 = sqlx::query_scalar("SELECT last_seen_at FROM auth_sessions")
-        .fetch_one(&pool)
-        .await
-        .expect("read admin session observation sentinel");
-
+    let mut missing_csrf = json_request(
+        Method::POST,
+        "/api/v2/admin/users",
+        json!({}),
+        None,
+        Some((&admin_cookie, &admin_csrf)),
+    );
+    missing_csrf.headers_mut().remove("x-csrf-token");
+    let rejected = send(&app, missing_csrf, StatusCode::FORBIDDEN).await;
+    assert_eq!(json_body(rejected).await["code"], "auth.csrf_rejected");
     send(
         &app,
         json_request(
@@ -492,14 +497,6 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
             .await
             .expect("count accounts after rejected admin DTO"),
         0
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT last_seen_at FROM auth_sessions")
-            .fetch_one(&pool)
-            .await
-            .expect("read rejected admin DTO session observation"),
-        admin_session_sentinel,
-        "rejected admin DTO refreshed its session"
     );
     assert_eq!(storage_snapshot(&workspace.data()), empty_storage);
 
@@ -1160,7 +1157,7 @@ async fn v02_wire_is_strict_across_the_real_sqlite_file_flow_and_restart() {
 
     let (restarted_state, restarted_pool) =
         test_state(&workspace.database(), &workspace.data()).await;
-    let restarted_app = router(restarted_state);
+    let restarted_app = test_router(restarted_state).await;
     let persisted_timeline = get_json(&restarted_app, "/v2/timeline", &bearer).await;
     assert_eq!(
         persisted_timeline["items"].as_array().map(Vec::len),

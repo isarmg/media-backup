@@ -8,6 +8,11 @@ use std::{
 
 use anyhow::{ensure, Context};
 use rusqlite::{params, Connection, OpenFlags};
+use sarmg_schema_identity::{
+    schema_fingerprint as foundation_schema_fingerprint, validate_product_metadata_columns,
+    validate_product_metadata_ddl, verify_current_schema, ProductMetadataColumn,
+    ProductMetadataRow, SchemaIdentity, SchemaRow, SQLITE_SCHEMA_ROWS_QUERY,
+};
 use sha2::{Digest, Sha256};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
@@ -19,17 +24,10 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
 const APPLICATION: &str = "media-backup";
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const CURRENT_SCHEMA: &str = include_str!("current_schema.sql");
-pub(crate) const CURRENT_SCHEMA_REVISION: i64 = 1;
+const CURRENT_SCHEMA: &str = include_str!("../schema/generated/current_schema.sql");
+pub(crate) const CURRENT_SCHEMA_REVISION: i64 = 2;
 pub(crate) const CURRENT_SCHEMA_SHA256: &str =
-    "2563e6afc3fff272d02b7a5615272cc773862243bfd15aec51655abf1d9c6b1c";
-const PRODUCT_METADATA_SQL: &str = "CREATE TABLE product_metadata (
-    singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
-    application TEXT NOT NULL,
-    application_version TEXT NOT NULL,
-    schema_revision INTEGER NOT NULL,
-    schema_sha256 TEXT NOT NULL
-)";
+    "6415edde88228d508f1c0c7582f119c8fe869d2d78fd85129f359a5d748cbbc2";
 
 pub(crate) async fn connect(database_url: &str) -> anyhow::Result<SqlitePool> {
     prepare_current_database(database_url)?;
@@ -321,6 +319,12 @@ fn initialize_current_database(path: &Path) -> anyhow::Result<()> {
         connection.execute_batch("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE;")?;
         let transaction_result = (|| {
             connection.execute_batch(CURRENT_SCHEMA)?;
+            connection.execute(
+                "INSERT INTO _sarmg_platform_metadata(\
+                 singleton,platform_generation,platform_schema_revision,profile,created_at_micros\
+                 ) VALUES(1,1,1,'server-control-plane',?)",
+                [0_i64],
+            )?;
             let actual = schema_fingerprint(&connection)?;
             ensure!(
                 actual == CURRENT_SCHEMA_SHA256,
@@ -376,52 +380,30 @@ fn require_absent_sidecars(path: &Path) -> anyhow::Result<()> {
 
 fn validate_current_connection(connection: &Connection) -> anyhow::Result<()> {
     validate_product_metadata_table(connection)?;
-    let count: i64 = connection.query_row("SELECT COUNT(*) FROM product_metadata", [], |row| {
-        row.get(0)
-    })?;
-    ensure!(count == 1, "product_metadata must contain exactly one row");
-    let (singleton, application, version, revision, expected_fingerprint): (
-        i64,
-        String,
-        String,
-        i64,
-        String,
-    ) = connection.query_row(
+    let mut metadata_statement = connection.prepare(
         "SELECT singleton, application, application_version, schema_revision, schema_sha256
-         FROM product_metadata",
-        [],
-        |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-            ))
-        },
+         FROM product_metadata ORDER BY singleton",
     )?;
-    ensure!(singleton == 1, "product_metadata singleton is invalid");
-    ensure!(
-        application == APPLICATION,
-        "database belongs to a different application"
-    );
-    ensure!(
-        version == env!("CARGO_PKG_VERSION"),
-        "database application version is not exactly current"
-    );
-    ensure!(
-        revision == CURRENT_SCHEMA_REVISION,
-        "database schema revision is not exactly current"
-    );
-    ensure!(
-        expected_fingerprint == CURRENT_SCHEMA_SHA256,
-        "database schema fingerprint metadata is not exactly current"
-    );
-    let actual = schema_fingerprint(connection)?;
-    ensure!(
-        actual == CURRENT_SCHEMA_SHA256,
-        "actual SQLite schema does not match the compiled current schema"
-    );
+    let metadata_rows = metadata_statement
+        .query_map([], |row| {
+            Ok(ProductMetadataRow {
+                singleton: row.get(0)?,
+                application: row.get(1)?,
+                application_version: row.get(2)?,
+                schema_revision: row.get(3)?,
+                schema_sha256: row.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let schema_rows = foundation_schema_rows(connection)?;
+    verify_current_schema(
+        &metadata_rows,
+        &schema_rows,
+        &current_schema_identity()?,
+    )
+    .context(
+        "database is not the exact current Media Backup schema; use sarmg-upgrade for offline conversion",
+    )?;
     Ok(())
 }
 
@@ -434,77 +416,53 @@ fn validate_product_metadata_table(connection: &Connection) -> anyhow::Result<()
             |row| row.get(0),
         )
         .context("database has no current product_metadata table")?;
-    ensure!(
-        normalize_sql(&sql) == normalize_sql(PRODUCT_METADATA_SQL),
-        "product_metadata table does not match the current contract"
-    );
+    validate_product_metadata_ddl(&sql)
+        .context("product_metadata DDL does not match the Foundation current contract")?;
     let mut columns = connection.prepare("PRAGMA table_info('product_metadata')")?;
     let actual = columns
         .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(5)?,
-            ))
+            Ok(ProductMetadataColumn {
+                cid: row.get(0)?,
+                name: row.get(1)?,
+                declared_type: row.get(2)?,
+                not_null: row.get(3)?,
+                default_sql: row.get(4)?,
+                primary_key_position: row.get(5)?,
+            })
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    let expected = vec![
-        ("singleton".to_string(), "INTEGER".to_string(), 1, 1),
-        ("application".to_string(), "TEXT".to_string(), 1, 0),
-        ("application_version".to_string(), "TEXT".to_string(), 1, 0),
-        ("schema_revision".to_string(), "INTEGER".to_string(), 1, 0),
-        ("schema_sha256".to_string(), "TEXT".to_string(), 1, 0),
-    ];
-    ensure!(
-        actual == expected,
-        "product_metadata columns do not match the current contract"
-    );
+    validate_product_metadata_columns(&actual)
+        .context("product_metadata columns do not match the Foundation current contract")?;
     Ok(())
 }
 
 fn schema_fingerprint(connection: &Connection) -> anyhow::Result<String> {
-    let mut statement = connection.prepare(
-        "SELECT type, name, tbl_name, COALESCE(sql, '')
-         FROM sqlite_schema
-         WHERE name NOT GLOB 'sqlite_*' AND name <> 'product_metadata'
-         ORDER BY type, name, tbl_name",
-    )?;
+    foundation_schema_fingerprint(&foundation_schema_rows(connection)?)
+        .context("Foundation rejected the canonical SQLite schema rows")
+}
+
+fn foundation_schema_rows(connection: &Connection) -> anyhow::Result<Vec<SchemaRow>> {
+    let mut statement = connection.prepare(SQLITE_SCHEMA_ROWS_QUERY)?;
     let rows = statement.query_map([], |row| {
-        Ok([
+        Ok(SchemaRow::new(
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
-        ])
+        ))
     })?;
-    let mut hasher = Sha256::new();
-    for row in rows {
-        for field in row? {
-            let bytes = field.as_bytes();
-            let length = u64::try_from(bytes.len()).context("schema field is too large")?;
-            hasher.update(length.to_be_bytes());
-            hasher.update(bytes);
-        }
-    }
-    Ok(lower_hex(hasher.finalize()))
+    rows.collect::<Result<Vec<_>, _>>()
+        .context("collect canonical SQLite schema rows")
 }
 
-fn normalize_sql(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_ascii_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
-fn lower_hex(bytes: impl AsRef<[u8]>) -> String {
-    use std::fmt::Write as _;
-    let mut output = String::with_capacity(bytes.as_ref().len() * 2);
-    for byte in bytes.as_ref() {
-        write!(&mut output, "{byte:02x}").expect("write to String");
-    }
-    output
+pub(crate) fn current_schema_identity() -> anyhow::Result<SchemaIdentity> {
+    SchemaIdentity::new(
+        APPLICATION,
+        env!("CARGO_PKG_VERSION"),
+        u64::try_from(CURRENT_SCHEMA_REVISION).context("schema revision must not be negative")?,
+        CURRENT_SCHEMA_SHA256,
+    )
+    .context("compiled Media Backup schema identity is invalid")
 }
 
 fn require_secure_database_file(path: &Path) -> anyhow::Result<()> {
@@ -671,6 +629,14 @@ mod tests {
             .execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
             .unwrap();
         connection.execute_batch(CURRENT_SCHEMA).unwrap();
+        connection
+            .execute(
+                "INSERT INTO _sarmg_platform_metadata(\
+                 singleton,platform_generation,platform_schema_revision,profile,created_at_micros\
+                 ) VALUES(1,1,1,'server-control-plane',?)",
+                [0_i64],
+            )
+            .unwrap();
         let fingerprint = schema_fingerprint(&connection).unwrap();
         connection
             .execute(
@@ -754,7 +720,7 @@ mod tests {
             ),
             (
                 "wrong-revision",
-                "UPDATE product_metadata SET schema_revision = 2",
+                "UPDATE product_metadata SET schema_revision = 3",
             ),
             (
                 "wrong-fingerprint",

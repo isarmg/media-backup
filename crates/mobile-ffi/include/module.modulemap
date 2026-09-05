@@ -1,0 +1,4 @@
+module MediaBackupRust {
+    header "media_backup_ffi_v2.h"
+    export *
+}

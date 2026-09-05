@@ -34,7 +34,7 @@ EXPECTED_FILES = {
     "config/media-backup.env.example": 0o644,
     "docs/feature-inventory-and-tradeoffs.md": 0o644,
     "README.md": 0o644,
-    "include/media_backup_v0_2_r1.h": 0o644,
+    "include/media_backup_ffi_v2.h": 0o644,
     "scripts/run-server-wsl.sh": 0o755,
     "scripts/setup-wsl.sh": 0o755,
     "scripts/start-server-wsl.sh": 0o755,
@@ -42,6 +42,9 @@ EXPECTED_FILES = {
     "share/web/index.html": 0o644,
     "share/web/assets/admin.js": 0o644,
     "share/web/assets/admin.css": 0o644,
+    "share/web/assets/MapleMono.woff2": 0o644,
+    "share/web/assets/MapleMono-Italic.woff2": 0o644,
+    "share/web/assets/MapleMono-OFL.txt": 0o644,
     "systemd/media-backup.service": 0o644,
 }
 
@@ -91,7 +94,7 @@ def main() -> None:
         "target": "x86_64-unknown-linux-gnu",
         "api_version": "v2",
         "storage_encoding": "plain-v1",
-        "server_schema_revision": 1,
+        "server_schema_revision": 2,
         "mobile_ffi_epoch": "media-backup-mobile-v0.2-r1",
     }
     for field, expected in fixed_identity.items():

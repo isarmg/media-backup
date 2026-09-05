@@ -13,8 +13,8 @@
 - 当前发行是不可变版本目录，不使用 `current` 软链接，也不会从任意路径动态选择二进制。
 - 安装器只接受全新的目标。它不会覆盖、合并或修补已有 `0.2.0` 发行目录，也不会覆盖已有 systemd
   unit。
-- 本项目不包含旧版本兼容、迁移、升级、备份或恢复逻辑。需要升级、备份或恢复时，应停止服务并使用
-  独立的 `sarmg-upgrade` 项目处理，不能通过修改数据库版本号、发行 manifest 或软链接绕过检查。
+- 本轮仅支持唯一当前版本，不提供旧版本升级或兼容路径。当前状态的离线校验、备份和恢复由独立的
+  `sarmg-upgrade` 项目负责，不能通过修改数据库版本号、发行 manifest 或软链接绕过检查。
 - 媒体对象以明文字节写入数据目录。生产主机必须另行提供磁盘或卷加密、最小权限和加密异地备份。
 
 ## 2. 主机前置条件
@@ -42,7 +42,7 @@ media-backup-server-0.2.0-x86_64-unknown-linux-gnu/
 ├── bin/media-backup-server
 ├── config/media-backup.env.example
 ├── docs/feature-inventory-and-tradeoffs.md
-├── include/media_backup_v0_2_r1.h
+├── include/media_backup_ffi_v2.h
 ├── scripts/
 │   ├── setup-wsl.sh
 │   ├── start-server-wsl.sh
@@ -52,7 +52,10 @@ media-backup-server-0.2.0-x86_64-unknown-linux-gnu/
 │   ├── index.html
 │   └── assets/
 │       ├── admin.css
-│       └── admin.js
+│       ├── admin.js
+│       ├── MapleMono.woff2
+│       ├── MapleMono-Italic.woff2
+│       └── MapleMono-OFL.txt
 ├── systemd/media-backup.service
 ├── LICENSE
 ├── README.md
@@ -106,7 +109,7 @@ cd media-backup-server-0.2.0-x86_64-unknown-linux-gnu
 - `target`：`x86_64-unknown-linux-gnu`
 - `api_version`：`v2`
 - `storage_encoding`：`plain-v1`
-- `server_schema_revision`：`1`
+- `server_schema_revision`：`2`
 - `mobile_ffi_epoch`：`media-backup-mobile-v0.2-r1`
 
 `source_revision` 必须是 40 位小写十六进制 Git revision。`release-verify` 成功时只输出一行以
@@ -174,16 +177,14 @@ sudoedit /etc/isarmg/media-backup.env
 | `DATABASE_URL` | `sqlite:///var/lib/isarmg/media-backup/db/app.db` | 必须指向当前 SQLite；父目录链不得用链接代换 |
 | `DATA_DIR` | `/var/lib/isarmg/media-backup/data` | 必须与发行树分离；持续监控容量和 inode |
 | `BIND` | `127.0.0.1:8080` | 推荐仅监听 loopback，由反向代理对外提供 TLS |
-| `ADMIN_USERNAME` | `admin` | 唯一浏览器管理员；规范化后为当前 canonical username |
-| `ADMIN_PASSWORD` | 安装时随机生成 | 必须换成秘密管理器生成的独立长随机值 |
+| `BOOTSTRAP_ADMIN_USERNAME` | `admin` | 仅在没有管理员时创建初始身份；已有身份不被覆盖 |
+| `BOOTSTRAP_ADMIN_PASSWORD` | 安装时随机生成 | 仅初始化时必填；已有管理员时不会重置其密码 |
 | `MAX_PART_BYTES` | `67108864` | 单上传分块上限；同时影响请求 body 上限和内存/并发压力 |
 | `UPLOAD_GLOBAL_CONCURRENCY` | 未配置时 `16` | 正整数；限制全局并行上传处理 |
 | `UPLOAD_PER_ACCOUNT_CONCURRENCY` | 未配置时 `4` | 正整数且不得大于全局值 |
 | `REQUIRE_HTTPS` | `true` | 生产必须为 `true` |
 | `DEVELOPMENT` | `false` | 生产必须为 `false`；为 `true` 时只允许 loopback bind |
 | `TRUSTED_PROXY_CIDRS` | `127.0.0.1/32,::1/128` | 只填写会直接连接 Server 的真实可信代理地址或网段 |
-| `ADMIN_SESSION_IDLE_SECONDS` | `1800` | 正整数，且不得大于 absolute TTL |
-| `ADMIN_SESSION_ABSOLUTE_SECONDS` | `43200` | 正整数；管理员 Session 绝对寿命 |
 | `METRICS_TOKEN` | 安装时随机生成 | 独立 Bearer Token；空值会关闭 `/metrics` |
 | `RUST_LOG` | `media_backup_server=info,tower_http=info` | 控制日志级别；不要开启会泄露敏感数据的临时调试日志 |
 
@@ -199,7 +200,7 @@ Server 与管理 Web 只有一个角色：`admin`。不存在访客、普通后�
 - `@`、Unicode、内部空白、控制字符和首尾分隔符均被拒绝。
 - 管理员密码必须为 12–1024 bytes，且不得包含 ASCII 控制字符。
 - 管理员浏览器 Session 与移动备份账户、设备 Bearer Token、API Key 是相互隔离的身份域；不得把
-  `ADMIN_USERNAME` 当作移动账户配置，也不得复制凭据实现“兼容”。
+  `BOOTSTRAP_ADMIN_USERNAME` 当作移动账户配置，也不得复制凭据实现“兼容”。
 
 ## 7. 配置 HTTPS 反向代理
 
@@ -269,14 +270,12 @@ sudo /opt/isarmg/media-backup/releases/0.2.0/scripts/run-server-wsl.sh
 本机基础检查：
 
 ```bash
-curl --fail http://127.0.0.1:8080/health
-curl --fail http://127.0.0.1:8080/health/live
-curl --fail http://127.0.0.1:8080/health/ready
+curl --fail http://127.0.0.1:8080/healthz
+curl --fail http://127.0.0.1:8080/readyz
 ```
 
-- `/health` 只表示进程能够响应。
-- `/health/live` 是结构化存活状态。
-- `/health/ready` 同时探测 SQLite 与数据目录；返回 `503` 时不能接入业务流量。
+- `/healthz` 仅以状态码表示存活，不返回内部信息。
+- `/readyz` 同时探测 SQLite 与数据目录；返回 `503` 时不能接入业务流量。
 
 使用包内验收脚本检查健康端点与管理页：
 
@@ -336,7 +335,7 @@ curl --fail \
 
 - `/var/lib/isarmg/media-backup/db` 所在文件系统的容量、inode、I/O 延迟和 SQLite sidecar；
 - `/var/lib/isarmg/media-backup/data` 的媒体字节、缩略图、分块暂存与孤儿回收积压；
-- `/health/ready`、进程重启次数、上传错误率、活动上传数和存储字节数；
+- `/readyz`、进程重启次数、上传错误率、活动上传数和存储字节数；
 - 反向代理证书到期时间、5xx、请求 body 限制和 upstream timeout。
 
 数据库和媒体目录构成同一个逻辑一致性单元。不得只复制 `app.db` 而忽略 SQLite sidecar，也不得只
@@ -378,12 +377,12 @@ Media Backup Server 发行包不执行备份、恢复、Schema 迁移、跨版�
 
 ### 12.2 安装器拒绝目标已存在
 
-这是 no-clobber 保护，不是可忽略警告。保存现场并确认该目录或 unit 的来源。版本升级和重装都应走
-独立升级仓库的显式流程，本包没有覆盖安装模式。
+这是 no-clobber 保护，不是可忽略警告。保存现场并确认该目录或 unit 的来源。本包没有覆盖安装模式，
+也不提供旧版本升级；不要删除既有数据或修改 manifest 绕过保护。
 
 ### 12.3 启动脚本要求替换初始秘密
 
-编辑 `/etc/isarmg/media-backup.env`，为 `ADMIN_PASSWORD` 和 `METRICS_TOKEN` 写入两个不同的长随机
+编辑 `/etc/isarmg/media-backup.env`，为 `BOOTSTRAP_ADMIN_PASSWORD` 和 `METRICS_TOKEN` 写入两个不同的长随机
 秘密，并删除精确 marker 行。保持文件 root 所有、`0600`、普通文件且只有一个硬链接。
 
 ### 12.4 服务启动后立即退出
@@ -393,14 +392,14 @@ Media Backup Server 发行包不执行备份、恢复、Schema 迁移、跨版�
 1. `systemctl status` 与 Journal 的第一条错误；
 2. 主机是否为 Linux x86_64；
 3. 固定发行目录、unit 和配置的所有权/权限是否漂移；
-4. `DATABASE_URL`、`DATA_DIR`、`BIND` 和 Session TTL 是否有效；
+4. `DATABASE_URL`、`DATA_DIR` 和 `BIND` 是否有效；Session 生命周期由 Foundation 固定；
 5. 数据库是否是精确的当前产品、版本、Schema 和对象指纹；
 6. 数据目录是否可由 `isarmg-media` 访问，以及容量/inode 是否耗尽。
 
-遇到旧版本或 Schema 漂移必须停止并交给 `sarmg-upgrade`，不要现场执行 `ALTER TABLE`、修改版本元数据
-或添加兼容列。
+遇到非当前格式或 Schema 漂移必须停止并保留现场。本轮没有旧格式转换流程；不要现场执行
+`ALTER TABLE`、修改版本元数据或添加兼容列。当前状态损坏只能从经验证的当前格式备份恢复。
 
-### 12.5 `/health` 正常但 `/health/ready` 为 503
+### 12.5 `/healthz` 正常但 `/readyz` 为 503
 
 进程活着，但 SQLite 查询或数据目录探针失败。检查磁盘、挂载、权限、只读状态、文件系统错误和 Journal。
 在 readiness 恢复前不要让代理继续发送业务流量。
@@ -425,7 +424,7 @@ Media Backup Server 发行包不执行备份、恢复、Schema 迁移、跨版�
 1. 在代理层隔离受影响入口，避免继续扩大写入或泄漏；
 2. 保全只读日志、发行 identity、文件摘要、时间线和数据库/媒体一致性证据；
 3. 根据影响范围轮换管理员密码、指标 Token、设备 Token、API Key、TLS 私钥及主机凭据；
-4. 使用独立升级/恢复流程从经过验证的一致性备份恢复；
+4. 使用独立的当前状态恢复流程从经过验证的一致性备份恢复；
 5. 只为当前版本修复，不在产品代码中加入旧版本兼容路径。
 
 不要公开上传生产数据库、媒体、配置或秘密。不要在尚未保全证据时批量删除日志、数据库 sidecar 或暂存
@@ -445,7 +444,7 @@ Media Backup Server 发行包不执行备份、恢复、Schema 迁移、跨版�
 - [ ] Server 只监听受控地址，公网只能通过可信 TLS 反向代理访问。
 - [ ] `TRUSTED_PROXY_CIDRS` 只包含真实直连代理。
 - [ ] systemd 服务以 `isarmg-media` 运行，unit 与发行内容一致。
-- [ ] `/health`、`/health/live`、`/health/ready` 和包内验收脚本均通过。
+- [ ] `/healthz`、`/readyz` 和包内验收脚本均通过；不存在旧健康路径别名。
 - [ ] 从真实域名验证证书链、管理页、username 登录、Session 和退出。
 - [ ] 数据库与媒体容量、inode、日志、指标和证书到期监控已配置。
 - [ ] 一致性备份、隔离恢复演练和 `sarmg-upgrade` 责任人已明确。

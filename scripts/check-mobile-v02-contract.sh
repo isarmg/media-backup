@@ -11,8 +11,14 @@ fail() {
 
 test ! -e crates/mobile-ffi/include/media_backup.h \
     || fail "the unversioned C header still exists"
-test -f crates/mobile-ffi/include/media_backup_v0_2_r1.h \
-    || fail "the v0.2 revision 1 C header is missing"
+test -f crates/mobile-ffi/include/media_backup_ffi_v2.h \
+    || fail "the current ABI 2 C header is missing"
+test ! -e crates/mobile-ffi/include/media_backup_v0_2_r1.h \
+    || fail "the removed NUL-string C ABI header remains"
+if rg -n 'mb_v0_2_r1|NativeBridgeV02|withCString|@_silgen_name' crates/mobile-ffi/src clients/ios/MediaBackup/RustAgent.swift clients/android/app/src/main; then
+    fail "a removed mobile ABI implementation or caller remains"
+fi
+python3 scripts/check-mobile-header.py
 for required_ios_property in \
     'NSPhotoLibraryUsageDescription:' \
     'NSPhotoLibraryAddUsageDescription:' \
@@ -35,8 +41,8 @@ for required in \
     'media-backup-mobile-v0.2-r1' \
     'agent-v0.2-r1.sqlite' \
     'backup-staging-v0.2-r1' \
-    'mb_v0_2_r1_open' \
-    'Java_org_sarmg_mediabackup_NativeBridgeV02_openV02R1' \
+    'mb_open_v2' \
+    'Java_org_sarmg_mediabackup_NativeBridgeV2_open' \
     'org.sarmg.mediabackup'; do
     # All platform clients live below clients/; keeping this gate on the
     # canonical paths makes directory drift fail visibly in CI.

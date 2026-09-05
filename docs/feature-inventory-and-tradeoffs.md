@@ -26,8 +26,8 @@
 
 ### 1.3 两类“用户”和两类 `role`
 
-控制面只有 Administrator。`auth_users` 表不保存 `role`，Administrator Session 的 `role:"admin"` 是
-Foundation wire 常量；其身份键是 `auth_users.username`。`accounts` 是照片/视频归属和设备登录的数据面
+控制面只有 Administrator。`_sarmg_administrators` 表不保存 `role`，Administrator Session 的 `role:"admin"` 是
+Foundation wire 常量；其身份键是 `_sarmg_administrators.username`。`accounts` 是照片/视频归属和设备登录的数据面
 账户，不是低权限管理员。两种 username 即使文字相同也不会关联。上传
 `resources.role` 表示同一资产内的资源用途，例如 `primary` 或 `thumbnail`，也不是权限角色。删除或改名
 任一概念时必须保持这三个命名空间彼此独立。
@@ -50,27 +50,26 @@ React 管理页、配置与 systemd、发行 identity/manifest、CI/脚本、正
 | MED-P-006 | 源配置统一位于顶层 `config/`，部署资产位于 `deploy/`，客户端位于 `clients/` | 仓库目录 | 开发运维 | 低 | 事实源散落，脚本和文档容易引用不同文件 | `rg` 不引用已移除目录；release 仍可重映射到 `systemd/` |
 | MED-P-007 | React/Vite 管理客户端位于 `clients/web/`；Android/iOS 原生客户端并列 | 目录结构、workspace scripts | 开发运维 | 低 | 客户端代码位置不一致，维护人员难以识别边界 | README、CI、构建脚本使用统一路径 |
 | MED-P-008 | 原始媒体在 Server 使用 `plain-v1` 明文字节，传输机密性依赖 HTTPS | `StorageEncoding::PlainV1`、`crates/crypto` | 核心 | 高 | 改成端到端密文会重写缩略图、恢复、去重和密钥生命周期 | byte-for-byte round trip；HTTP 明文直连不得公网暴露 |
-| MED-P-009 | Foundation 0.3 统一 Administrator、ErrorEnvelope、Web HTTP/设计和 Server target；Rust 固定 `=0.3.0` + 完整 Git rev `1fe326…14c6`，Web 固定 v0.3.0 Release URL + lock integrity | Cargo 与四个 `@sarmg/*` 依赖、Web lockfile | 保障 | 高 | 安全与 wire 逻辑在项目间分叉；改回共同父目录的 `path`/`file:` 会破坏独立 checkout | 完整 rev、四个 URL/integrity、fixture、工具链检查、独立 clean install |
+| MED-P-009 | Foundation 统一管理员、Runtime、ErrorEnvelope、Web Shell/UI/字体/工具链和 Server target；当前 Rust 与八个 Web 包使用工作区联调来源，尚未完成新不可变发布 | Cargo、八个 `@sarmg/*` 依赖、Web lockfile | 保障 | 高 | 平台行为分叉，联调路径不能作为独立发行交付 | P13 切换精确版本/不可变 revision/归档 integrity 后执行独立 clean install |
 
 ## 3. 身份、认证与请求边界
 
 | ID | 当前功能/特性与真实行为 | 实现/代码锚点 | 分类 | 复杂度 | 删除后的确定后果 | 最低验证/边界 |
 |---|---|---|---|---|---|---|
-| MED-A-001 | 控制面只有 Administrator，`auth_users` 无 `role` 列 | `current_schema.sql`、`admin.rs` | 核心 | 高 | 删除认证会公开备份用户与路径；新增 RBAC 会扩大所有管理 handler | DDL 无 role；Session 固定 `admin` |
-| MED-A-002 | 初始 Administrator 只由 `ADMIN_USERNAME`/`ADMIN_PASSWORD` 创建；非空库的唯一持久 username 必须与配置一致 | `ensure_admin_user`、`Config` | 保障 | 高 | 配置漂移可能静默创建第二身份、锁错账户或让操作者误判登录名 | 新库初始化、相同 username、不同 username 冲突；`ADMIN_EMAIL` 缺失即无别名 |
+| MED-A-001 | 控制面只有 Administrator，平台表由 Foundation Composer 生成 | `_sarmg_administrators`、Admin Core | 核心 | 高 | 删除认证会公开备份用户与路径 | Session 固定 admin；无产品管理员表 |
+| MED-A-002 | 仅无管理员时使用 BOOTSTRAP_ADMIN_USERNAME/PASSWORD 初始化；已有身份不被环境覆盖 | `build_state`、Admin Core | 保障 | 高 | 环境变量不能隐式重置账户 | 空库要求密码；已有管理员保持不变 |
 | MED-A-003 | Administrator username 使用 Foundation 唯一 canonical 规则：登录 candidate 1..64 printable ASCII，经 trim ASCII + lowercase 后必须为 3..64 bytes、首尾字母数字、字符仅 `[a-z0-9._-]` | `normalize_administrator_username`、`require_canonical_administrator_username`、Schema CHECK | 保障 | 中 | 同一身份可用大小写/空白变体绕过限流或唯一约束，跨项目身份语义会漂移 | 大小写/首尾空白正例；`@`、Unicode、内部空白、控制字符、首尾分隔符和超长负例 |
-| MED-A-004 | Administrator 密码为 Foundation 当前策略与精确 Argon2id PHC | `sarmg-admin-auth`、`password.rs` | 保障 | 高 | 多 hash 分支和弱参数增加长期负担 | 12–1024 bytes、控制字符、PHC 参数负例 |
+| MED-A-004 | 管理员密码只接受 Foundation 当前 Argon2id 策略 | Admin Core、Admin Auth | 保障 | 高 | 产品不能另设 hash 分支 | PHC 参数与口令策略负例 |
 | MED-A-005 | 三个浏览器认证入口精确为 `/api/v2/auth/login`、`/api/v2/auth/session`、`/api/v2/auth/logout` | Foundation path constants、`routes.rs` | 保障 | 中 | 路径漂移破坏共享客户端；别名扩大攻击面 | method/path 矩阵，合同外路径拒绝 |
-| MED-A-006 | 登录 body 精确 `{username,password}`，非法策略输入 400，合法但错误凭据 401；Session 精确五字段 `{authenticated,user_id,username,role:"admin",csrf_token}` | `AdministratorLoginRequest`、`AdministratorSession`、`admin::login/session` | 保障 | 中 | 客户端无法区分输入合同与认证失败，或 Server/Web 对身份字段产生不同解释 | 缺失/额外字段、非法 username/password、错误凭据、Session exact keys |
-| MED-A-007 | 登录按真实来源和规范账户限流，并限制 Argon2 并发/等待 | `login_admission.rs`、trusted proxy | 保障 | 高 | 可暴力猜测或用昂贵 hash 耗尽服务 | IPv4/IPv6、窗口、429/Retry-After、semaphore timeout |
-| MED-A-008 | 未知账户走当前 dummy hash，降低账户枚举时序差异 | `LoginAdmission::verify` | 保障 | 中 | 未知 username 响应明显更快 | 已知错误与未知账户成本比较 |
-| MED-A-009 | 管理 Session/CSRF token 为 32 随机字节 URL-safe token，DB 只存 SHA-256 | `admin.rs`、Foundation token helpers | 保障 | 高 | 数据库泄漏可直接成为登录凭据，或 token 形状跨项目漂移 | 43-char canonical token；digest 32 bytes；无明文 |
-| MED-A-010 | 每 Administrator 最多 32 个活跃 Session；idle/absolute TTL 和成功 touch | `MAX_ADMIN_SESSIONS`、`require_admin` | 保障 | 高 | 会话无界增长或永久存活 | 淘汰、idle/absolute、失败请求不 touch |
-| MED-A-011 | 每 Session 保留最多 8 个近期 CSRF digest，session 恢复会签发新 token | `MAX_CSRF_TOKENS_PER_SESSION` | 保障 | 中 | 多标签页竞态增多；无上限则表持续增长 | 轮换、8/9 token、旧 token 淘汰 |
-| MED-A-012 | unsafe 管理请求要求单个 CSRF、严格 Origin/Host/URI authority 与 `Sec-Fetch-Site` | `verify_mutation_request`、Foundation same-origin | 保障 | 高 | 已登录浏览器可被跨站诱导，重复头可产生代理歧义 | missing/duplicate/comma/cross-site/HTTP2 authority |
-| MED-A-013 | 生产 Cookie 为 `__Host-media_session`，Secure/HttpOnly/SameSite=Strict/Path=/ | `session_cookie` | 保障 | 低 | Cookie 可被脚本、子域或跨站请求扩大利用 | 精确属性；无 Domain；开发模式单独验证 |
-| MED-A-014 | 管理密码修改验证当前密码，更新 hash 并由 trigger 撤销 Session | `/api/v2/admin/password`、`auth_users_security_version` | 建议保留 | 高 | 管理员无法自助轮换，或轮换后旧 Session 继续有效 | 错当前密码、新策略、全部旧 Session |
-| MED-A-015 | 数据面 `accounts.username/password_hash` 与管理面 `auth_users.username/password_hash` 完全分离；本次 Foundation username 调整不改变移动端 | 两张表、`/v2/auth/bootstrap`、`/api/v2/auth/*` | 核心 | 高 | 移动设备会误获管理权限，或管理 username 被当备份空间身份 | 相同文字值仍是不同表/凭据/路由；Android/iOS/Agent/FFI fixture 不变 |
+| MED-A-006 | 登录 body 精确 username/password，Session 使用平台五字段合同 | Foundation Axum Adapter、Contracts | 保障 | 中 | 产品不能重解释认证结果 | strict DTO、401/403、ErrorEnvelope |
+| MED-A-007 | 管理员登录来源为真实 socket peer；固定来源/账户失败预算和 Argon2 并发等待上限 | Foundation Admin Core | 保障 | 高 | 不能信任代理来源头或绕过平台预算 | 共享 Adapter 套件 |
+| MED-A-008 | 未知账户执行当前 dummy hash | Foundation Admin Core | 保障 | 中 | 避免账户存在性时序差异 | dummy verification 测试 |
+| MED-A-009 | 管理 Session/CSRF token 只以摘要存储 | Foundation Admin SQLite | 保障 | 高 | 产品不得另存明文 token | `_sarmg_admin_sessions` 当前 DDL |
+| MED-A-010 | 固定每管理员 32、全局 1024 Session，空闲 30 分钟、绝对 12 小时 | Foundation Admin Policy | 保障 | 高 | 无产品 TTL 配置或分叉限额 | 过期、上限、last_seen 写入节流 |
+| MED-A-011 | 恢复 Session 轮换当前 CSRF 摘要，客户端协调并发认证请求 | Foundation Admin Core、admin-web | 保障 | 中 | 不保留产品历史 CSRF 窗口 | 恢复、失效旧 token、并发客户端测试 |
+| MED-A-012 | 写管理请求要求单个 CSRF、同源 Origin 与单一 Host/URI authority | Foundation Axum Adapter | 保障 | 高 | 禁止跨站和重复头歧义 | 共享 Axum/Hyper 套件 |
+| MED-A-013 | 生产 Cookie 为 __Host-sarmg-media-backup-session，Secure/HttpOnly/SameSite=Strict/Path=/ | Foundation session_set_cookie | 保障 | 低 | 不提供产品 Cookie 别名 | 精确属性与 loopback 开发模式 |
+| MED-A-015 | 数据面 accounts 与管理面 _sarmg_administrators 完全分离 | 产品移动授权、Foundation 管理授权 | 核心 | 高 | 同名账户不共享凭据或权限 | 移动 /v2 与管理 /api/v2 分域 |
 | MED-A-016 | device bootstrap 校验账户密码并创建随机 Bearer token；Server 只存 token hash | `routes::bootstrap`、`devices` | 核心 | 高 | 手机无法获得稳定设备身份；明文库泄漏扩大 | 正误密码、disabled account、token digest、设备 audit |
 | MED-A-017 | 移动业务 API 接受 device token 或未撤销 API Key，解析到同一 account/device context | `auth::require_auth` | 核心 | 高 | 无法授权上传，或两个 token 类型产生不同隔离语义 | device/API key、revoked、disabled、跨账户 |
 | MED-A-018 | API Key 原值只在创建响应出现一次，库中存 hash/prefix，可列出和撤销 | `api_access.rs`、`api_keys` | 建议保留 | 高 | 自动化/额外客户端只能保存设备 token；明文保存会泄漏 | 创建、列表不含 token、撤销、last_used |
@@ -140,8 +139,8 @@ React 管理页、配置与 systemd、发行 identity/manifest、CI/脚本、正
 | MED-G-011 | mark_upload/part/complete 持久化远端进度；complete 清理本地 prepared parts | Agent methods、`job_parts` | 保障 | 高 | 重启后无法续传或 stage 永久累积 | 每状态重启、part cleanup、missing job |
 | MED-G-012 | retryable error 使用 2 秒指数退避、最多 1 小时并保留 `prepared_json`；非 retryable 进入 failed | `mark_failed` | 保障 | 中 | 网络故障会热循环，或永久失败与暂时失败无法区分 | retry count 0/10+、到期前后、JSON/part 是否仍在、错误摘要；保留 JSON 不代表当前取队列路径会复用它 |
 | MED-G-013 | Agent stats 聚合 discovered/ready/uploading/complete/retry_wait/failed | `AgentStats` | 建议保留 | 低 | UI 和诊断无法说明队列停在哪层 | 每状态计数、未知状态由 Schema 阻止 |
-| MED-G-014 | C ABI/JNI 函数名带唯一 v0.2-r1 epoch，Rust 分配的字符串有配对 free | `mobile-ffi`、header、NativeBridge/RustAgent | 核心 | 高 | 原生宿主无法调用或产生跨 allocator 内存错误 | 符号表、null/UTF-8、free 一次、异常 envelope |
-| MED-G-015 | FFI 所有结果使用当前 JSON envelope，宿主先校验 identity 再取 value/error | `mobile-ffi`、`MobileContractV02` | 保障 | 高 | Swift/Kotlin 可能接受来自错误 native library 的形似 JSON | product/version/revision/epoch、额外/缺失 keys |
+| MED-G-014 | 唯一 C ABI 2 使用显式长度、状态码和 owned result；JNI 通过共享边界抛出异常；旧入口已删除 | `mobile-ffi`、生成 Header、NativeBridgeV2/RustAgent | 核心 | 高 | 原生宿主无法区分失败或产生跨 allocator 内存错误 | 全导出 C 调用、null/UTF-8、结果释放、JNI 异常及原生验收 |
+| MED-G-015 | 宿主先检查 ABI 2，成功业务 JSON 再验证当前 identity；失败不包装成成功 envelope | `sarmg-mobile-ffi`、`MobileContractV02` | 保障 | 高 | Swift/Kotlin 可能接受错误 native library 的返回值 | ABI/version/revision/epoch、明确状态、额外/缺失 keys |
 | MED-G-016 | FFI handle registry 管理 Agent 生命周期，close 后句柄不可复用 | `mobile-ffi/src/lib.rs` | 保障 | 高 | use-after-close、重复 close 或跨线程状态损坏 | invalid/closed handle、并发调用、资源释放 |
 
 ## 7. Android 客户端
@@ -187,29 +186,29 @@ React 管理页、配置与 systemd、发行 identity/manifest、CI/脚本、正
 
 | ID | 当前功能/特性与真实行为 | 实现/代码锚点 | 分类 | 复杂度 | 删除后的确定后果 | 最低验证/边界 |
 |---|---|---|---|---|---|---|
-| MED-W-001 | React StrictMode + Foundation hook 管理 restore/login/logout；登录表单提交 `username/password`，已认证栏只读取 Session `username`，Session/CSRF 只在内存 | `clients/web/src/main.tsx`、`@sarmg/admin-web` | 保障 | 高 | 认证竞态被每个页面重复实现、Web 仍提交已删除 email 字段，或 Secret 被持久化 | exact request/Session、大小写规范化、reload、迟到响应、401、logout |
-| MED-W-002 | 管理页只有总览和备份用户两类业务视图 | `View`、`OverviewView`、`UsersView` | 建议保留 | 中 | API 仍在但无法从内置 UI 管理数据面账户 | 空态、切页、刷新、错误 toast |
+| MED-W-001 | Foundation Shell 统一 restore/login/logout、导航、通知与诊断，Session/CSRF 只在内存；产品没有第二套登录状态机 | `createSarmgAdminApplication`、`@sarmg/admin-shell` | 保障 | 高 | 认证竞态或 Secret 持久化 | 共享 Shell 测试、消费者 Chromium/Firefox 验收 |
+| MED-W-002 | 总览、备份用户与独立平台管理员三个视图；业务读取失败清除旧数据，安全错误显示 Request ID 和显式重试 | `Application`、`OverviewView`、`UsersView`、`AdministratorsPanel` | 建议保留 | 中 | 账户域混淆或失败后仍显示过期状态 | 切页、失败/重试、管理员创建、无内部错误泄漏 |
 | MED-W-003 | 总览聚合 active/total user、used/pending/quota 和每用户设备/resource 数 | `/api/v2/admin/overview`、Overview guard | 建议保留 | 中 | 容量和账户状态只能手工查询 | unlimited quota、large safe integer、空库 |
-| MED-W-004 | Web 可创建/修改/启停备份账户，设置 display/storage/quota 和重置密码 | Administrator routes、`UserEditor` | 核心 | 高 | 移动账户只能直接改 DB；错误路径变更可能破坏已有 blob | validation、unique username/path、quota、password reset |
+| MED-W-004 | 创建/修改备份账户，停用需确认，密码重设为独立操作；GiB 配额往返保留原始整数字节，写失败不自动重放且清空密码 | `BackupUserForm`、`BackupPasswordDialog` | 核心 | 高 | 部分成功被误报、重复写入或配额舍入丢失 | create/edit/disable/reset、取消不写、失败清密、焦点与精确 quota |
 | MED-W-005 | 业务 JSON 在进入组件前校验必需字段与类型，路径只允许 `/api/v2/admin/*` | `clients/web/src/api.ts` | 保障 | 中 | 漂移响应会进入组件，或产品 client 被用于移动路由 | 缺失/错误类型、错误 prefix；当前 guard 容忍响应额外字段 |
-| MED-W-006 | light/dark preference 只保存主题，不保存 Session/CSRF | `readTheme`、localStorage key | 可选 | 低 | 删除只影响外观；若扩大存储会泄漏认证状态 | storage 中只有 theme、异常存储 fallback |
+| MED-W-006 | Foundation 统一 system/light/dark 主题；产品不读写浏览器存储 | Shell 主题选择器 | 可选 | 低 | 私有外观与平台漂移 | 移动明暗主题 WCAG AA、无横向溢出 |
 | MED-W-007 | Foundation tokens/reset/accessibility 提供 focus、reduced motion、forced colors 基线 | CSS imports、`data-sarmg-scope` | 保障 | 中 | 基础行为跨项目漂移 | keyboard、focus、high contrast、CSS digest |
-| MED-W-008 | 产品品牌、侧栏、卡片、表格、响应式样式只在 `src/styles.css` | product CSS | 建议保留 | 中 | 把产品 class 放 Foundation 会污染共享层；删除则 UI 退化 | light/dark、窄屏、长文本、progress |
+| MED-W-008 | 业务 CSS 仅保留 `.media-*` 布局，导航/表单/弹窗/通知来自共享 UI，字体使用 Maple 同源资产 | `src/styles.css`、Foundation CSS imports | 建议保留 | 中 | 重复平台样式重新分叉 | 禁止私有字体/token、窄屏、长文本、progress |
 | MED-W-009 | 精确 Node 26.7.0、React/DOM 19.2.8、TS 5.8.3、Vite 7.3.6 | `.node-version`、package/lock | 开发运维 | 中 | 开发、CI 与发行 bundle 不可复现 | engine、`npm ci`、typecheck、版本断言 |
-| MED-W-010 | `build` 强制 check:foundation→typecheck→Vite，固定输出 admin.js/admin.css | package scripts、vite config | 开发运维 | 高 | Rust include/release manifest 可能绑定错误或缺失 Web | 改依赖/import/scope负例；三个 dist 文件 |
-| MED-W-011 | Rust 把 HTML/JS/CSS 编译进 binary，并以 CSP/no-store/no-cache 提供 `/admin` | `admin::page/script/styles` | 保障 | 高 | 外部静态目录可与 binary 混代，或浏览器侧保护下降 | CSP、content type/cache、missing dist compile failure |
+| MED-W-010 | `build` 强制 check:foundation→typecheck→Foundation Vite 配置，512 KiB 单资产硬预算且禁止 source map；六个 dist 资产含字体与许可 | package scripts、vite config | 开发运维 | 高 | 二进制、字体和发行 manifest 混代 | 构建门禁、实际 dist 浏览器测试 |
+| MED-W-011 | 唯一内嵌清单绑定 HTML/JS/CSS/正斜体 WOFF2/OFL，HTTP 与发行校验共用字节；保留 CSP 和 nosniff | `web_assets.rs`、`admin.rs`、`release.rs` | 保障 | 高 | 字体 404、缺少许可证或发布内容漂移 | 实际 HTTP 字节/类型、篡改字体和缺失许可拒绝 |
 
 ## 10. SQLite、运行锁、doctor、发布与供应链
 
 | ID | 当前功能/特性与真实行为 | 实现/代码锚点 | 分类 | 复杂度 | 删除后的确定后果 | 最低验证/边界 |
 |---|---|---|---|---|---|---|
-| MED-R-001 | Server 当前 Schema identity 为 application `media-backup`、version 0.2.0、revision 1、SHA `2563e6afc3fff272d02b7a5615272cc773862243bfd15aec51655abf1d9c6b1c`；`auth_users` 只有 canonical `username`，没有 email/role | `server/database.rs`、`current_schema.sql` | 保障 | 高 | 错库或 DDL drift 可被误用，旧身份列可能被错误接受 | metadata、现场 fingerprint、列清单、文档/upgrade 常量一致 |
+| MED-R-001 | Server 当前 Schema identity 为 media-backup 0.2.0、revision 2、SHA `6415edde88228d508f1c0c7582f119c8fe869d2d78fd85129f359a5d748cbbc2`；管理员和平台 DDL 由 Foundation 组合 | `database.rs`、`schema/generated/current_schema.sql` | 保障 | 高 | 错库或 DDL drift 必须拒绝 | metadata、现场 fingerprint、当前身份精确校验 |
 | MED-R-002 | Agent 当前 Schema SHA 为 `fb38736bbf8ac69eb694095e62302f73233e39df42cd2d38e3dd1284e2f02558` | `agent-core/database.rs` | 保障 | 高 | 手机队列状态不可证明 | Rust/Kotlin/Swift epoch 与 Schema identity |
 | MED-R-003 | 两个数据库都先复制 main/WAL/journal 私有 generation，再验证 source 未变化 | 两个 `database.rs` | 保障 | 高 | 启动验证可能读取跨时刻混合状态或写源库 | WAL、并发变化、symlink、cleanup |
 | MED-R-004 | Server open 使用 WAL、foreign keys、busy timeout，并在业务前做 integrity/FK | `database.rs`、doctor | 保障 | 高 | 并发/损坏行为变得不可预测 | PRAGMA、busy 5s、corruption、FK violation |
 | MED-R-005 | runtime lock 同时绑定数据库与 DATA_DIR，防止两个 Server 管同一状态 | `runtime_lock.rs` | 保障 | 高 | 双实例可同时提交、清理和改账户路径 | 同 DB/不同 data、同 data/不同 DB、symlink/hardlink |
 | MED-R-006 | doctor 校验 Schema、integrity/FK、rollback write probe、storage write cleanup，为数据树普通文件计算 Hash 后核对 DB blob、durable part 与 active commit，并拒绝尚未收口的无引用 blob 行 | `doctor.rs` | 开发运维 | 高 | 上线与故障只能靠零散检查，损坏 blob 或待回收意图可能长期潜伏 | missing/mutated、unknown commit、orphan blob、read-only；先运行 `reconcile scan` 再复查 |
-| MED-R-007 | `/health`/live 只证明进程；ready 同时探测 DB 和 storage | `routes.rs` | 开发运维 | 中 | 负载均衡无法区分可响应与可写服务 | DB down、storage probe fail、恢复 |
+| MED-R-007 | `/healthz` 为最小存活检查；`/readyz` 检查 DB/storage；详细诊断要求管理员 | Foundation Runtime | 开发运维 | 中 | 负载均衡需区分可响应与可写服务 | 匿名无内部信息、诊断认证、任务监督 |
 | MED-R-008 | Prometheus 文本只暴露聚合 user/device/resource/bytes/upload 指标 | `metrics.rs` | 开发运维 | 中 | 容量不可监控；若加 labels 不慎会泄漏用户名/路径 | content type、token、无高基数/Secret |
 | MED-R-009 | release identity 绑定 source revision、target、API、encoding、Schema、FFI header 与 Web bytes | `release.rs` | 保障 | 高 | 二进制、移动 ABI 和 Web 可混代 | identity JSON/contract hash、单字段篡改 |
 | MED-R-010 | 全树 manifest 精确约束文件、mode、size、SHA，拒绝额外/缺失/链接 | `release.rs`、manifest writer | 保障 | 高 | 安装树内容无法证明 | missing/extra/tamper/symlink/hardlink/mode |

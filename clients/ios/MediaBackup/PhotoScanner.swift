@@ -74,7 +74,7 @@ struct PhotoScanner {
             ])
             for resource in PHAssetResource.assetResources(for: asset) {
                 let resourceId = "\(resource.type.rawValue):\(resource.originalFilename)"
-                guard agent.needs(asset: asset.localIdentifier, resource: resourceId, modifiedMs: modifiedMs) else { continue }
+                guard try agent.needs(asset: asset.localIdentifier, resource: resourceId, modifiedMs: modifiedMs) else { continue }
                 let output = sourceRoot.appendingPathComponent(UUID().uuidString)
                 try await export(resource, to: output)
                 let size = ((try FileManager.default.attributesOfItem(atPath: output.path)[.size]) as? NSNumber)?.uint64Value ?? 0
@@ -99,7 +99,7 @@ struct PhotoScanner {
                 queued += 1
             }
             let thumbnailId = "\(asset.localIdentifier)#thumbnail-v1"
-            if agent.needs(asset: asset.localIdentifier, resource: thumbnailId, modifiedMs: modifiedMs),
+            if try agent.needs(asset: asset.localIdentifier, resource: thumbnailId, modifiedMs: modifiedMs),
                let thumbnail = try await thumbnail(for: asset) {
                 let output = sourceRoot.appendingPathComponent("\(UUID().uuidString).thumbnail.jpg")
                 try thumbnail.write(to: output, options: .atomic)

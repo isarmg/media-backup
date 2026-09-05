@@ -7,12 +7,17 @@ use std::{
 use media_backup_protocol::UploadPartSpec;
 use thiserror::Error;
 
+pub const MAX_PART_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_CONTENT_PARTS: usize = 4096;
+
 #[derive(Debug, Error)]
 pub enum ContentError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("part size must be greater than zero")]
+    #[error("part size must be between 1 byte and 64 MiB")]
     InvalidPartSize,
+    #[error("content exceeds the 4096-part budget")]
+    TooManyParts,
     #[error("content size or BLAKE3 hash does not match")]
     Integrity,
 }
@@ -40,18 +45,32 @@ pub fn prepare_file(
     output_dir: &Path,
     part_size: usize,
 ) -> Result<PreparedContent, ContentError> {
-    if part_size == 0 {
+    if part_size == 0 || part_size > MAX_PART_BYTES {
         return Err(ContentError::InvalidPartSize);
     }
-    fs::create_dir_all(output_dir)?;
     let mut reader = File::open(source)?;
+    if reader.metadata()?.len().div_ceil(part_size as u64).max(1) > MAX_CONTENT_PARTS as u64 {
+        return Err(ContentError::TooManyParts);
+    }
+    fs::create_dir_all(output_dir)?;
     let mut content_hasher = blake3::Hasher::new();
     let mut content_size = 0_u64;
     let mut parts = Vec::new();
     let mut index = 0_u32;
 
     loop {
-        let mut bytes = vec![0_u8; part_size];
+        if parts.len() == MAX_CONTENT_PARTS {
+            let mut probe = [0];
+            if reader.read(&mut probe)? != 0 {
+                return Err(ContentError::TooManyParts);
+            }
+            break;
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(part_size)
+            .map_err(|_| std::io::Error::other("part allocation refused"))?;
+        bytes.resize(part_size, 0_u8);
         let mut filled = 0_usize;
         while filled < part_size {
             let read = reader.read(&mut bytes[filled..])?;
@@ -66,6 +85,9 @@ pub fn prepare_file(
         bytes.truncate(filled);
         content_hasher.update(&bytes);
         content_size += filled as u64;
+        parts
+            .try_reserve(1)
+            .map_err(|_| std::io::Error::other("part metadata allocation refused"))?;
         let path = output_dir.join(format!("{index:08}.part"));
         let mut output = File::create(&path)?;
         output.write_all(&bytes)?;
@@ -131,6 +153,28 @@ pub fn restore_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preparation_budgets_fail_before_creating_output() {
+        let root = temporary("prepare-budgets");
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source");
+        let output = root.join("parts");
+        for size in [0, MAX_PART_BYTES + 1, usize::MAX] {
+            assert!(matches!(
+                prepare_file(&source, &output, size),
+                Err(ContentError::InvalidPartSize)
+            ));
+            assert!(!output.exists());
+        }
+        fs::write(&source, vec![1; MAX_CONTENT_PARTS + 1]).unwrap();
+        assert!(matches!(
+            prepare_file(&source, &output, 1),
+            Err(ContentError::TooManyParts)
+        ));
+        assert!(!output.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn temporary(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(

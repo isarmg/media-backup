@@ -24,11 +24,7 @@ const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 pub(crate) const PRODUCTION_RELEASE_ROOT: &str = "/opt/isarmg/media-backup/releases/0.2.0";
 const RELOCATABLE_RELEASE_SUFFIX: &str = "opt/isarmg/media-backup/releases/0.2.0";
 
-const MOBILE_FFI_HEADER: &[u8] = include_bytes!("../../mobile-ffi/include/media_backup_v0_2_r1.h");
-// 发布身份直接绑定当前客户端源码，而不是信任另行复制的 Web 文件。
-const ADMIN_HTML: &[u8] = include_bytes!("../../../clients/web/dist/index.html");
-const ADMIN_JS: &[u8] = include_bytes!("../../../clients/web/dist/assets/admin.js");
-const ADMIN_CSS: &[u8] = include_bytes!("../../../clients/web/dist/assets/admin.css");
+const MOBILE_FFI_HEADER: &[u8] = include_bytes!("../../mobile-ffi/include/media_backup_ffi_v2.h");
 
 const EXPECTED_DIRECTORIES: &[&str] = &[
     "bin",
@@ -48,7 +44,7 @@ const EXPECTED_FILES: &[(&str, u32)] = &[
     ("config/media-backup.env.example", 0o644),
     ("docs/feature-inventory-and-tradeoffs.md", 0o644),
     ("README.md", 0o644),
-    ("include/media_backup_v0_2_r1.h", 0o644),
+    ("include/media_backup_ffi_v2.h", 0o644),
     ("scripts/run-server-wsl.sh", 0o755),
     ("scripts/setup-wsl.sh", 0o755),
     ("scripts/start-server-wsl.sh", 0o755),
@@ -56,6 +52,9 @@ const EXPECTED_FILES: &[(&str, u32)] = &[
     ("share/web/index.html", 0o644),
     ("share/web/assets/admin.js", 0o644),
     ("share/web/assets/admin.css", 0o644),
+    ("share/web/assets/MapleMono.woff2", 0o644),
+    ("share/web/assets/MapleMono-Italic.woff2", 0o644),
+    ("share/web/assets/MapleMono-OFL.txt", 0o644),
     ("systemd/media-backup.service", 0o644),
 ];
 
@@ -95,11 +94,7 @@ struct ReleaseManifest {
 
 pub(crate) fn identity() -> ReleaseIdentity {
     let mobile_ffi_header_sha256 = sha256_hex(MOBILE_FFI_HEADER);
-    let web_assets_sha256 = bundle_sha256(&[
-        ("share/web/assets/admin.css", ADMIN_CSS),
-        ("share/web/assets/admin.js", ADMIN_JS),
-        ("share/web/index.html", ADMIN_HTML),
-    ]);
+    let web_assets_sha256 = bundle_sha256(crate::web_assets::RELEASE_FILES);
     let contract = format!(
         "product={PRODUCT}\nversion={VERSION}\napi_version={API_VERSION}\nstorage_encoding={STORAGE_ENCODING}\nserver_schema_revision={}\nserver_schema_sha256={}\nmobile_ffi_epoch={MOBILE_FFI_EPOCH}\nmobile_ffi_header_sha256={mobile_ffi_header_sha256}\nweb_assets_sha256={web_assets_sha256}\n",
         crate::database::CURRENT_SCHEMA_REVISION,
@@ -310,7 +305,7 @@ fn verify_with_ownership(root: &Path, require_root_owned: bool) -> Result<Releas
     );
 
     let header = read_small_regular_file(
-        &root.join("include/media_backup_v0_2_r1.h"),
+        &root.join("include/media_backup_ffi_v2.h"),
         0o644,
         1024 * 1024,
         require_root_owned,
@@ -320,38 +315,25 @@ fn verify_with_ownership(root: &Path, require_root_owned: bool) -> Result<Releas
         sha256_hex(&header) == binary_identity.mobile_ffi_header_sha256,
         "release FFI header differs from the binary epoch fingerprint"
     );
-    let web_assets_sha256 = bundle_sha256(&[
-        (
-            "share/web/assets/admin.css",
-            &read_small_regular_file(
-                &root.join("share/web/assets/admin.css"),
+    let web_files = crate::web_assets::RELEASE_FILES
+        .iter()
+        .map(|(path, _)| {
+            read_small_regular_file(
+                &root.join(path),
                 0o644,
                 4 * 1024 * 1024,
                 require_root_owned,
-                "admin CSS",
-            )?,
-        ),
-        (
-            "share/web/assets/admin.js",
-            &read_small_regular_file(
-                &root.join("share/web/assets/admin.js"),
-                0o644,
-                4 * 1024 * 1024,
-                require_root_owned,
-                "admin JavaScript",
-            )?,
-        ),
-        (
-            "share/web/index.html",
-            &read_small_regular_file(
-                &root.join("share/web/index.html"),
-                0o644,
-                4 * 1024 * 1024,
-                require_root_owned,
-                "admin HTML",
-            )?,
-        ),
-    ]);
+                "admin Web asset",
+            )
+            .map(|bytes| (*path, bytes))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let web_assets_sha256 = bundle_sha256(
+        &web_files
+            .iter()
+            .map(|(path, bytes)| (*path, bytes.as_slice()))
+            .collect::<Vec<_>>(),
+    );
     ensure!(
         web_assets_sha256 == binary_identity.web_assets_sha256,
         "release web assets differ from the binary embedded-assets fingerprint"
@@ -730,18 +712,18 @@ mod tests {
         assert_eq!(identity.target, env!("MEDIA_BACKUP_BUILD_TARGET"));
         assert_eq!(identity.api_version, media_backup_protocol::API_VERSION);
         assert_eq!(identity.storage_encoding, "plain-v1");
-        assert_eq!(identity.server_schema_revision, 1);
+        assert_eq!(identity.server_schema_revision, 2);
         assert_eq!(
             identity.mobile_ffi_header_sha256,
-            "e56615f40b4b968dd4a8775e50ba2dfd9e67784e6ca19f4e3715ca99c541ced9"
+            "39925fae2178b825f702fa1a7e2b9bd7fd08a2d00dc73e039b066e9ad7073e21"
         );
         assert_eq!(
             identity.web_assets_sha256,
-            "b830dcfc692f10bc23694eaf425fbe013b85245d04041398cb5e8bc4e7dc81aa"
+            "94895edb95ee77d747c0f02599f2163aec96e557dec726a9cfeceba68764a7a2"
         );
         assert_eq!(
             identity.release_contract_sha256,
-            "58614dbf5e928423d10e6977bb99e3e53fd03b47678defd9e3b7a204e8540a9d"
+            "6b292b0d8819cb71b829bd6760ad0af71b348ec740818bb1563038177b660e99"
         );
     }
 

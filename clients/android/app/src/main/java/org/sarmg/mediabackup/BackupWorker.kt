@@ -64,7 +64,7 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
             }
             val nativeConfig = MobileContractV02.putIdentity(JSONObject())
                 .put("part_size", 16 * 1024 * 1024)
-            val handle = NativeBridgeV02.openV02R1(
+            val handle = NativeBridgeV2.open(
                 applicationContext.getDatabasePath(MobileContractV02.DATABASE_FILENAME).absolutePath,
                 nativeConfig.toString(),
             )
@@ -104,7 +104,7 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
                         return Result.failure(workDataOf(OUTPUT_MESSAGE to "备份已停止"))
                     }
                     val envelope = MobileContractV02.requireEnvelope(
-                        NativeBridgeV02.nextV02R1(handle, stagingRoot.absolutePath),
+                        NativeBridgeV2.next(handle, stagingRoot.absolutePath),
                     )
                     if (envelope.isNull("value")) {
                         queueDrained = true
@@ -142,7 +142,7 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
                     return Result.retry()
                 }
             } finally {
-                NativeBridgeV02.closeV02R1(handle)
+                NativeBridgeV2.close(handle)
             }
             snapshot = snapshot.copy(
                 state = "success",
@@ -175,11 +175,11 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
         try {
             val create = api.createUpload(job.getJSONObject("request").toString())
             if (create.getString("disposition") == "complete") {
-                MobileContractV02.requireEnvelope(NativeBridgeV02.markCompleteV02R1(handle, jobId))
+                MobileContractV02.requireEnvelope(NativeBridgeV2.markComplete(handle, jobId))
                 return 0L
             }
             val uploadId = create.getString("upload_id")
-            MobileContractV02.requireEnvelope(NativeBridgeV02.markUploadV02R1(handle, jobId, uploadId))
+            MobileContractV02.requireEnvelope(NativeBridgeV2.markUpload(handle, jobId, uploadId))
             val files = mutableMapOf<Int, File>()
             val localParts = job.getJSONArray("local_parts")
             for (position in 0 until localParts.length()) {
@@ -193,14 +193,14 @@ class BackupWorker(context: Context, parameters: WorkerParameters) : CoroutineWo
                 val file = files[index] ?: error("缺少本地分块 $index")
                 api.uploadPart(uploadId, index, file)
                 uploadedBytes += file.length()
-                MobileContractV02.requireEnvelope(NativeBridgeV02.markPartV02R1(handle, jobId, index))
+                MobileContractV02.requireEnvelope(NativeBridgeV2.markPart(handle, jobId, index))
             }
             api.complete(uploadId)
-            MobileContractV02.requireEnvelope(NativeBridgeV02.markCompleteV02R1(handle, jobId))
+            MobileContractV02.requireEnvelope(NativeBridgeV2.markComplete(handle, jobId))
             return uploadedBytes
         } catch (error: Exception) {
             MobileContractV02.requireEnvelope(
-                NativeBridgeV02.markFailedV02R1(handle, jobId, error.message ?: "上传失败", true),
+                NativeBridgeV2.markFailed(handle, jobId, error.message ?: "上传失败", true),
             )
             throw error
         }

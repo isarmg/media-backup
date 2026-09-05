@@ -21,28 +21,23 @@ pub async fn hash_current_password(password: String) -> Result<String, AppError>
     })?
 }
 
-pub async fn verify_current_password(password: String, encoded_hash: String) -> bool {
-    tokio::task::spawn_blocking(move || verify_current_password_blocking(&password, &encoded_hash))
-        .await
-        .unwrap_or(false)
-}
-
 pub(crate) fn verify_current_password_blocking(password: &str, encoded_hash: &str) -> bool {
     sarmg_admin_auth::verify_password(password, encoded_hash)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{hash_current_password, verify_current_password};
+    use super::hash_current_password;
 
     #[tokio::test]
     async fn hashes_and_verifies_passwords() {
         let hash = hash_current_password("correct-horse-battery-staple".to_owned())
             .await
             .expect("password should hash");
-        assert!(
-            verify_current_password("correct-horse-battery-staple".to_owned(), hash.clone()).await
-        );
-        assert!(!verify_current_password("wrong-password".to_owned(), hash).await);
+        assert!(sarmg_admin_auth::verify_password(
+            "correct-horse-battery-staple",
+            &hash
+        ));
+        assert!(!sarmg_admin_auth::verify_password("wrong-password", &hash));
     }
 }

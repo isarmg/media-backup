@@ -17,16 +17,19 @@ mod runtime_lock;
 mod storage;
 mod trusted_proxy;
 mod upload_commit;
+mod web_assets;
 
-#[cfg(test)]
-mod browser_session_tests;
 #[cfg(test)]
 mod database_tests;
 
 use anyhow::{Context, Result};
 use config::Config;
 use routes::AppState;
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use storage::LocalStorage;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -70,16 +73,7 @@ async fn main() -> Result<()> {
                 runtime_lock::RuntimeLock::acquire(&config.database_url, &config.data_dir)?;
             let pool = database::connect(&config.database_url).await?;
             let storage = LocalStorage::new(config.data_dir.clone()).await?;
-            let state = AppState {
-                pool,
-                storage,
-                config: config.clone(),
-                login_admission: login_admission::LoginAdmission::default(),
-                upload_admission: routes::UploadAdmission::new(
-                    config.upload_global_concurrency,
-                    config.upload_per_account_concurrency,
-                ),
-            };
+            let state = build_state(&config, pool, storage).await?;
             println!(
                 "{}",
                 serde_json::to_string(&upload_commit::reconcile_all(&state).await?)?
@@ -96,17 +90,7 @@ async fn main() -> Result<()> {
     let _runtime_lock = runtime_lock::RuntimeLock::acquire(&config.database_url, &config.data_dir)?;
     let pool = database::connect(&config.database_url).await?;
     let storage = LocalStorage::new(config.data_dir.clone()).await?;
-    let state = AppState {
-        pool,
-        storage,
-        config: config.clone(),
-        login_admission: login_admission::LoginAdmission::default(),
-        upload_admission: routes::UploadAdmission::new(
-            config.upload_global_concurrency,
-            config.upload_per_account_concurrency,
-        ),
-    };
-    admin::ensure_admin_user(&state).await?;
+    let state = build_state(&config, pool, storage).await?;
     let reconciliation = upload_commit::reconcile_all(&state).await?;
     info!(
         recovered = reconciliation.recovered,
@@ -116,35 +100,119 @@ async fn main() -> Result<()> {
         errors = reconciliation.errors,
         "upload commit reconciliation finished"
     );
-    let reconcile_state = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        interval.tick().await;
-        loop {
-            interval.tick().await;
-            match upload_commit::reconcile_all(&reconcile_state).await {
-                Ok(report) => info!(
-                    recovered = report.recovered,
-                    marked_unknown = report.marked_unknown,
-                    orphan_stages_removed = report.orphan_stages_removed,
-                    orphan_blobs_removed = report.orphan_blobs_removed,
-                    errors = report.errors,
-                    "periodic upload reconciliation finished"
-                ),
-                Err(error) => tracing::error!(?error, "periodic upload reconciliation failed"),
-            }
-        }
-    });
-    let app = routes::router(state).layer(TraceLayer::new_for_http());
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
+    let health_pool = state.pool.clone();
+    let health_storage = state.storage.clone();
+    let reconcile_state = state.clone();
+    let runtime =
+        sarmg_server_runtime::ServerRuntime::builder(sarmg_server_runtime::ProductDescriptor {
+            id: "media-backup".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            foundation_revision: "394c0201d85c5a331cded87db4af8fa01f6b6258".into(),
+            profile: "server-control-plane".into(),
+            capabilities: vec![
+                "admin-persistent".into(),
+                "server-runtime".into(),
+                "server-health".into(),
+                "mobile-ffi".into(),
+            ],
+        })
+        .with_schema_identity(database::current_schema_identity()?)
+        .register_health_check(
+            "database",
+            sarmg_server_runtime::health_check(move || {
+                let pool = health_pool.clone();
+                async move {
+                    sqlx::query_scalar::<_, i64>("SELECT 1")
+                        .fetch_one(&pool)
+                        .await
+                        .is_ok_and(|value| value == 1)
+                }
+            }),
+        )
+        .register_health_check(
+            "storage",
+            sarmg_server_runtime::health_check(move || {
+                let storage = health_storage.clone();
+                async move { storage.probe_readiness().await.is_ok() }
+            }),
+        )
+        .register_background_task(
+            "upload-reconciliation",
+            sarmg_server_runtime::TaskCriticality::Degrading,
+            move |mut shutdown| async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(120));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                interval.tick().await;
+                loop {
+                    tokio::select! {
+                        changed = shutdown.changed() => {
+                            if changed.is_err() || *shutdown.borrow() { return Ok(()); }
+                        }
+                        _ = interval.tick() => {
+                            upload_commit::reconcile_all(&reconcile_state)
+                                .await
+                                .map_err(|error| error.to_string())?;
+                        }
+                    }
+                }
+            },
+        )
+        .build()
+        .await?;
+    let runtime_handle = runtime.handle();
+    let app = routes::router(state, runtime_handle.clone())?.layer(TraceLayer::new_for_http());
     info!(address = %config.bind, "media backup server listening");
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await?;
+    runtime.serve(listener, app).await?;
     Ok(())
+}
+
+async fn build_state(
+    config: &Config,
+    pool: sqlx::SqlitePool,
+    storage: LocalStorage,
+) -> Result<AppState> {
+    let administrator = Arc::new(sarmg_admin_core::AdministratorService::new(
+        sarmg_admin_sqlite::SqliteAdministratorStore::new(pool.clone()),
+    ));
+    use sarmg_admin_core::AdministratorStore as _;
+    administrator.store().validate_all_administrators().await?;
+    if administrator.store().administrator_count().await? == 0 {
+        let password = config
+            .bootstrap_admin_password
+            .as_deref()
+            .context("BOOTSTRAP_ADMIN_PASSWORD is required while no administrators exist")?;
+        administrator
+            .bootstrap_administrator(
+                &config.bootstrap_admin_username,
+                password,
+                current_time_micros()?,
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+    }
+    let administrator_origin = if config.development {
+        sarmg_admin_auth::AdministratorOriginMode::LoopbackDevelopmentHttp
+    } else {
+        sarmg_admin_auth::AdministratorOriginMode::ProductionHttps
+    };
+    Ok(AppState {
+        pool,
+        storage,
+        config: config.clone(),
+        login_admission: login_admission::LoginAdmission::default(),
+        upload_admission: routes::UploadAdmission::new(
+            config.upload_global_concurrency,
+            config.upload_per_account_concurrency,
+        ),
+        administrator,
+        administrator_origin,
+    })
+}
+
+fn current_time_micros() -> Result<u64> {
+    let value = SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros();
+    u64::try_from(value).context("current time is outside SQLite range")
 }
 
 #[derive(Debug, PartialEq, Eq)]

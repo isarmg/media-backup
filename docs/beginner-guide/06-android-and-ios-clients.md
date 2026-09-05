@@ -60,8 +60,16 @@ Token 存 Keychain。当前恢复路径检查 HTTP 成功并把临时下载文�
 
 ## FFI 规则
 
-当前 C ABI 仅有 `mb_v0_2_r1_*`，header 仅有 `media_backup_v0_2_r1.h`。输入 UTF-8/JSON 的所有权和
-输出 free 函数固定；panic 不穿越 FFI。Kotlin JNI 类和 Swift `_silgen_name` 必须由静态门禁逐项匹配。
+当前 C ABI 为 Foundation revision 2：`mb_*_v2` 接收显式指针/长度和 `SarmgFfiResultV2` 输出，返回状态码。
+生成 Header 只有 `media_backup_ffi_v2.h`；结果中的字节和错误消息均有明确长度，必须通过
+`sarmg_ffi_result_free_v2` 释放整个结果，不能复制后重复释放。旧 NUL 字符串入口与线程局部错误已删除。
+Swift 通过 XCFramework 的 `MediaBackupRust` C module 导入 Header，不再使用手写 `_silgen_name`；
+Kotlin 使用 `NativeBridgeV2`，JNI 失败抛出 Foundation 映射的异常，不把默认值当成功。两个宿主都先验证
+ABI revision；业务配置仍严格验证当前 product/version/revision/state_epoch，ABI revision 不等于状态 epoch。
+Rust panic 经共享边界转成 255，panic 内容不写入宿主日志；`panic=abort` 构建会被拒绝。
+移动 `part_size` 限制为 1 字节至 64 MiB，单文件最多 4096 个分块；超限配置在创建数据库前拒绝，
+已知超限文件在创建分块目录前拒绝。分块缓冲区使用可失败的分配，避免配置触发无界分配。
+本机 C 动态库验收和 Rust 测试已通过，Android/iOS 原生运行验收必须另行执行，不能用静态门禁代替。
 
 ## UI 可观察状态
 

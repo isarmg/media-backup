@@ -10,6 +10,10 @@ mod database;
 use media_backup_crypto::prepare_file;
 use media_backup_protocol::{CreateUploadRequest, MediaKind, StorageEncoding};
 use rusqlite::{params, Connection, OptionalExtension};
+use sarmg_agent_fs_safety::{
+    bounded_directory_inventory, sync_directory, sync_file_and_parent, InventoryLimits,
+    PrivateDirectory, RelativePath,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -32,6 +36,8 @@ pub enum AgentError {
     InvalidMediaKind(String),
     #[error("invalid mobile v0.2 contract: {0}")]
     InvalidContract(String),
+    #[error("unsafe staging state: {0}")]
+    Staging(#[from] sarmg_agent_fs_safety::Error),
 }
 
 pub const MOBILE_PRODUCT: &str = "media-backup";
@@ -59,9 +65,9 @@ impl AgentConfig {
             self.revision,
             &self.state_epoch,
         )?;
-        if self.part_size == 0 {
+        if self.part_size == 0 || self.part_size > media_backup_crypto::MAX_PART_BYTES {
             return Err(AgentError::InvalidContract(
-                "part_size must be greater than zero".to_owned(),
+                "part_size must be between 1 byte and 64 MiB".to_owned(),
             ));
         }
         Ok(())
@@ -115,6 +121,7 @@ pub struct PreparedJob {
     pub revision: u32,
     pub state_epoch: String,
     pub job_id: String,
+    pub generation_id: String,
     pub request: CreateUploadRequest,
     pub local_parts: Vec<LocalPart>,
 }
@@ -166,7 +173,35 @@ impl PreparedJob {
             &self.application_version,
             self.revision,
             &self.state_epoch,
-        )
+        )?;
+        Uuid::parse_str(&self.job_id)
+            .map_err(|_| AgentError::InvalidContract("job_id must be a UUID".to_owned()))?;
+        Uuid::parse_str(&self.generation_id)
+            .map_err(|_| AgentError::InvalidContract("generation_id must be a UUID".to_owned()))?;
+        for part in &self.local_parts {
+            let path = Path::new(&part.path);
+            let parent = path.parent().ok_or_else(|| {
+                AgentError::InvalidContract("part path has no generation directory".to_owned())
+            })?;
+            if parent.file_name().and_then(|v| v.to_str()) != Some(&self.generation_id)
+                || parent
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|v| v.to_str())
+                    != Some(&self.job_id)
+                || parent
+                    .parent()
+                    .and_then(Path::parent)
+                    .and_then(Path::file_name)
+                    .and_then(|v| v.to_str())
+                    != Some(MOBILE_STAGING_DIRECTORY)
+            {
+                return Err(AgentError::InvalidContract(
+                    "part path is outside its staging generation".to_owned(),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -205,7 +240,7 @@ impl Agent {
         let connection = self
             .connection
             .lock()
-            .expect("agent database mutex poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let existing: Option<(String, i64)> = connection
             .query_row(
                 "SELECT state, modified_ms FROM jobs WHERE source_asset_id = ?1 AND source_resource_id = ?2",
@@ -224,7 +259,7 @@ impl Agent {
         let connection = self
             .connection
             .lock()
-            .expect("agent database mutex poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let existing: Option<(String, i64, u64, String)> = connection
             .query_row(
                 "SELECT id, modified_ms, source_size, state FROM jobs WHERE source_asset_id = ?1 AND source_resource_id = ?2",
@@ -297,7 +332,7 @@ impl Agent {
             let connection = self
                 .connection
                 .lock()
-                .expect("agent database mutex poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let existing: Option<String> = connection
                 .query_row(
                     "SELECT prepared_json FROM jobs WHERE state = 'ready' ORDER BY updated_at_ms LIMIT 1",
@@ -317,7 +352,7 @@ impl Agent {
             let connection = self
                 .connection
                 .lock()
-                .expect("agent database mutex poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let row: Option<(String, EnqueueResource)> = connection
                 .query_row(
                     r#"
@@ -388,7 +423,10 @@ impl Agent {
             "other" => MediaKind::Other,
             value => return Err(AgentError::InvalidMediaKind(value.to_owned())),
         };
-        let output_dir = staging_root.join("prepared").join(job_id);
+        let staging = PrivateDirectory::create(staging_root)?;
+        let generation_id = Uuid::new_v4().to_string();
+        let relative_generation = RelativePath::new(Path::new(job_id).join(&generation_id))?;
+        let output_dir = staging.resolve(&relative_generation);
         let content = prepare_file(
             Path::new(&input.file_path),
             &output_dir,
@@ -418,6 +456,7 @@ impl Agent {
             revision: MOBILE_REVISION,
             state_epoch: MOBILE_STATE_EPOCH.to_owned(),
             job_id: job_id.to_owned(),
+            generation_id: generation_id.clone(),
             request,
             local_parts: content
                 .parts
@@ -429,14 +468,20 @@ impl Agent {
                 .collect(),
         };
         let prepared_json = serde_json::to_string(&prepared)?;
+        for part in &prepared.local_parts {
+            sync_file_and_parent(Path::new(&part.path))?;
+        }
+        staging.sync()?;
         let connection = self
             .connection
             .lock()
-            .expect("agent database mutex poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         connection.execute(
             "UPDATE jobs SET state = 'ready', prepared_json = ?2, error = NULL, updated_at_ms = ?3 WHERE id = ?1",
             params![job_id, prepared_json, now_ms()],
         )?;
+        drop(connection);
+        gc_staging_generations(staging.path(), job_id, &generation_id)?;
         if input.remove_source_after_prepare {
             let _ = fs::remove_file(&input.file_path);
         }
@@ -454,7 +499,7 @@ impl Agent {
         let connection = self
             .connection
             .lock()
-            .expect("agent database mutex poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         connection.execute(
             "INSERT INTO job_parts(job_id, part_index, uploaded) VALUES (?1, ?2, 1) ON CONFLICT(job_id, part_index) DO UPDATE SET uploaded = 1",
             params![job_id, index],
@@ -467,7 +512,7 @@ impl Agent {
             let connection = self
                 .connection
                 .lock()
-                .expect("agent database mutex poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             connection
                 .query_row(
                     "SELECT prepared_json FROM jobs WHERE id = ?1",
@@ -511,7 +556,7 @@ impl Agent {
         let connection = self
             .connection
             .lock()
-            .expect("agent database mutex poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let retries: u32 = connection
             .query_row(
                 "SELECT retry_count FROM jobs WHERE id = ?1",
@@ -534,7 +579,7 @@ impl Agent {
         let connection = self
             .connection
             .lock()
-            .expect("agent database mutex poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut statement =
             connection.prepare("SELECT state, COUNT(*) FROM jobs GROUP BY state")?;
         let mut rows = statement.query([])?;
@@ -559,12 +604,44 @@ impl Agent {
         let connection = self
             .connection
             .lock()
-            .expect("agent database mutex poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if connection.execute(sql, values)? == 0 {
             return Err(AgentError::NotFound);
         }
         Ok(())
     }
+}
+
+fn gc_staging_generations(
+    staging_root: &Path,
+    job_id: &str,
+    active_generation: &str,
+) -> Result<(), AgentError> {
+    let job = RelativePath::new(job_id)?;
+    let job_directory = staging_root.join(job.as_path());
+    for entry in fs::read_dir(&job_directory)? {
+        let entry = entry?;
+        if entry.file_name().to_str() == Some(active_generation) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(AgentError::InvalidContract(
+                "staging job contains an unsafe generation entry".to_owned(),
+            ));
+        }
+        bounded_directory_inventory(
+            &entry.path(),
+            InventoryLimits {
+                max_entries: 100_000,
+                max_total_bytes: 1 << 40,
+            },
+        )?;
+        fs::remove_dir_all(entry.path())?;
+    }
+    sync_directory(&job_directory)?;
+    sync_directory(staging_root)?;
+    Ok(())
 }
 
 fn validate_persisted_jobs(connection: &Connection) -> Result<(), AgentError> {
@@ -653,7 +730,8 @@ mod tests {
                 remove_source_after_prepare: true,
             })
             .unwrap();
-        let prepared = agent.next_prepared(&root).unwrap().unwrap();
+        let staging = root.join(MOBILE_STAGING_DIRECTORY);
+        let prepared = agent.next_prepared(&staging).unwrap().unwrap();
         assert_eq!(prepared.request.storage_encoding, StorageEncoding::PlainV1);
         assert_eq!(prepared.request.content_size, original.len() as u64);
         assert_eq!(
@@ -679,6 +757,44 @@ mod tests {
         assert!(!source.exists());
         drop(agent);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prepare_publishes_a_new_generation_then_collects_the_old_one() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.jpg");
+        let staging = root.path().join(MOBILE_STAGING_DIRECTORY);
+        fs::write(&source, b"first generation").unwrap();
+        let agent = Agent::open(root.path().join("agent.sqlite3"), current_config(8)).unwrap();
+        let mut input = current_resource();
+        input.file_path = source.to_string_lossy().into_owned();
+        input.source_size = 16;
+        input.modified_ms = 1;
+        agent.enqueue(input.clone()).unwrap();
+        let first = agent.next_prepared(&staging).unwrap().unwrap();
+        let first_directory = Path::new(&first.local_parts[0].path)
+            .parent()
+            .unwrap()
+            .to_path_buf();
+
+        fs::write(&source, b"second generation").unwrap();
+        input.source_size = 17;
+        input.modified_ms = 2;
+        agent.enqueue(input).unwrap();
+        let second = agent.next_prepared(&staging).unwrap().unwrap();
+        let second_directory = Path::new(&second.local_parts[0].path).parent().unwrap();
+
+        assert_ne!(first.generation_id, second.generation_id);
+        assert!(!first_directory.exists());
+        assert!(second_directory.exists());
+        assert_eq!(
+            second_directory
+                .parent()
+                .unwrap()
+                .file_name()
+                .and_then(|value| value.to_str()),
+            Some(second.job_id.as_str())
+        );
     }
 
     #[test]
@@ -925,7 +1041,10 @@ mod tests {
                 remove_source_after_prepare: false,
             })
             .unwrap();
-        agent.next_prepared(root.path()).unwrap().unwrap();
+        agent
+            .next_prepared(root.path().join(MOBILE_STAGING_DIRECTORY))
+            .unwrap()
+            .unwrap();
         agent
             .mark_upload(&job_id, &Uuid::new_v4().to_string())
             .unwrap();
@@ -954,7 +1073,10 @@ mod tests {
         input.file_path = source.to_string_lossy().into_owned();
         input.source_size = 15;
         let job_id = agent.enqueue(input).unwrap();
-        agent.next_prepared(root.path()).unwrap().unwrap();
+        agent
+            .next_prepared(root.path().join(MOBILE_STAGING_DIRECTORY))
+            .unwrap()
+            .unwrap();
         drop(agent);
 
         let connection = Connection::open(&database_path).unwrap();

@@ -99,6 +99,13 @@ pub(crate) async fn normalize_error_response(request: Request, next: Next) -> Re
         return response;
     }
     if response
+        .extensions()
+        .get::<sarmg_admin_axum::FoundationErrorResponse>()
+        .is_some()
+    {
+        return response;
+    }
+    if response
         .extensions_mut()
         .remove::<ExactErrorEnvelope>()
         .is_some()

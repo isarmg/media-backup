@@ -4,7 +4,7 @@ set -euo pipefail
 readonly product="media-backup-server"
 readonly version="0.2.0"
 readonly target="x86_64-unknown-linux-gnu"
-readonly release_contract_sha256="58614dbf5e928423d10e6977bb99e3e53fd03b47678defd9e3b7a204e8540a9d"
+readonly release_contract_sha256="9fce632357b12cfccf6f977c5bcc01d50d87a2ccc79ebf62ec60362b3ea6e30e"
 readonly service_user="isarmg-media"
 readonly service_group="isarmg-media"
 readonly app_dir="/opt/isarmg/media-backup"
@@ -160,12 +160,12 @@ expected_identity = {
     "target": "x86_64-unknown-linux-gnu",
     "api_version": "v2",
     "storage_encoding": "plain-v1",
-    "server_schema_revision": 1,
-    "server_schema_sha256": "2563e6afc3fff272d02b7a5615272cc773862243bfd15aec51655abf1d9c6b1c",
+    "server_schema_revision": 2,
+    "server_schema_sha256": "6415edde88228d508f1c0c7582f119c8fe869d2d78fd85129f359a5d748cbbc2",
     "mobile_ffi_epoch": "media-backup-mobile-v0.2-r1",
-    "mobile_ffi_header_sha256": "e56615f40b4b968dd4a8775e50ba2dfd9e67784e6ca19f4e3715ca99c541ced9",
-    "web_assets_sha256": "b830dcfc692f10bc23694eaf425fbe013b85245d04041398cb5e8bc4e7dc81aa",
-    "release_contract_sha256": "58614dbf5e928423d10e6977bb99e3e53fd03b47678defd9e3b7a204e8540a9d",
+    "mobile_ffi_header_sha256": "39925fae2178b825f702fa1a7e2b9bd7fd08a2d00dc73e039b066e9ad7073e21",
+    "web_assets_sha256": "94895edb95ee77d747c0f02599f2163aec96e557dec726a9cfeceba68764a7a2",
+    "release_contract_sha256": "6b292b0d8819cb71b829bd6760ad0af71b348ec740818bb1563038177b660e99",
 }
 expected_directories = {
     "bin", "config", "docs", "include", "scripts", "share", "share/web",
@@ -177,7 +177,7 @@ expected_files = {
     "config/media-backup.env.example": 0o644,
     "docs/feature-inventory-and-tradeoffs.md": 0o644,
     "README.md": 0o644,
-    "include/media_backup_v0_2_r1.h": 0o644,
+    "include/media_backup_ffi_v2.h": 0o644,
     "scripts/run-server-wsl.sh": 0o755,
     "scripts/setup-wsl.sh": 0o755,
     "scripts/start-server-wsl.sh": 0o755,
@@ -185,6 +185,9 @@ expected_files = {
     "share/web/index.html": 0o644,
     "share/web/assets/admin.js": 0o644,
     "share/web/assets/admin.css": 0o644,
+    "share/web/assets/MapleMono.woff2": 0o644,
+    "share/web/assets/MapleMono-Italic.woff2": 0o644,
+    "share/web/assets/MapleMono-OFL.txt": 0o644,
     "systemd/media-backup.service": 0o644,
 }
 
@@ -472,14 +475,12 @@ else
       'DATABASE_URL=sqlite:///var/lib/isarmg/media-backup/db/app.db' \
       'DATA_DIR=/var/lib/isarmg/media-backup/data' \
       'BIND=127.0.0.1:8080' \
-      'ADMIN_USERNAME=admin' \
-      "ADMIN_PASSWORD=$admin_password" \
+      'BOOTSTRAP_ADMIN_USERNAME=admin' \
+      "BOOTSTRAP_ADMIN_PASSWORD=$admin_password" \
       'MAX_PART_BYTES=67108864' \
       'REQUIRE_HTTPS=true' \
       'DEVELOPMENT=false' \
       'TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128' \
-      'ADMIN_SESSION_IDLE_SECONDS=1800' \
-      'ADMIN_SESSION_ABSOLUTE_SECONDS=43200' \
       "METRICS_TOKEN=$metrics_token" \
       'RUST_LOG=media_backup_server=info,tower_http=info' >"$config_path"
   ) 2>/dev/null; then

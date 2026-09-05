@@ -1,17 +1,27 @@
 import Foundation
+import MediaBackupRust
 
-@_silgen_name("mb_v0_2_r1_open") private func mediaBackupV02R1Open(_ databasePath: UnsafePointer<CChar>, _ configJSON: UnsafePointer<CChar>) -> UInt64
-@_silgen_name("mb_v0_2_r1_close") private func mediaBackupV02R1Close(_ handle: UInt64)
-@_silgen_name("mb_v0_2_r1_needs") private func mediaBackupV02R1Needs(_ handle: UInt64, _ asset: UnsafePointer<CChar>, _ resource: UnsafePointer<CChar>, _ modified: Int64) -> Bool
-@_silgen_name("mb_v0_2_r1_enqueue") private func mediaBackupV02R1Enqueue(_ handle: UInt64, _ input: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("mb_v0_2_r1_next") private func mediaBackupV02R1Next(_ handle: UInt64, _ staging: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("mb_v0_2_r1_mark_upload") private func mediaBackupV02R1MarkUpload(_ handle: UInt64, _ job: UnsafePointer<CChar>, _ upload: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("mb_v0_2_r1_mark_part") private func mediaBackupV02R1MarkPart(_ handle: UInt64, _ job: UnsafePointer<CChar>, _ index: UInt32) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("mb_v0_2_r1_mark_complete") private func mediaBackupV02R1MarkComplete(_ handle: UInt64, _ job: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("mb_v0_2_r1_mark_failed") private func mediaBackupV02R1MarkFailed(_ handle: UInt64, _ job: UnsafePointer<CChar>, _ error: UnsafePointer<CChar>, _ retryable: Bool) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("mb_v0_2_r1_stats") private func mediaBackupV02R1Stats(_ handle: UInt64) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("mb_v0_2_r1_last_error") private func mediaBackupV02R1LastError() -> UnsafePointer<CChar>?
-@_silgen_name("mb_v0_2_r1_string_free") private func mediaBackupV02R1StringFree(_ value: UnsafeMutablePointer<CChar>?)
+private func withUTF8<T>(_ text: String, _ body: (UnsafePointer<UInt8>?, Int) throws -> T) rethrows -> T {
+    try Array(text.utf8).withUnsafeBufferPointer { try body($0.baseAddress, $0.count) }
+}
+
+private func nativeCall(_ operation: (UnsafeMutablePointer<SarmgFfiResultV2>) -> Int32) throws -> (value: UInt64, data: Data) {
+    var result = SarmgFfiResultV2()
+    let status = operation(&result)
+    guard result.abi_revision == UInt32(SARMG_FFI_ABI_REVISION) else {
+        throw AgentFailure.message("Media Backup native result ABI mismatch")
+    }
+    defer { _ = sarmg_ffi_result_free_v2(&result) }
+    guard status == result.status, result.bytes.length <= Int(SARMG_FFI_MAX_OUTPUT_BYTES),
+          result.bytes.data != nil || result.bytes.length == 0 else {
+        throw AgentFailure.message("Media Backup native result is invalid")
+    }
+    let data = result.bytes.data.map { Data(bytes: $0, count: result.bytes.length) } ?? Data()
+    guard status == Int32(SARMG_FFI_OK) else {
+        throw AgentFailure.message(String(data: data, encoding: .utf8) ?? "Native operation failed")
+    }
+    return (result.value, data)
+}
 
 struct UploadPart: Codable {
     let index: UInt32
@@ -120,6 +130,9 @@ final class RustAgent {
     }()
 
     init(databasePath: String) throws {
+        guard mb_ffi_abi_revision() == UInt32(SARMG_FFI_ABI_REVISION) else {
+            throw AgentFailure.message("Media Backup native ABI mismatch")
+        }
         let config: [String: Any] = [
             "product": MobileContractV02.product,
             "application_version": MobileContractV02.applicationVersion,
@@ -128,85 +141,87 @@ final class RustAgent {
             "part_size": 16 * 1024 * 1024,
         ]
         let data = try JSONSerialization.data(withJSONObject: config)
-        let json = String(decoding: data, as: UTF8.self)
-        handle = databasePath.withCString { path in json.withCString { mediaBackupV02R1Open(path, $0) } }
-        if handle == 0 {
-            throw AgentFailure.message(mediaBackupV02R1LastError().map(String.init(cString:)) ?? "无法打开 Rust Agent")
-        }
-    }
-
-    deinit { mediaBackupV02R1Close(handle) }
-
-    func needs(asset: String, resource: String, modifiedMs: Int64) -> Bool {
-        asset.withCString { assetPointer in
-            resource.withCString { resourcePointer in
-                mediaBackupV02R1Needs(handle, assetPointer, resourcePointer, modifiedMs)
+        let opened = try nativeCall { output in
+            withUTF8(databasePath) { path, pathLength in
+                data.withUnsafeBytes { bytes in
+                    mb_open_v2(path, pathLength, bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count, output)
+                }
             }
         }
+        guard opened.value != 0 else { throw AgentFailure.message("Native open returned an invalid handle") }
+        handle = opened.value
+    }
+
+    deinit { _ = try? nativeCall { mb_close_v2(handle, $0) } }
+
+    func needs(asset: String, resource: String, modifiedMs: Int64) throws -> Bool {
+        let result = try nativeCall { output in
+            withUTF8(asset) { assetPointer, assetLength in
+                withUTF8(resource) { resourcePointer, resourceLength in
+                    mb_needs_v2(handle, assetPointer, assetLength, resourcePointer, resourceLength, modifiedMs, output)
+                }
+            }
+        }
+        guard result.value <= 1 else { throw AgentFailure.message("Native needs returned an invalid boolean") }
+        return result.value == 1
     }
 
     func enqueue(_ input: EnqueueInput) throws {
-        let json = String(decoding: try encoder.encode(input), as: UTF8.self)
-        let _: String? = try call { json.withCString { mediaBackupV02R1Enqueue(handle, $0) } }
+        let data = try encoder.encode(input)
+        let _: String? = try call { output in
+            data.withUnsafeBytes { bytes in mb_enqueue_v2(handle, bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count, output) }
+        }
     }
 
     func next(stagingRoot: String) throws -> PreparedJob? {
-        let job: PreparedJob? = try call { stagingRoot.withCString { mediaBackupV02R1Next(handle, $0) } }
+        let job: PreparedJob? = try call { output in
+            withUTF8(stagingRoot) { mb_next_v2(handle, $0, $1, output) }
+        }
         if let job {
-            try MobileContractV02.requireIdentity(
-                product: job.product,
-                applicationVersion: job.applicationVersion,
-                revision: job.revision,
-                stateEpoch: job.stateEpoch
-            )
+            try MobileContractV02.requireIdentity(product: job.product, applicationVersion: job.applicationVersion,
+                                                 revision: job.revision, stateEpoch: job.stateEpoch)
         }
         return job
     }
 
     func markUpload(job: String, upload: String) throws {
-        let _: EmptyValue? = try call {
-            job.withCString { jobPointer in upload.withCString { mediaBackupV02R1MarkUpload(handle, jobPointer, $0) } }
-        }
-    }
-
-    func markPart(job: String, index: UInt32) throws {
-        let _: EmptyValue? = try call { job.withCString { mediaBackupV02R1MarkPart(handle, $0, index) } }
-    }
-
-    func markComplete(job: String) throws {
-        let _: EmptyValue? = try call { job.withCString { mediaBackupV02R1MarkComplete(handle, $0) } }
-    }
-
-    func markFailed(job: String, error: String) {
-        let _: EmptyValue? = try? call {
-            job.withCString { jobPointer in
-                error.withCString { mediaBackupV02R1MarkFailed(handle, jobPointer, $0, true) }
+        let _: EmptyValue? = try call { output in
+            withUTF8(job) { jobPointer, jobLength in
+                withUTF8(upload) { mb_mark_upload_v2(handle, jobPointer, jobLength, $0, $1, output) }
             }
         }
     }
-
+    func markPart(job: String, index: UInt32) throws {
+        let _: EmptyValue? = try call { output in withUTF8(job) { mb_mark_part_v2(handle, $0, $1, index, output) } }
+    }
+    func markComplete(job: String) throws {
+        let _: EmptyValue? = try call { output in withUTF8(job) { mb_mark_complete_v2(handle, $0, $1, output) } }
+    }
+    func markFailed(job: String, error: String) {
+        let _: EmptyValue? = try? call { output in
+            withUTF8(job) { jobPointer, jobLength in
+                withUTF8(error) { mb_mark_failed_v2(handle, jobPointer, jobLength, $0, $1, 1, output) }
+            }
+        }
+    }
     func statsDescription() -> String {
-        let stats: JSONValue? = try? call { mediaBackupV02R1Stats(handle) }
+        let stats: JSONValue? = try? call { mb_stats_v2(handle, $0) }
         return stats.map { String(describing: $0) } ?? ""
     }
 
-    private func call<T: Decodable>(_ operation: () -> UnsafeMutablePointer<CChar>?) throws -> T? {
-        guard let pointer = operation() else { throw AgentFailure.message("Rust Agent 返回空值") }
-        defer { mediaBackupV02R1StringFree(pointer) }
-        let data = Data(String(cString: pointer).utf8)
+    private func call<T: Decodable>(_ operation: (UnsafeMutablePointer<SarmgFfiResultV2>) -> Int32) throws -> T? {
+        let data = try nativeCall(operation).data
         let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let expectedKeys = Set(["product", "application_version", "revision", "state_epoch", "ok", "value", "error"])
         guard raw.map({ Set($0.keys) }) == expectedKeys else {
-            throw AgentFailure.message("Rust Agent 返回了未知的 v0.2 envelope")
+            throw AgentFailure.message("Rust Agent returned an invalid current envelope")
         }
         let envelope = try decoder.decode(Envelope<T>.self, from: data)
-        try MobileContractV02.requireIdentity(
-            product: envelope.product,
-            applicationVersion: envelope.applicationVersion,
-            revision: envelope.revision,
-            stateEpoch: envelope.stateEpoch
-        )
-        if !envelope.ok { throw AgentFailure.message(envelope.error ?? "Rust Agent 操作失败") }
+        try MobileContractV02.requireIdentity(product: envelope.product, applicationVersion: envelope.applicationVersion,
+                                             revision: envelope.revision, stateEpoch: envelope.stateEpoch)
+        guard envelope.ok && envelope.error == nil else {
+            throw AgentFailure.message("Rust Agent returned an invalid success envelope")
+        }
         return envelope.value
     }
 }

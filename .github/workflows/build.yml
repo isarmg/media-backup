@@ -32,12 +32,19 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: npm ci --prefix clients/web
       - run: npm run build --prefix clients/web
+      - name: Install browser acceptance engines
+        working-directory: clients/web
+        run: npx playwright install --with-deps chromium firefox
+      - name: Verify current administrator and backup Web flows
+        working-directory: clients/web
+        run: node tests/browser-acceptance.mjs
       - run: ./scripts/check-mobile-v02-contract.sh
       - run: ./scripts/check-workflow-supply-chain.sh
       - run: cargo fmt --all -- --check
       - run: cargo check --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      - run: bash scripts/test-mobile-ffi-c.sh
       - name: Build and test the real server release archive
         run: |
           revision="$(git rev-parse HEAD)"
@@ -67,6 +74,8 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - name: Verify actual JNI exceptions and current ABI on the host JVM
+        run: bash scripts/test-mobile-ffi-jni.sh
       - uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4
       - run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
       - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6

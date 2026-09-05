@@ -587,16 +587,14 @@ mod tests {
             database_url,
             data_dir: data,
             bind: "127.0.0.1:0".parse().unwrap(),
-            admin_username: "doctor-admin".to_owned(),
-            admin_password: "doctor-password".to_owned(),
+            bootstrap_admin_username: "doctor-admin".to_owned(),
+            bootstrap_admin_password: Some("doctor-password".to_owned()),
             max_part_bytes: 1024 * 1024,
             upload_global_concurrency: 16,
             upload_per_account_concurrency: 4,
             metrics_token: None,
             require_https: false,
             development: true,
-            admin_session_idle_seconds: 1_800,
-            admin_session_absolute_seconds: 43_200,
             trusted_proxy_cidrs: Vec::new(),
         };
 
@@ -605,6 +603,6 @@ mod tests {
         assert_eq!(summary.files, 0);
         assert_eq!(summary.blobs, 0);
         assert_eq!(summary.uploads, 0);
-        assert_eq!(summary.schema_revision, 1);
+        assert_eq!(summary.schema_revision, 2);
     }
 }

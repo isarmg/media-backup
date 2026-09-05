@@ -117,7 +117,7 @@ fn snapshot_generation(path: &Path) -> anyhow::Result<ValidationSnapshot> {
             Err(error) => return Err(error),
         }
     }
-    Err(last_change.expect("snapshot retry loop records each generation change"))
+    Err(last_change.unwrap_or_else(|| anyhow::anyhow!(GenerationChanged)))
 }
 
 fn snapshot_generation_once(path: &Path) -> anyhow::Result<ValidationSnapshot> {
@@ -469,7 +469,7 @@ fn lower_hex(bytes: impl AsRef<[u8]>) -> String {
     use std::fmt::Write as _;
     let mut output = String::with_capacity(bytes.as_ref().len() * 2);
     for byte in bytes.as_ref() {
-        write!(&mut output, "{byte:02x}").expect("write to String");
+        let _ = write!(&mut output, "{byte:02x}");
     }
     output
 }

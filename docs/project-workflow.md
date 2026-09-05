@@ -28,21 +28,21 @@ Media Backup
 1. 启动脚本、systemd 和进程分别确认运行主机为 Linux x86_64。
 2. 确认命令是 `serve-release`，进程位于 manifest 声明的固定物理版本目录。
 3. 校验源码 revision、`x86_64-unknown-linux-gnu` target、API、Schema、FFI、Web 与全树文件摘要和权限。
-4. 解析环境配置，使用 Foundation 规范化并验证 `ADMIN_USERNAME`，再验证生产 HTTPS、可信代理和路径组合。
+4. 解析环境配置，使用 Foundation 规范化并验证 `BOOTSTRAP_ADMIN_USERNAME`，再验证生产 HTTPS、可信代理和路径组合。
 5. 按稳定顺序取得数据库和 `DATA_DIR` 相邻的运行锁。
 6. 数据库不存在时排他创建当前 Schema；存在时在私有副本上验证元数据与现场指纹。
 7. 启动时先协调上传提交、无引用 blob 回收和 orphan commit staging，再启动每 120 秒一次、跳过错过 tick
    的周期协调任务；停机诊断可用 `reconcile scan` 走相同持锁路径。
-8. 构造 HTTP 路由并开始监听；当前进程没有自定义 graceful-shutdown 编排，退出依赖进程终止和
-   SQLite/文件系统的持久状态在下一次启动时协调。
+8. Foundation Runtime 统一监听、信号处理、健康/诊断和有界优雅关闭；上传协调作为 Degrading 任务注册。
+   中断时的 SQLite/文件系统持久状态仍由下一次启动的产品协调逻辑处理。
 
 ## 3. 管理员与设备接入
 
 ```text
-首次启动环境中的 ADMIN_USERNAME + ADMIN_PASSWORD
+首次启动环境中的 BOOTSTRAP_ADMIN_USERNAME + BOOTSTRAP_ADMIN_PASSWORD
   -> sarmg-admin-auth 对 username 执行 trim ASCII whitespace + ASCII lowercase
   -> 要求 canonical 3..64 bytes、首尾字母数字、字符仅 [a-z0-9._-]，明确拒绝 @
-  -> 生成当前 Argon2id 摘要并写入 auth_users.username（不持久化角色）
+  -> Foundation Admin Core 在没有管理员时创建 _sarmg_administrators 记录
   -> POST /api/v2/auth/login {username,password}
   -> 精确 AdministratorSession + HttpOnly Cookie
   -> GET /api/v2/auth/session 轮换 CSRF
@@ -51,9 +51,9 @@ Media Backup
   -> 设备 Token 安全存储
 ```
 
-浏览器、设备、API Key、指标 Token 是四条独立授权链。登录限流先以真实 socket peer 和可信代理链
-确定来源，再按来源与规范化账户消耗有界 Token Bucket，最后进入有并发上限和超时的 Argon2。
-这里的 `auth_users.username` 只属于 Server 管理面；移动端登录继续使用 `accounts.username`，设备/API Key、
+浏览器、设备、API Key、指标 Token 是四条独立授权链。浏览器登录由 Foundation 根据真实 socket peer
+和规范化账户实施准入，并以并发上限和超时保护 Argon2；代理来源解析只属于产品移动业务授权链。
+这里的 `_sarmg_administrators.username` 只属于 Server 管理面；移动端登录继续使用 `accounts.username`，设备/API Key、
 移动队列 Schema、Android/iOS 请求和 FFI 均未改成管理身份，也不会因同名而获得 Administrator 权限。
 
 ## 4. 扫描与入队

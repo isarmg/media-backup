@@ -4,7 +4,7 @@ set -euo pipefail
 readonly archive_arg="${1:-${MEDIA_BACKUP_RELEASE_ARCHIVE:-}}"
 readonly package="media-backup-server-0.2.0-x86_64-unknown-linux-gnu"
 readonly version="0.2.0"
-readonly contract="58614dbf5e928423d10e6977bb99e3e53fd03b47678defd9e3b7a204e8540a9d"
+readonly contract="9fce632357b12cfccf6f977c5bcc01d50d87a2ccc79ebf62ec60362b3ea6e30e"
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly project_dir
 
@@ -79,10 +79,10 @@ assert re.fullmatch(r"[0-9a-f]{40}", identity["source_revision"])
 assert identity["target"] == "x86_64-unknown-linux-gnu"
 assert identity["api_version"] == "v2"
 assert identity["storage_encoding"] == "plain-v1"
-assert identity["server_schema_revision"] == 1
-assert identity["server_schema_sha256"] == "2563e6afc3fff272d02b7a5615272cc773862243bfd15aec51655abf1d9c6b1c"
+assert identity["server_schema_revision"] == 2
+assert identity["server_schema_sha256"] == "6415edde88228d508f1c0c7582f119c8fe869d2d78fd85129f359a5d748cbbc2"
 assert identity["mobile_ffi_epoch"] == "media-backup-mobile-v0.2-r1"
-assert identity["release_contract_sha256"] == "58614dbf5e928423d10e6977bb99e3e53fd03b47678defd9e3b7a204e8540a9d"
+assert identity["release_contract_sha256"] == "9fce632357b12cfccf6f977c5bcc01d50d87a2ccc79ebf62ec60362b3ea6e30e"
 PY
 source_revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_revision"])' "$identity_file")"
 verification="$($real_binary release-verify "$release_root")"
@@ -101,6 +101,10 @@ cmp --silent "$release_root/share/web/assets/admin.css" "$project_dir/clients/we
   fail "archive omits or changes the real admin CSS"
 cmp --silent "$release_root/share/web/assets/admin.js" "$project_dir/clients/web/dist/assets/admin.js" ||
   fail "archive omits or changes the real admin JavaScript"
+for asset in MapleMono.woff2 MapleMono-Italic.woff2 MapleMono-OFL.txt; do
+  cmp --silent "$release_root/share/web/assets/$asset" "$project_dir/clients/web/dist/assets/$asset" ||
+    fail "archive omits or changes the Foundation font asset: $asset"
+done
 python3 - "$release_root" <<'PY'
 from pathlib import Path
 import re
@@ -131,8 +135,8 @@ expect_start_rejected() {
       DATABASE_URL="sqlite://$rejected_state/db/app.db" \
       DATA_DIR="$rejected_state/data" \
       BIND=127.0.0.1:0 \
-      ADMIN_USERNAME=admin \
-      ADMIN_PASSWORD=deployment-rejection-password \
+      BOOTSTRAP_ADMIN_USERNAME=admin \
+      BOOTSTRAP_ADMIN_PASSWORD=deployment-rejection-password \
       REQUIRE_HTTPS=false \
       DEVELOPMENT=true \
       TRUSTED_PROXY_CIDRS= \
@@ -197,8 +201,8 @@ smoke_port="$((20000 + BASHPID % 30000))"
     DATABASE_URL="sqlite://$smoke_root/db/app.db" \
     DATA_DIR="$smoke_root/data" \
     BIND="127.0.0.1:$smoke_port" \
-    ADMIN_USERNAME=admin \
-    ADMIN_PASSWORD=deployment-smoke-password \
+    BOOTSTRAP_ADMIN_USERNAME=admin \
+    BOOTSTRAP_ADMIN_PASSWORD=deployment-smoke-password \
     REQUIRE_HTTPS=false \
     DEVELOPMENT=true \
     TRUSTED_PROXY_CIDRS= \
@@ -208,7 +212,7 @@ smoke_port="$((20000 + BASHPID % 30000))"
 server_pid="$!"
 smoke_ready=0
 for _ in {1..120}; do
-  if curl --silent --fail "http://127.0.0.1:$smoke_port/health" >/dev/null; then
+  if curl --silent --fail "http://127.0.0.1:$smoke_port/healthz" >/dev/null; then
     smoke_ready=1
     break
   fi
@@ -227,6 +231,16 @@ done
 curl --silent --fail "http://127.0.0.1:$smoke_port/admin" >"$test_root/served-admin.html"
 cmp --silent "$test_root/served-admin.html" "$release_root/share/web/index.html" ||
   fail "served admin asset differs from the verified release copy"
+for asset in admin.js admin.css MapleMono.woff2 MapleMono-Italic.woff2 MapleMono-OFL.txt; do
+  curl --silent --fail --dump-header "$test_root/asset-headers" \
+    "http://127.0.0.1:$smoke_port/admin/assets/$asset" >"$test_root/served-asset"
+  cmp --silent "$test_root/served-asset" "$release_root/share/web/assets/$asset" ||
+    fail "served asset differs from the verified release copy: $asset"
+  if [[ "$asset" == *.woff2 ]]; then
+    tr -d '\r' <"$test_root/asset-headers" | grep -Fxiq 'content-type: font/woff2' ||
+      fail "embedded font has the wrong content type"
+  fi
+done
 kill -TERM "$server_pid"
 wait "$server_pid" || true
 server_pid=""
@@ -277,6 +291,21 @@ expect_invalid_source extra-file "$negative_root"
 fresh_negative
 rm "$negative_root/share/web/assets/admin.css"
 expect_invalid_source missing-file "$negative_root"
+
+fresh_negative
+printf '\ntampered\n' >>"$negative_root/share/web/assets/MapleMono.woff2"
+expect_invalid_source tampered-font "$negative_root"
+
+# A self-consistent replacement manifest cannot authorize bytes absent from the binary.
+fresh_negative
+printf '\ntampered\n' >>"$negative_root/share/web/assets/MapleMono-Italic.woff2"
+rm "$negative_root/release-manifest.json"
+python3 "$project_dir/scripts/write-release-manifest.py" "$negative_root" "$source_revision"
+expect_invalid_source rehashed-font "$negative_root"
+
+fresh_negative
+rm "$negative_root/share/web/assets/MapleMono-OFL.txt"
+expect_invalid_source missing-font-license "$negative_root"
 
 fresh_negative
 chmod 0664 "$negative_root/README.md"
@@ -387,7 +416,7 @@ grep -Fqx 'DATA_DIR=/var/lib/isarmg/media-backup/data' "$config" || fail "data p
 [[ -d "$install_root/var/lib/isarmg/media-backup/db" &&
   -d "$install_root/var/lib/isarmg/media-backup/data" ]] || fail "separate database/data directories are missing"
 
-admin_secret="$(awk -F= '/^ADMIN_PASSWORD=/ { print $2 }' "$config")"
+admin_secret="$(awk -F= '/^BOOTSTRAP_ADMIN_PASSWORD=/ { print $2 }' "$config")"
 metrics_secret="$(awk -F= '/^METRICS_TOKEN=/ { print $2 }' "$config")"
 [[ "$admin_secret" =~ ^[[:xdigit:]]{64}$ && "$metrics_secret" =~ ^[[:xdigit:]]{64}$ ]] ||
   fail "generated secrets are not 256-bit random hex"

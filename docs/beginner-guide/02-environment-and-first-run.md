@@ -22,14 +22,14 @@ Web 构建。不要用 `cargo update` 或宽版本范围解决本机问题，它
 ## 服务端开发配置
 
 `config/media-backup.env.example` 是字段说明，不应直接变成生产 Secret 文件。开发环境准备独立临时数据库和数据目录，
-设置规范化管理员 `ADMIN_USERNAME` 和强随机 `ADMIN_PASSWORD`。默认样例为 `admin`；服务不会读取
+设置规范化管理员 `BOOTSTRAP_ADMIN_USERNAME` 和强随机 `BOOTSTRAP_ADMIN_PASSWORD`。默认样例为 `admin`；服务不会读取
 `ADMIN_EMAIL`。username 候选经 ASCII trim/lowercase 后必须是 3–64 bytes、首尾字母数字且仅含
 `[a-z0-9._-]`。只有
 `DEVELOPMENT=true` 且 `BIND` 是 loopback 时才可关闭 HTTPS 强制。
 
 ```bash
 cargo run -p media-backup-server -- serve
-curl --fail http://127.0.0.1:8080/health
+curl --fail http://127.0.0.1:8080/healthz
 ```
 
 若 source-bound binary 报告拒绝 `serve`，说明你运行的是正式身份，不应绕过；改用普通开发构建或完整

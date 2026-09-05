@@ -12,9 +12,17 @@ crate-type = ["staticlib", "cdylib"]
 [dependencies]
 media-backup-agent-core = { path = "../agent-core" }
 serde_json.workspace = true
+sarmg-mobile-ffi = { git = "https://github.com/isarmg/sarmg-foundation-agent.git", rev = "a5b3158aa62af8189dd909500758cee649898e5c", version = "=0.6.0" }
+jni = { workspace = true, optional = true }
+
+[features]
+jni-host-tests = ["dep:jni", "sarmg-mobile-ffi/jni"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true
+sarmg-mobile-ffi = { git = "https://github.com/isarmg/sarmg-foundation-agent.git", rev = "a5b3158aa62af8189dd909500758cee649898e5c", features = ["jni"], version = "=0.6.0" }
 
 [dev-dependencies]
 jni.workspace = true
+sarmg-mobile-ffi = { git = "https://github.com/isarmg/sarmg-foundation-agent.git", rev = "a5b3158aa62af8189dd909500758cee649898e5c", features = ["jni"], version = "=0.6.0" }
+tempfile.workspace = true

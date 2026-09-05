@@ -49,7 +49,7 @@ sudo /opt/isarmg/media-backup/releases/0.2.0/scripts/start-server-wsl.sh
 
 安装只允许创建缺失的 `/opt/isarmg/media-backup/releases/0.2.0`，不会覆盖或复用。同版本重装应先按
 运维变更流程处理现有部署，而不是绕过 no-clobber。环境文件首次以 `0600` 排他创建；替换自动生成的
-`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`METRICS_TOKEN` 并删除初始化标记后才能启动。登录候选 username
+`BOOTSTRAP_ADMIN_USERNAME`、`BOOTSTRAP_ADMIN_PASSWORD`、`METRICS_TOKEN` 并删除初始化标记后才能启动。登录候选 username
 必须是 1–64 bytes 的可打印 ASCII；Foundation 会去除首尾 ASCII whitespace、转为 ASCII 小写，再要求
 canonical 值为 3–64 bytes、首尾字母数字且全部字符仅为 `[a-z0-9._-]`，因此 `@`、Unicode、内部空白、
 首尾分隔符都被拒绝。持久化和 Session 只接受已经 canonical 的值；`ADMIN_EMAIL` 不是配置别名。
@@ -61,25 +61,25 @@ canonical 值为 3–64 bytes、首尾字母数字且全部字符仅为 `[a-z0-9
 | `DATABASE_URL` | 当前 SQLite 路径 | 与媒体目录分离，路径父链不可是链接 |
 | `DATA_DIR` | 原始媒体、缩略图和临时分块根 | 独立容量与 inode 监控 |
 | `BIND` | HTTP 监听地址 | 推荐 `127.0.0.1:8080` |
-| `ADMIN_USERNAME` | 唯一浏览器管理员 username | 必填；按 Foundation 规范化后必须为 canonical `[a-z0-9._-]`，当前库唯一 |
-| `ADMIN_PASSWORD` | 唯一浏览器管理员密码 | Foundation 当前策略：12–1024 bytes、无 ASCII 控制字符；生产由秘密管理器生成 |
+| `BOOTSTRAP_ADMIN_USERNAME` | 无管理员时创建的初始管理员 username | 默认 admin；按 Foundation 规则规范化；已有管理员时不创建或覆盖身份 |
+| `BOOTSTRAP_ADMIN_PASSWORD` | 初始管理员密码 | 仅无管理员时必填；已有管理员时不重置密码；生产由秘密管理器生成 |
 | `REQUIRE_HTTPS` | 强制可信 HTTPS 语义 | 必须为 `true` |
 | `DEVELOPMENT` | 本机开发开关 | 生产必须为 `false` |
 | `TRUSTED_PROXY_CIDRS` | 直接可信代理地址 | 仅列真实直连代理 |
-| `ADMIN_SESSION_*` | 管理会话期限 | 默认空闲 1800、绝对 43200 秒 |
 | `METRICS_TOKEN` | `/metrics` 独立凭据 | 由秘密管理器生成和轮换 |
 
 浏览器认证合同只有三条：`POST /api/v2/auth/login`、`GET /api/v2/auth/session`、
 `POST /api/v2/auth/logout`。登录 body 精确为 `{username,password}`；登录和 session 成功体精确为
 `{authenticated:true,user_id,username,role:"admin",csrf_token}`。普通备份账户仍使用
-`accounts.username`，它与 `auth_users.username` 是不同身份域；同名不会共享密码、Session、数据归属或
+`accounts.username`，它与 `_sarmg_administrators.username` 是不同身份域；同名不会共享密码、Session、数据归属或
 权限。用户管理等业务位于 `/api/v2/admin/*`，移动端仍只使用 `/v2/*`。管理员 username 规范化、严格
-当前 Argon2id、随机 Session/CSRF token、摘要比较和原始 Cookie 解析来自
-`sarmg-admin-auth=0.3.0`；本项目只拥有登录限流、Session 表、Cookie 属性/TTL 与撤销。
+当前 Argon2id、登录准入、Session/CSRF 生命周期、Cookie 和安全审计均由 Foundation 的
+Admin Core、SQLite Store、Axum Adapter 拥有。空闲 30 分钟、绝对 12 小时、每管理员 32 个/全局 1024 个
+Session 是固定平台策略，不提供产品级 TTL 配置。管理员登录来源使用真实 socket peer，不信任转发来源头。
 
 此合同调整的范围只有 Server 和编译进 Server 的 React/Vite 管理 Web。Android/iOS、Agent 数据库、
 `/v2/auth/bootstrap`、备份账户 username、设备 Token 与 API Key 均保持当前移动合同，运维不得把
-`ADMIN_USERNAME` 写入移动客户端配置，也不得把普通账户提升或复制到 `auth_users`。
+`BOOTSTRAP_ADMIN_USERNAME` 写入移动客户端配置，也不得把普通账户提升或复制到 `_sarmg_administrators`。
 
 最小 Caddy 配置：
 
@@ -95,8 +95,8 @@ media.example.com {
 ## 5. 日常检查
 
 ```bash
-curl --fail http://127.0.0.1:8080/health
-curl --fail http://127.0.0.1:8080/health/ready
+curl --fail http://127.0.0.1:8080/healthz
+curl --fail http://127.0.0.1:8080/readyz
 sudo /opt/isarmg/media-backup/releases/0.2.0/scripts/run-server-wsl.sh
 ```
 
@@ -126,19 +126,19 @@ blob rooted unlink/删行及 orphan commit staging 清理。永久删除响应 2
 ## 6. 当前数据库合同
 
 服务端 `product_metadata` 必须精确为 `application=media-backup`、`application_version=0.2.0`、
-`schema_revision=1`，Schema SHA-256 为
-`2563e6afc3fff272d02b7a5615272cc773862243bfd15aec51655abf1d9c6b1c`。移动队列对应
+`schema_revision=2`，Schema SHA-256 为
+`6415edde88228d508f1c0c7582f119c8fe869d2d78fd85129f359a5d748cbbc2`。移动队列对应
 `media-backup-agent` 与 SHA-256
 `fb38736bbf8ac69eb694095e62302f73233e39df42cd2d38e3dd1284e2f02558`。
 
 数据库只在主文件不存在时创建。已存在空文件、非当前元数据或结构漂移会在业务写入前拒绝，不能
 现场手改指纹“修复”。
 
-## 7. 备份、恢复与升级
+## 7. 当前状态备份与恢复
 
 Media Backup 二进制不提供相关命令。停止服务后，由 `sarmg-upgrade` 把 SQLite 主文件及 sidecar 与
 `DATA_DIR` 作为同一一致性单元处理。遵循 3-2-1 策略，备份加密并定期在隔离环境执行完整恢复演练。
-恢复后先运行离线验证和 `doctor`，再开放流量。
+恢复后先运行离线验证和 `doctor`，再开放流量。本轮不提供旧版本升级或历史格式读取。
 
 ## 8. 移动端构建
 
@@ -173,7 +173,7 @@ xcodebuild -project MediaBackup.xcodeproj -scheme MediaBackup -sdk iphonesimulat
 ## 9. 故障定位顺序
 
 1. 检查固定发行树、manifest 和进程命令是否正确。
-2. 检查 `/health/ready`、Journal 和磁盘/inode 容量。
+2. 检查 `/readyz`、Journal 和磁盘/inode 容量。
 3. 检查代理真实 peer、TLS、`TRUSTED_PROXY_CIDRS` 和客户端时间。
 4. 运行 `doctor`，区分数据库合同、文件系统、Hash 或上传恢复错误。
 5. 移动端检查系统权限、后台任务限制、本地队列和安全凭据存储。
@@ -203,15 +203,21 @@ MEDIA_BACKUP_SOURCE_REVISION="$(git rev-parse HEAD)" \
   --target x86_64-unknown-linux-gnu
 ```
 
-门禁直接调用 Foundation `assertAdministratorWebToolchain`，同时验证精确依赖/lockfile、三个共享 CSS
-入口及摘要、React 根和 `data-sarmg-scope`。Vite 只生成 `dist/index.html`、`dist/assets/admin.js`、
-`dist/assets/admin.css`；Rust 二进制与发行包 `share/web/` 都绑定这三个字节。Server 先于 Web 构建会因
-缺少 include 目标而失败，这是防止源码/产物混代的预期行为。
+门禁直接调用 Foundation `assertSarmgWebToolchain`，验证精确工具链及依赖/lockfile，并拒绝产品自有
+登录外壳、存储凭据及私有字体/token 定义。管理页面使用共享 Shell/UI、认证客户端和 Maple 字体。
+Vite 生成 HTML、JS、CSS、正体/斜体 WOFF2 与 OFL 许可证六个资产；服务端的唯一内嵌资产清单同时用于
+HTTP 响应和发行身份校验，发行包 `share/web/` 必须包含相同字节。字体经同源 `/admin/assets/` 路由
+提供，类型为 `font/woff2`，不访问 CDN。必须先构建 Web，再构建 Server。
 
-当前四个包已直接固定到 Foundation GitHub Release `v0.3.0` 的
-`sarmg-admin-web-0.3.0.tgz`、`sarmg-contracts-0.3.0.tgz`、`sarmg-design-tokens-0.3.0.tgz` 与
-`sarmg-http-client-0.3.0.tgz`；`package-lock.json` 必须同时记录这些 URL、版本 `0.3.0` 和各归档的
-`sha512` integrity。Rust Foundation crate 则同时固定 Git 仓库、版本 `=0.3.0` 与完整 revision
-`1fe326081cfd896f05ff502e80f99504797c14c6`。独立 checkout/CI 不读取共同父目录或 sibling 源码。
-门禁失败时修正依赖、lockfile 或产品源码，再完整重建二进制和发行归档；不得改回 `file:`/`path`、
-在线编辑 `share/web`、复制旧 dist、vendoring 共享 CSS 或加入网络 fallback。
+备份用户是设备上传业务账户，管理接口为 `/api/v2/admin/users`，不等同于平台管理员。
+平台管理员面板使用 Foundation `/api/v2/platform/administrators`。备份账户资料保存和密码重设是
+两个独立操作，停用需显式确认；写请求失败不会自动重放，密码会清空，界面仅显示安全错误和 Request ID。
+
+`npm run test:browser --prefix clients/web` 对实际 dist 运行 Chromium/Firefox 验收，覆盖账户操作、
+失败重试、两个管理员域的隔离、字体资产、键盘焦点及移动明暗主题 WCAG AA。首次运行先在
+`clients/web` 执行 `npx playwright install --with-deps chromium firefox`。
+
+当前八个 Foundation Web 包（admin-web、admin-shell、admin-ui、contracts、design-tokens、http-client、
+web-fonts、web-toolchain）暂用相邻工作区 `file:` 来源，Rust 也处于平台迁移联调阶段，尚不能声称独立
+checkout 或不可变发布已完成。P13 必须统一切换新不可变发行资产、精确版本/revision 与完整性锁，
+断开 sibling 后重新验收；不得在线编辑 `share/web`、复制旧 dist、vendoring 共享 CSS 或加入兼容 fallback。

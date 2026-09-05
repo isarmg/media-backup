@@ -16,10 +16,16 @@ media-backup-protocol = { path = "../protocol" }
 rand.workspace = true
 rusqlite.workspace = true
 rustix.workspace = true
-sarmg-admin-auth = { version = "=0.3.0", git = "https://github.com/isarmg/sarmg-foundation.git", rev = "1fe326081cfd896f05ff502e80f99504797c14c6" }
-sarmg-contracts = { version = "=0.3.0", git = "https://github.com/isarmg/sarmg-foundation.git", rev = "1fe326081cfd896f05ff502e80f99504797c14c6" }
-sarmg-error = { version = "=0.3.0", git = "https://github.com/isarmg/sarmg-foundation.git", rev = "1fe326081cfd896f05ff502e80f99504797c14c6" }
-sarmg-server-target = { version = "=0.3.0", git = "https://github.com/isarmg/sarmg-foundation.git", rev = "1fe326081cfd896f05ff502e80f99504797c14c6" }
+sarmg-admin-auth = { git = "https://github.com/isarmg/sarmg-foundation-server.git", rev = "1e889d08fa69fcf2b5fffe45e8cc42b68218f4f1", version = "=0.6.0" }
+sarmg-admin-axum = { git = "https://github.com/isarmg/sarmg-foundation-server.git", rev = "1e889d08fa69fcf2b5fffe45e8cc42b68218f4f1", version = "=0.6.0" }
+sarmg-admin-core = { git = "https://github.com/isarmg/sarmg-foundation-server.git", rev = "1e889d08fa69fcf2b5fffe45e8cc42b68218f4f1", version = "=0.6.0" }
+sarmg-admin-sqlite = { git = "https://github.com/isarmg/sarmg-foundation-server.git", rev = "1e889d08fa69fcf2b5fffe45e8cc42b68218f4f1", version = "=0.6.0" }
+sarmg-contracts = { git = "https://github.com/isarmg/sarmg-foundation-server.git", rev = "1e889d08fa69fcf2b5fffe45e8cc42b68218f4f1", version = "=0.6.0" }
+sarmg-error = { git = "https://github.com/isarmg/sarmg-foundation-server.git", rev = "1e889d08fa69fcf2b5fffe45e8cc42b68218f4f1", version = "=0.6.0" }
+sarmg-schema-identity = { git = "https://github.com/isarmg/sarmg-foundation-server.git", rev = "1e889d08fa69fcf2b5fffe45e8cc42b68218f4f1", version = "=0.6.0" }
+sarmg-server-runtime = { git = "https://github.com/isarmg/sarmg-foundation-server.git", rev = "1e889d08fa69fcf2b5fffe45e8cc42b68218f4f1", version = "=0.6.0" }
+sarmg-server-target = { git = "https://github.com/isarmg/sarmg-foundation-server.git", rev = "1e889d08fa69fcf2b5fffe45e8cc42b68218f4f1", version = "=0.6.0" }
+sarmg-sqlite = { git = "https://github.com/isarmg/sarmg-foundation-server.git", rev = "1e889d08fa69fcf2b5fffe45e8cc42b68218f4f1", version = "=0.6.0" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

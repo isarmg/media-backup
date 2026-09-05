@@ -14,11 +14,10 @@ use media_backup_protocol::{
     UploadDisposition, UploadPartSpec, UploadStatusResponse, API_BASE_PATH,
 };
 use rand::{rngs::OsRng, RngCore};
-use sarmg_contracts::{ADMIN_LOGIN_PATH, ADMIN_LOGOUT_PATH, ADMIN_SESSION_PATH};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore},
     time::timeout,
@@ -45,6 +44,9 @@ pub struct AppState {
     pub config: Config,
     pub login_admission: LoginAdmission,
     pub upload_admission: UploadAdmission,
+    pub administrator:
+        Arc<sarmg_admin_core::AdministratorService<sarmg_admin_sqlite::SqliteAdministratorStore>>,
+    pub administrator_origin: sarmg_admin_auth::AdministratorOriginMode,
 }
 
 #[derive(Clone)]
@@ -105,7 +107,10 @@ impl UploadAdmission {
     }
 }
 
-pub fn router(state: AppState) -> Router {
+pub fn router(
+    state: AppState,
+    runtime: sarmg_server_runtime::RuntimeHandle,
+) -> Result<Router, AppError> {
     const JSON_BODY_LIMIT: usize = 256 * 1024;
     const UPLOAD_MANIFEST_BODY_LIMIT: usize = 64 * 1024;
     let max_part_bytes = state.config.max_part_bytes;
@@ -156,8 +161,6 @@ pub fn router(state: AppState) -> Router {
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
     let admin_protected = Router::new()
-        .route(ADMIN_SESSION_PATH, get(admin::session))
-        .route(ADMIN_LOGOUT_PATH, post(admin::logout))
         .route("/api/v2/admin/overview", get(admin::overview))
         .route("/api/v2/admin/users", post(admin::create_user))
         .route("/api/v2/admin/users/{id}", put(admin::update_user))
@@ -165,7 +168,6 @@ pub fn router(state: AppState) -> Router {
             "/api/v2/admin/users/{id}/reset-password",
             post(admin::reset_user_password),
         )
-        .route("/api/v2/admin/password", post(admin::change_admin_password))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             admin::require_admin,
@@ -180,71 +182,37 @@ pub fn router(state: AppState) -> Router {
         )
         .merge(protected);
 
-    let browser_api = Router::new()
-        .route(
-            ADMIN_LOGIN_PATH,
-            post(admin::login).layer(DefaultBodyLimit::max(
-                crate::login_admission::LOGIN_BODY_LIMIT_BYTES,
-            )),
-        )
-        .merge(admin_protected);
-
     let sensitive = Router::new()
         .route("/metrics", get(metrics::prometheus))
         .route("/admin", get(admin::page))
         .route("/admin/", get(admin::page))
         .route("/admin/assets/admin.js", get(admin::script))
         .route("/admin/assets/admin.css", get(admin::styles))
+        .route("/admin/assets/MapleMono.woff2", get(admin::font))
+        .route(
+            "/admin/assets/MapleMono-Italic.woff2",
+            get(admin::italic_font),
+        )
+        .route("/admin/assets/MapleMono-OFL.txt", get(admin::font_license))
         .nest(API_BASE_PATH, mobile_api)
-        .merge(browser_api)
+        .merge(admin_protected)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_secure_transport,
         ));
 
-    Router::new()
-        .route("/health", get(health))
-        .route("/health/live", get(live))
-        .route("/health/ready", get(ready))
-        .merge(sensitive)
+    let platform = sarmg_server_runtime::platform_router(
+        runtime,
+        "media-backup",
+        state.administrator_origin,
+        Arc::clone(&state.administrator),
+    )
+    .map_err(|error| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let product = sensitive
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
         .layer(middleware::from_fn(crate::error::normalize_error_response))
-        .with_state(state)
-}
-
-async fn health() -> &'static str {
-    "ok"
-}
-
-async fn live() -> Json<Value> {
-    Json(serde_json::json!({ "status": "ok" }))
-}
-
-async fn ready(State(state): State<AppState>) -> Response {
-    let (database, storage) = tokio::join!(
-        async {
-            sqlx::query_scalar::<_, i32>("SELECT 1")
-                .fetch_one(&state.pool)
-                .await
-                .is_ok()
-        },
-        state.storage.probe_readiness()
-    );
-    let storage = storage.is_ok();
-    let ready = database && storage;
-    (
-        if ready {
-            StatusCode::OK
-        } else {
-            StatusCode::SERVICE_UNAVAILABLE
-        },
-        Json(serde_json::json!({
-            "status": if ready { "ready" } else { "not-ready" },
-            "database": database,
-            "storage": storage
-        })),
-    )
-        .into_response()
+        .with_state(state);
+    Ok(Router::new().merge(platform).merge(product))
 }
 
 async fn bootstrap(

@@ -1,7 +1,14 @@
-import { createSarmgReactViteConfig } from "@sarmg/admin-web/vite";
-import { mergeConfig } from "vite";
+import { createSarmgReactViteConfig } from "@sarmg/web-toolchain/vite";
+import { mergeConfig, type Plugin } from "vite";
+import { readFileSync } from "node:fs";
 
 export default mergeConfig(createSarmgReactViteConfig({ base: "/admin/" }), {
+  plugins: [{
+    name: "media-font-license",
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: "assets/MapleMono-OFL.txt", source: readFileSync(new URL(import.meta.resolve("@sarmg/web-fonts/OFL.txt"))) });
+    },
+  } satisfies Plugin],
   build: {
     rollupOptions: {
       output: {

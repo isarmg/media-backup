@@ -1,0 +1,13 @@
+format = 1
+product_id = "media-backup"
+source_roots = ["crates/agent-core","crates/mobile-ffi","crates/crypto","crates/protocol","clients/android","clients/ios"]
+
+# Development workspace identity; not an immutable release pin.
+[foundation]
+platform_generation = 1
+version = "0.6.0"
+
+[[components]]
+id = "mobile-core"
+profile = "mobile-agent"
+capabilities = ["mobile-queue", "mobile-state", "mobile-ffi", "https-delivery"]

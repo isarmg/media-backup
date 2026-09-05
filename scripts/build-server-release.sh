@@ -9,7 +9,7 @@ readonly output_arg="${3:-}"
 readonly version="0.2.0"
 readonly target="x86_64-unknown-linux-gnu"
 readonly package="media-backup-server-$version-$target"
-readonly release_contract_sha256="58614dbf5e928423d10e6977bb99e3e53fd03b47678defd9e3b7a204e8540a9d"
+readonly release_contract_sha256="9fce632357b12cfccf6f977c5bcc01d50d87a2ccc79ebf62ec60362b3ea6e30e"
 
 staging_root=""
 archive_staging=""
@@ -98,14 +98,17 @@ install -m 0644 -- "$project_dir/docs/server-release-readme.md" "$release_root/R
 install -m 0644 -- "$project_dir/docs/feature-inventory-and-tradeoffs.md" \
   "$release_root/docs/feature-inventory-and-tradeoffs.md"
 install -m 0644 -- "$project_dir/LICENSE" "$release_root/LICENSE"
-install -m 0644 -- "$project_dir/crates/mobile-ffi/include/media_backup_v0_2_r1.h" \
-  "$release_root/include/media_backup_v0_2_r1.h"
+install -m 0644 -- "$project_dir/crates/mobile-ffi/include/media_backup_ffi_v2.h" \
+  "$release_root/include/media_backup_ffi_v2.h"
 install -m 0644 -- "$project_dir/clients/web/dist/index.html" \
   "$release_root/share/web/index.html"
 install -m 0644 -- "$project_dir/clients/web/dist/assets/admin.js" \
   "$release_root/share/web/assets/admin.js"
 install -m 0644 -- "$project_dir/clients/web/dist/assets/admin.css" \
   "$release_root/share/web/assets/admin.css"
+for asset in MapleMono.woff2 MapleMono-Italic.woff2 MapleMono-OFL.txt; do
+  install -m 0644 -- "$project_dir/clients/web/dist/assets/$asset" "$release_root/share/web/assets/$asset"
+done
 
 python3 "$project_dir/scripts/write-release-manifest.py" "$release_root" "$source_revision"
 verification="$("$release_root/bin/media-backup-server" release-verify "$release_root")" ||
