@@ -87,6 +87,9 @@ async fn main() -> Result<()> {
             unreachable!("release commands return before configuration is loaded")
         }
     }
+    let signals = sarmg_server_runtime::ProcessSignals::install()?;
+    let listeners = sarmg_server_runtime::BoundListeners::bind([config.bind])?;
+    let transport = sarmg_server_runtime::HttpServer::new(listeners, signals);
     let _runtime_lock = runtime_lock::RuntimeLock::acquire(&config.database_url, &config.data_dir)?;
     let pool = database::connect(&config.database_url).await?;
     let storage = LocalStorage::new(config.data_dir.clone()).await?;
@@ -100,7 +103,6 @@ async fn main() -> Result<()> {
         errors = reconciliation.errors,
         "upload commit reconciliation finished"
     );
-    let listener = tokio::net::TcpListener::bind(config.bind).await?;
     let health_pool = state.pool.clone();
     let health_storage = state.storage.clone();
     let reconcile_state = state.clone();
@@ -108,7 +110,7 @@ async fn main() -> Result<()> {
         sarmg_server_runtime::ServerRuntime::builder(sarmg_server_runtime::ProductDescriptor {
             id: "media-backup".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-            foundation_revision: "1e889d08fa69fcf2b5fffe45e8cc42b68218f4f1".into(),
+            foundation_revision: "77e7ad7af8e1bf62432bd6bdd8fa9aff54cb39d1".into(),
             profile: "server-control-plane".into(),
             capabilities: vec![
                 "admin-persistent".into(),
@@ -163,7 +165,7 @@ async fn main() -> Result<()> {
     let runtime_handle = runtime.handle();
     let app = routes::router(state, runtime_handle.clone())?.layer(TraceLayer::new_for_http());
     info!(address = %config.bind, "media backup server listening");
-    runtime.serve(listener, app).await?;
+    runtime.serve(transport, app).await?;
     Ok(())
 }
 
