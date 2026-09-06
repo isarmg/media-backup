@@ -2,9 +2,9 @@
 set -euo pipefail
 
 readonly product="media-backup-server"
-readonly version="0.2.0"
+readonly version="0.2.1"
 readonly target="x86_64-unknown-linux-gnu"
-readonly release_contract_sha256="b9728dc6c4cd06aef233f159ff95229c8ce8f45f3af99dd38ffef083dae1e054"
+readonly release_contract_sha256="2eb582c887bce3309668fd1564fe6350dbd268ea1b9f4989d884c8bc45cfb79a"
 readonly service_user="isarmg-media"
 readonly service_group="isarmg-media"
 readonly app_dir="/opt/isarmg/media-backup"
@@ -156,16 +156,16 @@ expected_identity_keys = {
 }
 expected_identity = {
     "product": "media-backup-server",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "target": "x86_64-unknown-linux-gnu",
     "api_version": "v2",
     "storage_encoding": "plain-v1",
     "server_schema_revision": 2,
     "server_schema_sha256": "6415edde88228d508f1c0c7582f119c8fe869d2d78fd85129f359a5d748cbbc2",
-    "mobile_ffi_epoch": "media-backup-mobile-v0.2-r1",
+    "mobile_ffi_epoch": "media-backup-mobile-v0.2-r2",
     "mobile_ffi_header_sha256": "39925fae2178b825f702fa1a7e2b9bd7fd08a2d00dc73e039b066e9ad7073e21",
-    "web_assets_sha256": "99aee8c28a964d4bf9af701d9e49efc4fcf97c2a7260a9e5e77bdff1e0d9a424",
-    "release_contract_sha256": "b9728dc6c4cd06aef233f159ff95229c8ce8f45f3af99dd38ffef083dae1e054",
+    "web_assets_sha256": "1c318e69ef09c4bba7dd0669fcfc3340c17dcffdce005ef0052f8daf2135c0f3",
+    "release_contract_sha256": "2eb582c887bce3309668fd1564fe6350dbd268ea1b9f4989d884c8bc45cfb79a",
 }
 expected_directories = {
     "bin", "config", "docs", "include", "scripts", "share", "share/web",
@@ -455,7 +455,7 @@ preflight_config_path="$(rooted "$config_file")"
 preflight_unit_path="$(rooted "$unit_file")"
 validate_empty_release_destination
 if [[ -e "$preflight_release_path" || -L "$preflight_release_path" ]]; then
-  die "release 0.2.0 destination already exists; installation is one-shot and no-clobber"
+  die "release 0.2.1 destination already exists; installation is one-shot and no-clobber"
 fi
 if [[ -e "$preflight_config_path" || -L "$preflight_config_path" ]]; then
   ensure_single_link_regular_file "$preflight_config_path" "configuration"
@@ -488,7 +488,7 @@ if [[ "$test_mode" == "0" ]]; then
 fi
 
 [[ ! -e "$release_path" && ! -L "$release_path" ]] ||
-  die "release 0.2.0 destination appeared during installation"
+  die "release 0.2.1 destination appeared during installation"
 if [[ -e "$config_path" || -L "$config_path" ]]; then
   ensure_single_link_regular_file "$config_path" "configuration"
 fi

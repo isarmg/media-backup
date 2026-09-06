@@ -46,9 +46,9 @@ Keystore                     Keychain
 
 ## 当前版本身份
 
-当前身份由以下值共同组成：产品 `media-backup`、版本 `0.2.0`、移动 HTTP `/v2`、浏览器管理
+当前身份由以下值共同组成：产品 `media-backup`、版本 `0.2.1`、移动 HTTP `/v2`、浏览器管理
 `/api/v2`、存储 `plain-v1`、移动
-epoch `media-backup-mobile-v0.2-r1`、两个精确 Schema、FFI header fingerprint、Web fingerprint、source
+epoch `media-backup-mobile-v0.2-r2`、两个精确 Schema、FFI header fingerprint、Web fingerprint、source
 revision 和 release tree manifest。任一不匹配都失败关闭。
 
 项目不注册旧项目名、不识别旧应用 ID、不扫描旧 state directory，也不为旧 JSON 字段添加 alias。

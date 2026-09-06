@@ -51,11 +51,11 @@ public final class NativeBridgeV2 {
         expect(IllegalStateException.class, () -> markFailed(0, "job", "private-secret", true));
         expect(IllegalArgumentException.class, () -> enqueue(0, "private-secret"));
         expect(IllegalArgumentException.class, () -> next(0, "private-secret"));
-        Path absent = Path.of(args[0], "absent", "agent-v0.2-r1.sqlite");
+        Path absent = Path.of(args[0], "absent", "agent-v0.2-r2.sqlite");
         expect(IllegalArgumentException.class, () -> open(absent.toString(), "private-secret"));
         if (Files.exists(absent.getParent())) throw new AssertionError("invalid config wrote state");
-        String path = Path.of(args[0], "agent-v0.2-r1.sqlite").toString();
-        String config = "{\"product\":\"media-backup\",\"application_version\":\"0.2.0\",\"revision\":1,\"state_epoch\":\"media-backup-mobile-v0.2-r1\",\"part_size\":16777216}";
+        String path = Path.of(args[0], "agent-v0.2-r2.sqlite").toString();
+        String config = "{\"product\":\"media-backup\",\"application_version\":\"0.2.1\",\"revision\":1,\"state_epoch\":\"media-backup-mobile-v0.2-r2\",\"part_size\":16777216}";
         long first = open(path, config);
         if (first == 0 || !needs(first, "中文😀", "resource", 1)) throw new AssertionError("valid Unicode query failed");
         if (!stats(first).contains("\"ok\":true")) throw new AssertionError("invalid success envelope");

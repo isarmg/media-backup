@@ -14,15 +14,15 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
 const MANIFEST_VERSION: u32 = 1;
 const PRODUCT: &str = "media-backup-server";
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.2.1";
 const TARGET: &str = sarmg_server_target::SERVER_TARGET_TRIPLE;
 const API_VERSION: &str = media_backup_protocol::API_VERSION;
 const STORAGE_ENCODING: &str = "plain-v1";
-const MOBILE_FFI_EPOCH: &str = "media-backup-mobile-v0.2-r1";
+const MOBILE_FFI_EPOCH: &str = "media-backup-mobile-v0.2-r2";
 const MANIFEST_FILENAME: &str = "release-manifest.json";
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
-pub(crate) const PRODUCTION_RELEASE_ROOT: &str = "/opt/isarmg/media-backup/releases/0.2.0";
-const RELOCATABLE_RELEASE_SUFFIX: &str = "opt/isarmg/media-backup/releases/0.2.0";
+pub(crate) const PRODUCTION_RELEASE_ROOT: &str = "/opt/isarmg/media-backup/releases/0.2.1";
+const RELOCATABLE_RELEASE_SUFFIX: &str = "opt/isarmg/media-backup/releases/0.2.1";
 
 const MOBILE_FFI_HEADER: &[u8] = include_bytes!("../../mobile-ffi/include/media_backup_ffi_v2.h");
 
@@ -191,7 +191,7 @@ fn validate_runtime_root(root: &Path) -> Result<PathBuf> {
     );
     ensure!(
         canonical.ends_with(RELOCATABLE_RELEASE_SUFFIX),
-        "RELEASE_ROOT must end in the fixed Media Backup 0.2.0 physical release path"
+        "RELEASE_ROOT must end in the fixed Media Backup 0.2.1 physical release path"
     );
     Ok(canonical)
 }
@@ -726,11 +726,11 @@ mod tests {
         );
         assert_eq!(
             identity.web_assets_sha256,
-            "99aee8c28a964d4bf9af701d9e49efc4fcf97c2a7260a9e5e77bdff1e0d9a424"
+            "1c318e69ef09c4bba7dd0669fcfc3340c17dcffdce005ef0052f8daf2135c0f3"
         );
         assert_eq!(
             identity.release_contract_sha256,
-            "b9728dc6c4cd06aef233f159ff95229c8ce8f45f3af99dd38ffef083dae1e054"
+            "2eb582c887bce3309668fd1564fe6350dbd268ea1b9f4989d884c8bc45cfb79a"
         );
     }
 
@@ -764,7 +764,7 @@ mod tests {
         assert!(is_source_revision(
             "0123456789abcdef0123456789abcdef01234567"
         ));
-        assert!(!is_source_revision("v0.2.0"));
+        assert!(!is_source_revision("v0.2.1"));
         assert!(is_lower_sha256(&"a".repeat(64)));
         assert!(!is_lower_sha256(&"A".repeat(64)));
     }

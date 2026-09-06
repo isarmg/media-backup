@@ -172,13 +172,13 @@ def main() -> None:
         fail("binary release identity has an unknown or missing field")
     fixed_identity = {
         "product": "media-backup-server",
-        "version": "0.2.0",
+        "version": "0.2.1",
         "source_revision": revision,
         "target": "x86_64-unknown-linux-gnu",
         "api_version": "v2",
         "storage_encoding": "plain-v1",
         "server_schema_revision": 2,
-        "mobile_ffi_epoch": "media-backup-mobile-v0.2-r1",
+        "mobile_ffi_epoch": "media-backup-mobile-v0.2-r2",
     }
     for field, expected in fixed_identity.items():
         if identity.get(field) != expected:

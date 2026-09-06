@@ -3,11 +3,11 @@ name: Release
 on:
   push:
     tags:
-      - "v0.2.0"
+      - "v0.2.1"
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing immutable version tag to publish (must be v0.2.0)
+        description: Existing immutable version tag to publish (must be v0.2.1)
         required: true
         type: string
 
@@ -239,4 +239,4 @@ jobs:
             echo "Refusing to reuse or overwrite existing release $RELEASE_TAG" >&2
             exit 1
           fi
-          gh release create "$RELEASE_TAG" dist/* --verify-tag --generate-notes --title "$RELEASE_TAG"
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --notes-file docs/releases/0.2.1.md --title "$RELEASE_TAG"

@@ -61,7 +61,7 @@ Media Backup
 Android 通过 MediaStore、iOS 通过 PhotoKit 读取用户授权范围。扫描结果经过相册选择/排除规则；Android
 达到本轮新资源上限时会关闭 `replace_members`，但 Android selected-media 与 iOS limited 权限当前都没有
 形成可传给 Server 的“可见集不完整”证明，仍可能移除不可见的相册成员关系。原始媒体和缩略图形成资源
-描述后，任务先写入 `agent-v0.2-r1.sqlite`，staging 使用 `backup-staging-v0.2-r1`，然后才交给系统后台调度。
+描述后，任务先写入 `agent-v0.2-r2.sqlite`，staging 使用 `backup-staging-v0.2-r2`，然后才交给系统后台调度。
 
 这里的“持久队列”不是无条件恢复保证。当前实现只会直接复用 `ready` 的 `prepared_json`；上传失败进入
 `retry_wait` 后，即使该 JSON 和分块仍在，到期取队列仍会重新读取源文件。若宿主在准备成功后按
@@ -104,7 +104,7 @@ MediaStore/PhotoKit 写入系统照片库。当前 Android/iOS 宿主会检查 H
 ## 8. 发行流程
 
 ```text
-干净 checkout + 精确 v0.2.0 tag
+干净 checkout + 精确 v0.2.1 tag
   -> 注入完整 Git revision 的 release build
   -> 构造唯一发行目录
   -> 写入严格 manifest

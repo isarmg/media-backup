@@ -6,8 +6,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.10"
-    MARKETING_VERSION: "0.2.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.2.1"
+    CURRENT_PROJECT_VERSION: "2"
 targets:
   MediaBackup:
     type: application
@@ -27,7 +27,7 @@ targets:
           - fetch
           - processing
         BGTaskSchedulerPermittedIdentifiers:
-          - org.sarmg.mediabackup.processing.v0-2-r1
+          - org.sarmg.mediabackup.processing.v0-2-r2
     entitlements:
       path: MediaBackup/MediaBackup.entitlements
     dependencies:

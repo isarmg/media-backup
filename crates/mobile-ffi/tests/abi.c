@@ -42,9 +42,9 @@ int main(int argc, char **argv) {
     assert(mb_open_v2(raw, SIZE_MAX, raw, 1, &out) == SARMG_FFI_INVALID_ARGUMENT);
     release(&out);
     char path[4096];
-    int length = snprintf(path, sizeof(path), "%s/agent-v0.2-r1.sqlite", argv[1]);
+    int length = snprintf(path, sizeof(path), "%s/agent-v0.2-r2.sqlite", argv[1]);
     assert(length > 0 && (size_t)length < sizeof(path));
-    const char config[] = "{\"product\":\"media-backup\",\"application_version\":\"0.2.0\",\"revision\":1,\"state_epoch\":\"media-backup-mobile-v0.2-r1\",\"part_size\":16777216}";
+    const char config[] = "{\"product\":\"media-backup\",\"application_version\":\"0.2.1\",\"revision\":1,\"state_epoch\":\"media-backup-mobile-v0.2-r2\",\"part_size\":16777216}";
     assert(mb_open_v2((const uint8_t *)path, (size_t)length, (const uint8_t *)config, sizeof(config) - 1, &out) == SARMG_FFI_OK);
     uint64_t first = out.value;
     assert(first != 0);

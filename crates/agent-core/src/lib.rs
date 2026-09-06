@@ -41,11 +41,11 @@ pub enum AgentError {
 }
 
 pub const MOBILE_PRODUCT: &str = "media-backup";
-pub const MOBILE_APPLICATION_VERSION: &str = "0.2.0";
+pub const MOBILE_APPLICATION_VERSION: &str = "0.2.1";
 pub const MOBILE_REVISION: u32 = 1;
-pub const MOBILE_STATE_EPOCH: &str = "media-backup-mobile-v0.2-r1";
-pub const MOBILE_DATABASE_FILENAME: &str = "agent-v0.2-r1.sqlite";
-pub const MOBILE_STAGING_DIRECTORY: &str = "backup-staging-v0.2-r1";
+pub const MOBILE_STATE_EPOCH: &str = "media-backup-mobile-v0.2-r2";
+pub const MOBILE_DATABASE_FILENAME: &str = "agent-v0.2-r2.sqlite";
+pub const MOBILE_STAGING_DIRECTORY: &str = "backup-staging-v0.2-r2";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

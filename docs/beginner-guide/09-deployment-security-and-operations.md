@@ -8,7 +8,7 @@ Internet 只到 TLS reverse proxy；Axum 回环监听。Proxy、应用、SQLite�
 ## 不可变发行
 
 正式归档由干净精确 tag 构建。binary 在打开配置/状态前验证自己的物理目录、source revision、target、
-API/Schema/mobile epoch/Web 和全部文件 Hash/mode。安装只创建缺失的 `releases/0.2.0`，不覆盖同版本，
+API/Schema/mobile epoch/Web 和全部文件 Hash/mode。安装只创建缺失的 `releases/0.2.1`，不覆盖同版本，
 无 `current` symlink。
 
 Server 的开发、测试和正式目标都只有 `x86_64-unknown-linux-gnu`。`sarmg-server-target=0.3.0` 在 crate

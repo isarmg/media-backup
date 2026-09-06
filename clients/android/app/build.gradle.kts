@@ -14,8 +14,8 @@ val workspaceVersion = file("../../../Cargo.toml").readText()
 
 val semanticVersion = workspaceVersion.substringBefore('-').split('.').map(String::toInt)
 require(semanticVersion.size == 3) { "Workspace version must use major.minor.patch" }
-require(workspaceVersion == "0.2.0") {
-    "The mobile v0.2 revision 1 contract requires workspace version 0.2.0; define a new epoch before bumping"
+require(workspaceVersion == "0.2.1") {
+    "The mobile v0.2 state epoch r2 requires workspace version 0.2.1; define a new epoch before bumping"
 }
 
 val releasePkcs12Path = providers

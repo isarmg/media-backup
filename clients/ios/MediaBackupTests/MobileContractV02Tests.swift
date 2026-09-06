@@ -13,8 +13,8 @@ final class MobileContractV02Tests: XCTestCase {
         try Data("current sqlite bytes".utf8).write(to: currentDatabase)
         try FileManager.default.createDirectory(at: currentStaging, withIntermediateDirectories: false)
 
-        XCTAssertEqual(currentDatabase.lastPathComponent, "agent-v0.2-r1.sqlite")
-        XCTAssertEqual(currentStaging.lastPathComponent, "backup-staging-v0.2-r1")
+        XCTAssertEqual(currentDatabase.lastPathComponent, "agent-v0.2-r2.sqlite")
+        XCTAssertEqual(currentStaging.lastPathComponent, "backup-staging-v0.2-r2")
         XCTAssertEqual(currentDatabase.deletingLastPathComponent().standardizedFileURL, root.standardizedFileURL)
         XCTAssertEqual(currentStaging.deletingLastPathComponent().standardizedFileURL, root.standardizedFileURL)
         XCTAssertTrue(FileManager.default.fileExists(atPath: currentDatabase.path))
@@ -23,11 +23,11 @@ final class MobileContractV02Tests: XCTestCase {
 
     func testCredentialAndPreferenceDomainsAreV02Only() {
         XCTAssertEqual(MobileContractV02.product, "media-backup")
-        XCTAssertEqual(MobileContractV02.applicationVersion, "0.2.0")
+        XCTAssertEqual(MobileContractV02.applicationVersion, "0.2.1")
         XCTAssertEqual(MobileContractV02.revision, 1)
         XCTAssertTrue(MobileContractV02.keychainService.hasPrefix("org.sarmg.mediabackup."))
-        XCTAssertTrue(MobileContractV02.keychainService.contains(".r1."))
-        XCTAssertTrue(MobileContractV02.tokenKey.contains("v0_2_r1"))
+        XCTAssertTrue(MobileContractV02.keychainService.contains(".r2."))
+        XCTAssertTrue(MobileContractV02.tokenKey.contains("v0_2_r2"))
     }
 
     func testCurrentPreferenceDomainRoundTripsCurrentToken() {

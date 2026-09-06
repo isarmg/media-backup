@@ -38,9 +38,9 @@ if grep -R -I -n -E 'com[.]example|Java_com_example_' \
 fi
 
 for required in \
-    'media-backup-mobile-v0.2-r1' \
-    'agent-v0.2-r1.sqlite' \
-    'backup-staging-v0.2-r1' \
+    'media-backup-mobile-v0.2-r2' \
+    'agent-v0.2-r2.sqlite' \
+    'backup-staging-v0.2-r2' \
     'mb_open_v2' \
     'Java_org_sarmg_mediabackup_NativeBridgeV2_open' \
     'org.sarmg.mediabackup'; do

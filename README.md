@@ -1,11 +1,11 @@
 # Media Backup 照片与视频备份
 
-Media Backup `0.2.0` 是一个自托管照片与视频备份系统，由 Rust 服务端、Rust 共享核心、Android
+Media Backup `0.2.1` 是一个自托管照片与视频备份系统，由 Rust 服务端、Rust 共享核心、Android
 客户端和 iOS 客户端组成。移动端通过 HTTPS 上传设备原始媒体和设备生成的缩略图；服务端使用
 SQLite 保存账户、图库组织和同步状态，并以 `plain-v1` 保存与设备原文件一致的未加密字节。
 
-本项目只实现当前版本。服务端只创建并接受 Media Backup `0.2.0` 当前 Schema，移动端只接受
-`media-backup-mobile-v0.2-r1` 合约；不属于当前身份的数据库、凭据和队列一律拒绝，产品仓库也不提供
+本项目只实现当前版本。服务端只创建并接受 Media Backup `0.2.1` 当前 Schema，移动端只接受
+`media-backup-mobile-v0.2-r2` 合约；不属于当前身份的数据库、凭据和队列一律拒绝，产品仓库也不提供
 迁移、备份和恢复命令。这些离线任务统一由独立的 `sarmg-upgrade` 项目负责。
 
 ## 组成

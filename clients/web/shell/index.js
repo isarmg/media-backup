@@ -1,7 +1,7 @@
 import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
 import { t } from "./i18n.js";
-import { languageLabel, switchLanguage } from "./i18n.js";
-import { Component, createContext, useCallback, useContext, useEffect, useRef, useState, } from "react";
+import { languageLabel, switchLanguage, validationMessage } from "./i18n.js";
+import { Component, createContext, useCallback, useContext, useEffect, useId, useRef, useState, } from "react";
 import { Button, ErrorState, FormField, IconButton, LoadingState, PageHeader, TextField, Toast, } from "@sarmg/admin-ui";
 import { createAdministratorApiClient, } from "@sarmg/admin-web";
 import { useAdministratorSession } from "@sarmg/admin-web/react";
@@ -131,6 +131,7 @@ function AdminShell({ options, client }) {
 }
 export function LoginPage({ login }) {
     const [failure, setFailure] = useState(null);
+    const errorId = useId();
     const [pending, setPending] = useState(false);
     const submitting = useRef(false);
     async function submit(event) {
@@ -138,6 +139,17 @@ export function LoginPage({ login }) {
         if (submitting.current)
             return;
         const form = event.currentTarget;
+        for (const name of ["username", "password"]) {
+            const input = form.elements.namedItem(name);
+            if (input instanceof HTMLInputElement && !input.validity.valid) {
+                const message = input.validity.valueMissing
+                    ? name === "username" ? t("请输入用户名。", "Enter your username.") : t("请输入密码。", "Enter your password.")
+                    : validationMessage(input);
+                setFailure({ message, field: name });
+                input.focus();
+                return;
+            }
+        }
         const data = new FormData(form);
         submitting.current = true;
         setPending(true);
@@ -146,7 +158,7 @@ export function LoginPage({ login }) {
             await login(String(data.get("username") ?? ""), String(data.get("password") ?? ""));
         }
         catch (error) {
-            setFailure({ requestId: errorRequestId(error) });
+            setFailure({ message: t("登录失败，请检查用户名和密码后重试。", "Sign in failed. Check your credentials and try again."), requestId: errorRequestId(error) });
             const password = form.elements.namedItem("password");
             if (password instanceof HTMLInputElement) {
                 password.value = "";
@@ -158,7 +170,7 @@ export function LoginPage({ login }) {
             setPending(false);
         }
     }
-    return _jsxs("form", { onSubmit: event => void submit(event), "aria-busy": pending, children: [_jsx("h1", { children: t("管理员登录", "Administrator sign in") }), failure && _jsx(ErrorState, { requestId: failure.requestId, children: t("登录失败，请检查用户名和密码后重试。", "Sign in failed. Check your credentials and try again.") }), _jsx(FormField, { label: t("用户名", "Username"), children: _jsx(TextField, { name: "username", autoComplete: "username", required: true, maxLength: 64, readOnly: pending }) }), _jsx(FormField, { label: t("密码", "Password"), children: _jsx(TextField, { name: "password", type: "password", autoComplete: "current-password", required: true, maxLength: 1024, readOnly: pending }) }), _jsx(Button, { type: "submit", disabled: pending, children: pending ? t("正在登录…", "Signing in…") : t("登录", "Sign in") })] });
+    return _jsxs("form", { noValidate: true, onInvalid: event => event.preventDefault(), onInput: () => setFailure(null), onSubmit: event => void submit(event), "aria-busy": pending, children: [_jsx("h1", { children: t("管理员登录", "Administrator sign in") }), _jsx(FormField, { label: t("用户名", "Username"), children: _jsx(TextField, { name: "username", autoComplete: "username", required: true, maxLength: 64, readOnly: pending, "aria-invalid": failure?.field === "username" || undefined, "aria-describedby": failure ? errorId : undefined }) }), _jsx(FormField, { label: t("密码", "Password"), children: _jsx(TextField, { name: "password", type: "password", autoComplete: "current-password", required: true, maxLength: 1024, readOnly: pending, "aria-invalid": failure?.field === "password" || undefined, "aria-describedby": failure ? errorId : undefined }) }), failure && _jsx(ErrorState, { requestId: failure.requestId, children: _jsx("span", { id: errorId, children: failure.message }) }), _jsx(Button, { type: "submit", disabled: pending, children: pending ? t("正在登录…", "Signing in…") : t("登录", "Sign in") })] });
 }
 function LanguageToggle() {
     return _jsx(IconButton, { "aria-label": languageLabel(), title: languageLabel(), onClick: switchLanguage, children: _jsx("svg", { "aria-hidden": "true", width: "1em", height: "1em", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "1.7", strokeLinecap: "round", strokeLinejoin: "round", children: _jsx("path", { d: "M3 5h12M9 3v2M6 5c0 5 4 9 8 11M13 5c0 5-4 9-9 12m10 4 4-10 4 10m-6.5-4h5" }) }) });

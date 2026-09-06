@@ -1,6 +1,6 @@
 # Media Backup 完整功能与取舍清单
 
-本文按 Media Backup `0.2.0` 当前工作树盘点 Server、React 管理 Web、共享 Rust Agent、Android、iOS、
+本文按 Media Backup `0.2.1` 当前工作树盘点 Server、React 管理 Web、共享 Rust Agent、Android、iOS、
 协议、存储和交付闭包。代码、两个 `current_schema.sql`、移动 epoch、FFI header 和发行 manifest 是最终
 事实源；本文不把规划中的能力写成已实现功能。
 
@@ -45,7 +45,7 @@ React 管理页、配置与 systemd、发行 identity/manifest、CI/脚本、正
 | MED-P-001 | Android/iOS 把授权范围内的照片、视频和设备生成缩略图备份到自托管 Server | `clients/android`、`clients/ios`、`crates/server` | 核心 | 高 | 项目不再是完整移动媒体备份系统 | 两平台至少一条原始媒体+缩略图端到端 |
 | MED-P-002 | Server 唯一支持 `x86_64-unknown-linux-gnu`，正式主机唯一为 Linux AMD64 | `sarmg-server-target`、server `build.rs`、release/systemd/scripts | 保障 | 高 | 会产生未经验证的 Server 平台制品 | 非目标编译、错误 ELF、错误 uname、systemd architecture |
 | MED-P-003 | Android/iOS 客户端继续按各自平台架构构建；“Server 仅 AMD64”不限制移动 ABI | Android NDK targets、Apple targets | 核心 | 高 | 若误删移动架构，真机无法加载 Rust core | arm64 Android/iOS；模拟器；ABI/header 一致 |
-| MED-P-004 | Server、移动 Agent 和发行物只理解一个当前 `0.2.0` 身份 | metadata、mobile epoch、release identity | 保障 | 高 | 多代 parser 会扩大每次变更的状态矩阵 | 非当前 product/version/revision/epoch 零写入拒绝 |
+| MED-P-004 | Server、移动 Agent 和发行物只理解一个当前 `0.2.1` 身份 | metadata、mobile epoch、release identity | 保障 | 高 | 多代 parser 会扩大每次变更的状态矩阵 | 非当前 product/version/revision/epoch 零写入拒绝 |
 | MED-P-005 | 产品不内置迁移、备份或恢复数据库命令；代际任务属于 `sarmg-upgrade` | Server CLI、Agent open path | 保障 | 高 | 在线转换会把未知状态带入服务进程 | CLI 清单；Schema mismatch 只读失败 |
 | MED-P-006 | 源配置统一位于顶层 `config/`，部署资产位于 `deploy/`，客户端位于 `clients/` | 仓库目录 | 开发运维 | 低 | 事实源散落，脚本和文档容易引用不同文件 | `rg` 不引用已移除目录；release 仍可重映射到 `systemd/` |
 | MED-P-007 | React/Vite 管理客户端位于 `clients/web/`；Android/iOS 原生客户端并列 | 目录结构、workspace scripts | 开发运维 | 低 | 客户端代码位置不一致，维护人员难以识别边界 | README、CI、构建脚本使用统一路径 |
@@ -128,7 +128,7 @@ React 管理页、配置与 systemd、发行 identity/manifest、CI/脚本、正
 |---|---|---|---|---|---|---|
 | MED-G-001 | Android/iOS 共用 `crates/agent-core` 的发现、准备、上传、重试和完成状态机 | `Agent`、`jobs`/`job_parts` | 核心 | 高 | 两端各自实现队列，故障语义快速漂移 | 同 fixture 两平台；Rust state transition tests |
 | MED-G-002 | Agent config、enqueue、prepared job 都显式携带 product/version/revision/state_epoch | `AgentConfig`、`EnqueueResource`、`PreparedJob` | 保障 | 高 | 非当前宿主或持久 JSON 可被误读 | 每个 identity 字段缺失/错误/额外字段 |
-| MED-G-003 | 移动状态固定 `media-backup-mobile-v0.2-r1`、`agent-v0.2-r1.sqlite`、`backup-staging-v0.2-r1` | Agent constants、Kotlin/Swift contract | 保障 | 高 | 数据库、stage 和 ABI 可能混代 | Rust/Kotlin/Swift/脚本静态合同一致 |
+| MED-G-003 | 移动状态固定 `media-backup-mobile-v0.2-r2`、`agent-v0.2-r2.sqlite`、`backup-staging-v0.2-r2` | Agent constants、Kotlin/Swift contract | 保障 | 高 | 数据库、stage 和 ABI 可能混代 | Rust/Kotlin/Swift/脚本静态合同一致 |
 | MED-G-004 | Agent 数据库只在文件不存在时创建当前 Schema；现场 DDL fingerprint 精确验证 | `agent-core/database.rs` | 保障 | 高 | 非当前队列可能在设备上被自动改写 | empty/wrong metadata/extra table/WAL 零写拒绝 |
 | MED-G-005 | Agent open 验证所有 persisted `prepared_json` 当前身份后恢复 interrupted 状态 | `Agent::open`、`validate_persisted_jobs` | 保障 | 高 | 重启后 preparing/uploading 永久卡住，或坏 JSON 懒到上传时才暴露 | ready/uploading/preparing 有/无 prepared JSON |
 | MED-G-006 | `(source_asset_id,source_resource_id)` 唯一；完成且 modified_ms 相同则无需重入队 | `needs_resource`、jobs unique | 核心 | 高 | 每次扫描都重传，或修改后的媒体被错误跳过 | unchanged/changed size/time、非 complete |
@@ -202,7 +202,7 @@ React 管理页、配置与 systemd、发行 identity/manifest、CI/脚本、正
 
 | ID | 当前功能/特性与真实行为 | 实现/代码锚点 | 分类 | 复杂度 | 删除后的确定后果 | 最低验证/边界 |
 |---|---|---|---|---|---|---|
-| MED-R-001 | Server 当前 Schema identity 为 media-backup 0.2.0、revision 2、SHA `6415edde88228d508f1c0c7582f119c8fe869d2d78fd85129f359a5d748cbbc2`；管理员和平台 DDL 由 Foundation 组合 | `database.rs`、`schema/generated/current_schema.sql` | 保障 | 高 | 错库或 DDL drift 必须拒绝 | metadata、现场 fingerprint、当前身份精确校验 |
+| MED-R-001 | Server 当前 Schema identity 为 media-backup 0.2.1、revision 2、SHA `6415edde88228d508f1c0c7582f119c8fe869d2d78fd85129f359a5d748cbbc2`；管理员和平台 DDL 由 Foundation 组合 | `database.rs`、`schema/generated/current_schema.sql` | 保障 | 高 | 错库或 DDL drift 必须拒绝 | metadata、现场 fingerprint、当前身份精确校验 |
 | MED-R-002 | Agent 当前 Schema SHA 为 `fb38736bbf8ac69eb694095e62302f73233e39df42cd2d38e3dd1284e2f02558` | `agent-core/database.rs` | 保障 | 高 | 手机队列状态不可证明 | Rust/Kotlin/Swift epoch 与 Schema identity |
 | MED-R-003 | 两个数据库都先复制 main/WAL/journal 私有 generation，再验证 source 未变化 | 两个 `database.rs` | 保障 | 高 | 启动验证可能读取跨时刻混合状态或写源库 | WAL、并发变化、symlink、cleanup |
 | MED-R-004 | Server open 使用 WAL、foreign keys、busy timeout，并在业务前做 integrity/FK | `database.rs`、doctor | 保障 | 高 | 并发/损坏行为变得不可预测 | PRAGMA、busy 5s、corruption、FK violation |
@@ -216,7 +216,7 @@ React 管理页、配置与 systemd、发行 identity/manifest、CI/脚本、正
 | MED-R-012 | `build-server-release.sh` 只在 Linux AMD64 接受 64-bit little-endian x86_64 ELF | release script | 开发运维 | 中 | 文件名 target 与真实 ELF 可不一致 | ELF magic/class/endian/machine、wrong host |
 | MED-R-013 | 发行包包含 binary、配置样例、`deploy/media-backup.service` 映射出的 systemd、脚本、Web、FFI header 和必要文档 | build script | 开发运维 | 高 | 操作者拿到不完整或跨代部署单元 | expected exact layout、真实 verify-release |
 | MED-R-014 | systemd 使用 `isarmg-media`、flat `/etc/isarmg/media-backup.env`、ConditionArchitecture 和 sandbox | `deploy/media-backup.service` | 保障 | 高 | 错服务账号、配置路径或权限扩大主机攻击面 | `systemd-analyze verify`、实际 start、write paths |
-| MED-R-015 | 安装 no-clobber 固定 `/opt/isarmg/media-backup/releases/0.2.0`，环境 0600 | `setup-wsl.sh`、deployment tests | 保障 | 高 | 同版本覆盖会让运行内容不可追溯，Secret 权限过宽 | 首装/二次安装、concurrent、mode/owner |
+| MED-R-015 | 安装 no-clobber 固定 `/opt/isarmg/media-backup/releases/0.2.1`，环境 0600 | `setup-wsl.sh`、deployment tests | 保障 | 高 | 同版本覆盖会让运行内容不可追溯，Secret 权限过宽 | 首装/二次安装、concurrent、mode/owner |
 | MED-R-016 | CI 分别覆盖 Rust/Server release、Android、iOS 和移动静态合同 | `.github/workflows`、contract scripts | 开发运维 | 高 | 任一平台可在 wire/FFI 漂移时独立发布 | clean checkout jobs、平台矩阵、lock mode |
 | MED-R-017 | Rust 固定 1.98.0；Web Node/toolchain 与 Cargo/npm locks 均固定 | toolchain/version/lock files | 开发运维 | 中 | 解析随时间变化，制品难复现 | `--locked`、`npm ci`、version output |
 | MED-R-018 | 中文 README、学习、流程、功能取舍和运维文档是发行/维护闭包 | `README.md`、`docs/` | 开发运维 | 低 | 跨五种语言/平台的知识只能口头传递 | 链接、命令、代码锚点和 schema hash 抽查 |
@@ -238,7 +238,7 @@ React 管理页、配置与 systemd、发行 identity/manifest、CI/脚本、正
 | MED-X-011 | 管理 Web 不是完整媒体图库；时间线/恢复/整理主要由移动端承担 | Web routes/components | 可选 | 高 | 完整 Web 图库需增加安全下载、虚拟列表、预览与恢复 UX | 大库性能、隐私/CSP、浏览器媒体测试 |
 | MED-X-012 | 原始媒体、缩略图、SQLite 和 external TLS/Secret 必须作为组合灾备对象；产品不执行备份 | 运维边界、`sarmg-upgrade` | 保障 | 高 | 只复制 DB 或 data 会得到不可恢复组合 | 停机锁、sidecar-aware snapshot、隔离恢复演练 |
 | MED-X-013 | Agent 当前**没有**在到期 `retry_wait` 中复用已有 `prepared_json`；它会重新进入 `prepare_file`。若 `remove_source_after_prepare=true` 已删除宿主导出的临时源，第一次上传失败后可能永久卡在“源文件不存在”重试 | `Agent::next_prepared`、`mark_failed`、`prepare_job` | 保障 | 高 | 修复需要把“已有 prepared parts 的上传重试”与“尚未准备成功的源文件重试”分开；忽略该边界会把可重试网络错误变成不可恢复队列 | 精确测试：准备并删源→mark upload/failed→推进 backoff→下一次必须复用同一 JSON/part 且不读源；当前测试与实现尚未满足 |
-| MED-X-014 | Agent 当前**没有**清理 `prepare_file` 中途失败或 `preparing` 无 JSON 的进程恢复残留；`prepare_file` 会复用既有 job 目录并覆盖同名 part，尾部旧 part 可能留下 | `crates/crypto::prepare_file`、`Agent::open/next_prepared/mark_complete` | 保障 | 高 | 修复必须只操作 `backup-staging-v0.2-r1/prepared/<规范 job UUID>/`，不能宽泛删除 `prepared/` 或按未验证 DB 文本拼接路径；忽略会长期占用设备空间 | 精确测试：准备失败残留、进程恢复残留、短文件覆盖长文件、非法 job ID、相邻 job 不受影响；当前实现尚未满足 |
+| MED-X-014 | Agent 当前**没有**清理 `prepare_file` 中途失败或 `preparing` 无 JSON 的进程恢复残留；`prepare_file` 会复用既有 job 目录并覆盖同名 part，尾部旧 part 可能留下 | `crates/crypto::prepare_file`、`Agent::open/next_prepared/mark_complete` | 保障 | 高 | 修复必须只操作 `backup-staging-v0.2-r2/prepared/<规范 job UUID>/`，不能宽泛删除 `prepared/` 或按未验证 DB 文本拼接路径；忽略会长期占用设备空间 | 精确测试：准备失败残留、进程恢复残留、短文件覆盖长文件、非法 job ID、相邻 job 不受影响；当前实现尚未满足 |
 
 ## 12. 关键取舍说明
 

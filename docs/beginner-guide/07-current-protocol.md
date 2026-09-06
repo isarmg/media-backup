@@ -37,9 +37,9 @@ Schema、Android/iOS 和 FFI 仍使用原有数据面身份；协议修改时不
 ```json
 {
   "product": "media-backup",
-  "application_version": "0.2.0",
+  "application_version": "0.2.1",
   "revision": 1,
-  "state_epoch": "media-backup-mobile-v0.2-r1"
+  "state_epoch": "media-backup-mobile-v0.2-r2"
 }
 ```
 
