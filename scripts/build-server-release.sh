@@ -114,7 +114,7 @@ done
 python3 "$project_dir/scripts/write-release-manifest.py" "$release_root" "$source_revision"
 verification="$("$release_root/bin/media-backup-server" release-verify "$release_root")" ||
   fail "the real server binary rejected the assembled release"
-[[ "$verification" == MEDIA_BACKUP_RELEASE_VERIFIED_V1$'\tmedia-backup-server\t0.2.0\t'"$source_revision"$'\tx86_64-unknown-linux-gnu\t'"$release_contract_sha256" ]] ||
+[[ "$verification" == MEDIA_BACKUP_RELEASE_VERIFIED_V1$'\tmedia-backup-server\t'"$version"$'\t'"$source_revision"$'\tx86_64-unknown-linux-gnu\t'"$release_contract_sha256" ]] ||
   fail "release verification returned an unexpected identity"
 
 archive_staging="$output_dir/.$package.tar.gz.$BASHPID.tmp"
