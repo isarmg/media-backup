@@ -27,6 +27,8 @@ export async function checkWebLanguage(page, { routes, names = [] }) {
   await page.getByRole("button", { name: "Switch to Chinese", exact: true }).click();
   await page.getByRole("dialog", { name: "Change language", exact: true }).getByRole("button", { name: "Confirm", exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
+  // The static HTML may already say zh-CN before scripts commit the preference.
+  await expect(page.getByRole("button", { name: "切换为英文", exact: true })).toBeVisible();
   await page.goto(chineseUrl);
   await expect(page.getByRole("button", { name: "切换为英文", exact: true })).toBeVisible();
 }

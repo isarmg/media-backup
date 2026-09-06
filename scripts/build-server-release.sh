@@ -9,7 +9,7 @@ readonly output_arg="${3:-}"
 readonly version="0.2.0"
 readonly target="x86_64-unknown-linux-gnu"
 readonly package="media-backup-server-$version-$target"
-readonly release_contract_sha256="7daa0a4271312079aad345a5925b0a61a926f6e8698255c7825081b41b132905"
+readonly release_contract_sha256="b9728dc6c4cd06aef233f159ff95229c8ce8f45f3af99dd38ffef083dae1e054"
 
 staging_root=""
 archive_staging=""

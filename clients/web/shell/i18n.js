@@ -1,5 +1,5 @@
 export const LANGUAGE_STORAGE_KEY = "sarmg.admin.language";
-export function getLocale() {
+export function resolveLocale() {
     if (typeof window === "undefined" || typeof window.location?.href !== "string")
         return "en";
     const query = new URL(window.location.href).searchParams.get("lang");
@@ -13,13 +13,28 @@ export function getLocale() {
     catch { /* Storage may be unavailable in private or restricted browsers. */ }
     return window.navigator?.language?.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
 }
+// A document uses one language, even when another tab changes the preference.
+const documentLocale = resolveLocale();
+export function getLocale() { return documentLocale; }
 export function t(zh, en, values = []) {
     const message = getLocale() === "zh-CN" ? zh : en;
     return message.replace(/\{(\d+)\}/g, (token, index) => values[Number(index)] === undefined ? token : String(values[Number(index)]));
 }
 export function initializeLanguage() {
-    if (typeof document !== "undefined" && document.documentElement)
-        document.documentElement.lang = getLocale();
+    if (typeof document === "undefined" || !document.documentElement)
+        return;
+    document.documentElement.lang = getLocale();
+    // Commit the preference only in the new document. A cancelled beforeunload
+    // must not change the language of the old document or its future messages.
+    if (typeof window !== "undefined" && window.location?.href) {
+        const requested = new URL(window.location.href).searchParams.get("lang");
+        if (requested === "zh-CN" || requested === "en") {
+            try {
+                window.localStorage.setItem(LANGUAGE_STORAGE_KEY, getLocale());
+            }
+            catch { /* URL remains the fallback. */ }
+        }
+    }
 }
 /** Reload deliberately: module-level messages and native clients share one locale.
  * Never persist forms or credentials, and never interrupt a pending form action.
@@ -57,10 +72,6 @@ export function switchLanguage() {
         if (document.querySelector('[aria-busy="true"]'))
             return;
         const locale = getLocale() === "zh-CN" ? "en" : "zh-CN";
-        try {
-            window.localStorage.setItem(LANGUAGE_STORAGE_KEY, locale);
-        }
-        catch { /* URL fallback below. */ }
         const url = new URL(window.location.href);
         url.searchParams.set("lang", locale);
         window.location.assign(url.href);
