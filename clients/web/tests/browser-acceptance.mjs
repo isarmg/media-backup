@@ -1,3 +1,4 @@
+import { checkWebLanguage } from "./language.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { chromium, firefox, expect } from "@playwright/test";
@@ -17,7 +18,7 @@ try {
   for (const engine of [chromium, firefox]) {
     const browser = await engine.launch();
     try {
-      const context = await browser.newContext({ viewport: { width: 360, height: 740 } });
+      const context = await browser.newContext({ locale: "zh-CN",  viewport: { width: 360, height: 740 } });
       const page = await context.newPage(), errors = [], mutations = [];
       let users = [backupUser()], failOverview = false, failReset = true, failCreate = true, administratorCreated = false;
       page.on("pageerror", error => errors.push(error.message));
@@ -88,7 +89,7 @@ try {
       await expect(page.getByRole("alert")).toContainText("overview-failure-123");
       await expect(page.getByRole("heading", { name: "验收备份账户", exact: true })).toHaveCount(0);
       await expect(page.locator("body")).not.toContainText("SECRET");
-      await page.getByRole("button", { name: "Try again", exact: true }).click();
+      await page.getByRole("button", { name: "重试", exact: true }).click();
       await expect(page.getByRole("heading", { name: "验收备份账户", exact: true })).toBeVisible();
       await page.getByRole("button", { name: "备份用户", exact: true }).click();
       await expect(page.getByRole("complementary", { name: "备份用户实例" })).toBeVisible();
@@ -129,11 +130,11 @@ try {
       await edit.getByLabel("启用备份用户", { exact: true }).uncheck();
       await edit.getByRole("button", { name: "保存备份用户", exact: true }).click();
       const disable = page.getByRole("dialog", { name: "停用备份用户 backup？", exact: true });
-      await expect(disable.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+      await expect(disable.getByRole("button", { name: "取消", exact: true })).toBeFocused();
       const beforeCancel = mutations.length;
       await page.keyboard.press("Escape"); await expect(disable).toHaveCount(0); assert.equal(mutations.length, beforeCancel);
       await edit.getByRole("button", { name: "保存备份用户", exact: true }).click();
-      await disable.getByRole("button", { name: "Confirm", exact: true }).click();
+      await disable.getByRole("button", { name: "确认", exact: true }).click();
       await expect(edit.getByLabel("启用备份用户", { exact: true })).not.toBeChecked();
       await expect.poll(() => users[0].enabled).toBe(false);
       for (const theme of ["light", "dark"]) {
@@ -143,11 +144,12 @@ try {
       }
       await page.getByRole("button", { name: "平台管理员", exact: true }).click();
       await expect(page.getByRole("form", { name: "创建备份用户", exact: true })).toHaveCount(0);
-      await page.getByRole("button", { name: "Create administrator", exact: true }).click();
-      await page.getByLabel("Username", { exact: true }).fill("secondary");
-      await page.getByLabel("New password", { exact: true }).fill("test admin password");
-      await page.getByRole("button", { name: "Save administrator", exact: true }).click();
+      await page.getByRole("button", { name: "创建管理员", exact: true }).click();
+      await page.getByLabel("用户名", { exact: true }).fill("secondary");
+      await page.getByLabel("新密码", { exact: true }).fill("test admin password");
+      await page.getByRole("button", { name: "保存管理员", exact: true }).click();
       await expect(page.getByRole("rowheader", { name: "secondary", exact: true })).toBeVisible();
+      await checkWebLanguage(page, {"routes":[["overview","Overview"],["users","Backup users"],["administrators","Platform administrators"]],"names":["验收备份账户","新建备份账户","已更新备份账户"]});
       assert.deepEqual(errors, []);
       console.log(`${engine.name()}: Media overview/retry, backup account create/edit/disable/reset, separate platform administrators, font assets, modal focus and mobile WCAG AA passed`);
       await context.close();
