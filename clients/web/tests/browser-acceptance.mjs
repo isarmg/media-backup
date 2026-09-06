@@ -60,24 +60,39 @@ try {
       });
       await page.goto(`http://127.0.0.1:${address.port}/admin/`);
       await expect(page.getByRole("heading", { name: "备份总览", exact: true })).toBeVisible();
+      await expect(page.getByRole("complementary")).toHaveCount(0);
+      await expect(page.getByRole("banner").locator('.sarmg-product-identity')).toHaveText("Media Backup");
+      await expect(page).toHaveTitle("Media Backup");
+      const statistics = page.getByRole("table", { name: "备份统计", exact: true });
+      await expect(statistics.getByRole("columnheader")).toHaveText(["统计项", "当前值"]);
+      await expect(statistics.getByRole("rowheader")).toHaveText(["启用 / 全部用户", "媒体已用", "上传预留空间", "已分配配额"]);
+      await expect(statistics.getByRole("cell")).toHaveText(["1 / 1", "1.0 KiB", "512 B", "117.7 MiB"]);
+      assert.equal(await statistics.locator("tbody tr").first().evaluate(row => getComputedStyle(row).display), "table-row");
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      assert.deepEqual((await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze()).violations, []);
+      await expect(page.getByRole("banner").locator('small')).toHaveCount(0);
       await expect(page.getByRole("heading", { name: "验收备份账户", exact: true })).toBeVisible();
       assert.ok(await page.evaluate(async () => {
         const normal = await document.fonts.load('16px "Sarmg Maple"');
         const italic = await document.fonts.load('italic 16px "Sarmg Maple"');
         return normal.length > 0 && italic.length > 0 && [...normal, ...italic].every(font => font.status === "loaded");
       }));
-      for (const name of ["MapleMono.woff2", "MapleMono-Italic.woff2", "MapleMono-OFL.txt"]) {
+      const provenance = JSON.parse(readFileSync(new URL("../fonts/provenance.json", import.meta.url), "utf8"));
+      const names = Object.keys(provenance.assets).filter(name => name.endsWith(".woff2")).map(name => name.split("/").at(-1));
+      for (const name of [...names, "MapleMono-OFL.txt", "CJK-LICENSE.txt"]) {
         const asset = await context.request.get(`http://127.0.0.1:${address.port}/admin/assets/${name}`);
         assert.equal(asset.status(), 200); assert.deepEqual(await asset.body(), readFileSync(new URL(`../dist/assets/${name}`, import.meta.url)));
       }
       failOverview = true;
-      await page.getByRole("button", { name: "刷新数据", exact: true }).click();
+      await page.getByRole("button", { name: "刷新", exact: true }).click();
       await expect(page.getByRole("alert")).toContainText("overview-failure-123");
       await expect(page.getByRole("heading", { name: "验收备份账户", exact: true })).toHaveCount(0);
       await expect(page.locator("body")).not.toContainText("SECRET");
       await page.getByRole("button", { name: "Try again", exact: true }).click();
       await expect(page.getByRole("heading", { name: "验收备份账户", exact: true })).toBeVisible();
-      await page.getByRole("link", { name: "备份用户", exact: true }).click();
+      await page.getByRole("button", { name: "备份用户", exact: true }).click();
+      await expect(page.getByRole("complementary", { name: "备份用户实例" })).toBeVisible();
+      await page.getByRole("button", { name: "新建备份用户", exact: true }).click();
       const create = page.getByRole("form", { name: "创建备份用户", exact: true });
       await create.getByLabel("名称", { exact: true }).fill("新建备份账户");
       await create.getByLabel("账号", { exact: true }).fill("new-backup");
@@ -90,7 +105,9 @@ try {
       assert.equal(mutations.length, 1);
       await create.getByLabel("密码", { exact: true }).fill("test backup password");
       await create.getByRole("button", { name: "创建备份用户", exact: true }).click();
+      await page.getByRole("button", { name: "选择实例 新建备份账户", exact: true }).click();
       await expect(page.getByRole("form", { name: "编辑备份用户 new-backup", exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "选择实例 验收备份账户", exact: true }).click();
       const edit = page.getByRole("form", { name: "编辑备份用户 backup", exact: true });
       await edit.getByLabel("名称", { exact: true }).fill("已更新备份账户");
       await edit.getByRole("button", { name: "保存备份用户", exact: true }).click();
@@ -120,11 +137,11 @@ try {
       await expect(edit.getByLabel("启用备份用户", { exact: true })).not.toBeChecked();
       await expect.poll(() => users[0].enabled).toBe(false);
       for (const theme of ["light", "dark"]) {
-        await page.getByLabel("Theme").selectOption(theme);
+        if (await page.locator("html").getAttribute("data-theme") !== theme) await page.getByRole("button", { name: /切换到.*模式/ }).click();
         assert.deepEqual((await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze()).violations, []);
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       }
-      await page.getByRole("link", { name: "平台管理员", exact: true }).click();
+      await page.getByRole("button", { name: "平台管理员", exact: true }).click();
       await expect(page.getByRole("form", { name: "创建备份用户", exact: true })).toHaveCount(0);
       await page.getByRole("button", { name: "Create administrator", exact: true }).click();
       await page.getByLabel("Username", { exact: true }).fill("secondary");

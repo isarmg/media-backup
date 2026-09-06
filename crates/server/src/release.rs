@@ -49,12 +49,6 @@ const EXPECTED_FILES: &[(&str, u32)] = &[
     ("scripts/setup-wsl.sh", 0o755),
     ("scripts/start-server-wsl.sh", 0o755),
     ("scripts/verify-server-wsl.sh", 0o755),
-    ("share/web/index.html", 0o644),
-    ("share/web/assets/admin.js", 0o644),
-    ("share/web/assets/admin.css", 0o644),
-    ("share/web/assets/MapleMono.woff2", 0o644),
-    ("share/web/assets/MapleMono-Italic.woff2", 0o644),
-    ("share/web/assets/MapleMono-OFL.txt", 0o644),
     ("systemd/media-backup.service", 0o644),
 ];
 
@@ -232,10 +226,39 @@ fn verify_with_ownership(root: &Path, require_root_owned: bool) -> Result<Releas
         "release manifest identity differs from the executing binary"
     );
 
-    let expected_modes: BTreeMap<&str, u32> = EXPECTED_FILES.iter().copied().collect();
+    let expected_modes: BTreeMap<&str, u32> = EXPECTED_FILES
+        .iter()
+        .copied()
+        .chain(
+            crate::web_assets::RELEASE_FILES
+                .iter()
+                .map(|(path, _)| (*path, 0o644)),
+        )
+        .collect();
     ensure!(
         manifest.files.len() == expected_modes.len(),
         "release manifest file count differs from the current contract"
+    );
+
+    // Reject foreign paths before hashing the complete embedded font bundle.
+    // This keeps malformed-layout rejection bounded as the CJK inventory grows.
+    let (actual_directories, actual_files) = collect_layout(&root, require_root_owned)?;
+    let expected_directories: BTreeSet<String> = EXPECTED_DIRECTORIES
+        .iter()
+        .map(|path| (*path).to_owned())
+        .collect();
+    let mut expected_actual_files: BTreeSet<String> = expected_modes
+        .keys()
+        .map(|path| (*path).to_owned())
+        .collect();
+    expected_actual_files.insert(MANIFEST_FILENAME.to_owned());
+    ensure!(
+        actual_directories == expected_directories,
+        "release contains missing or extra directories"
+    );
+    ensure!(
+        actual_files == expected_actual_files,
+        "release contains missing or extra files"
     );
 
     let mut previous_path: Option<&str> = None;
@@ -286,22 +309,6 @@ fn verify_with_ownership(root: &Path, require_root_owned: bool) -> Result<Releas
                 .map(|path| (*path).to_owned())
                 .collect(),
         "release manifest does not contain the exact current file set"
-    );
-
-    let (actual_directories, actual_files) = collect_layout(&root, require_root_owned)?;
-    let expected_directories: BTreeSet<String> = EXPECTED_DIRECTORIES
-        .iter()
-        .map(|path| (*path).to_owned())
-        .collect();
-    let mut expected_actual_files = declared_paths;
-    expected_actual_files.insert(MANIFEST_FILENAME.to_owned());
-    ensure!(
-        actual_directories == expected_directories,
-        "release contains missing or extra directories"
-    );
-    ensure!(
-        actual_files == expected_actual_files,
-        "release contains missing or extra files"
     );
 
     let header = read_small_regular_file(
@@ -719,11 +726,11 @@ mod tests {
         );
         assert_eq!(
             identity.web_assets_sha256,
-            "94895edb95ee77d747c0f02599f2163aec96e557dec726a9cfeceba68764a7a2"
+            "009f09d7722a590fb0cf2b8cd569c622d5b86242a95cca4d965713810deda459"
         );
         assert_eq!(
             identity.release_contract_sha256,
-            "6b292b0d8819cb71b829bd6760ad0af71b348ec740818bb1563038177b660e99"
+            "03f61fc96906f74b7ec98723485f54ffbbfc414a06f50cf0fb759e97d362d694"
         );
     }
 

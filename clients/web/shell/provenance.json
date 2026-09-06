@@ -1,0 +1,17 @@
+{
+  "source": "sarmg-foundation-server/packages/admin-shell",
+  "license": "Apache-2.0",
+  "distribution": "Reviewed source snapshot; immutable npm dependencies unchanged",
+  "assets": {
+    "administrators.d.ts": "8949c475b5e895e291ae7d2c2879a96efe102f14dfce2199eaae6a9ad4ecb81c",
+    "administrators.js": "3ca571a43454ba50093a45e1f50f94e59112a111987f6988fb58b88e85925612",
+    "index.d.ts": "16a3ba321e461656005cad7a09856166322f237163bfdd8324ad751f825fa686",
+    "index.js": "d41d00b9eff00b809d947c8d7dd4cc2ca069cf718da1d593e542bb272130575c",
+    "native-workspace.d.ts": "63eccd09ad4593f89a18065ec8c571c9d8486efa44a69785649323d6cb574a57",
+    "native-workspace.js": "92fe1ad7f869435d5845de1a975d33b4411175852235eef59d7a7ebb7215fe2a",
+    "workspace-config.d.ts": "ac258795ddb2ea083fb7645cb71f8f6389e50f7bc17c5e12665994819aa3f77b",
+    "workspace-config.js": "8c7c56e83dbdd4f44b1c80631c90ba1c2d955d0a49e7af7971d20960ea79397d",
+    "workspace.d.ts": "5b874e8eff0216fc1c4e372ead018b8e6dadf97afa5c612edb4d9198446e0b67",
+    "workspace.js": "ae03679560967ae7abed37790f88934d2578b7091b23fdac52dddeb244a1a488"
+  }
+}

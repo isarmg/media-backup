@@ -9,7 +9,7 @@ readonly output_arg="${3:-}"
 readonly version="0.2.0"
 readonly target="x86_64-unknown-linux-gnu"
 readonly package="media-backup-server-$version-$target"
-readonly release_contract_sha256="6b292b0d8819cb71b829bd6760ad0af71b348ec740818bb1563038177b660e99"
+readonly release_contract_sha256="03f61fc96906f74b7ec98723485f54ffbbfc414a06f50cf0fb759e97d362d694"
 
 staging_root=""
 archive_staging=""
@@ -106,7 +106,8 @@ install -m 0644 -- "$project_dir/clients/web/dist/assets/admin.js" \
   "$release_root/share/web/assets/admin.js"
 install -m 0644 -- "$project_dir/clients/web/dist/assets/admin.css" \
   "$release_root/share/web/assets/admin.css"
-for asset in MapleMono.woff2 MapleMono-Italic.woff2 MapleMono-OFL.txt; do
+for asset_path in "$project_dir"/clients/web/dist/assets/*; do
+  asset="${asset_path##*/}"
   install -m 0644 -- "$project_dir/clients/web/dist/assets/$asset" "$release_root/share/web/assets/$asset"
 done
 

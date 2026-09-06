@@ -219,9 +219,12 @@ fn validate_policy(
     storage_path: &str,
     quota_bytes: i64,
 ) -> Result<(), AppError> {
-    if display_name.is_empty() || display_name.len() > 100 {
+    if display_name.is_empty()
+        || display_name.chars().count() > 32
+        || display_name.chars().any(char::is_control)
+    {
         return Err(AppError::bad_request(
-            "display_name must contain 1 to 100 characters",
+            "display_name must contain 1 to 32 characters without controls",
         ));
     }
     if storage_path.is_empty()
@@ -317,16 +320,22 @@ pub(crate) async fn styles() -> Response {
     static_asset_response(crate::web_assets::STYLES, "text/css; charset=utf-8")
 }
 
-pub(crate) async fn font() -> Response {
-    static_asset_response(crate::web_assets::FONT, "font/woff2")
-}
-
-pub(crate) async fn italic_font() -> Response {
-    static_asset_response(crate::web_assets::ITALIC_FONT, "font/woff2")
-}
-
-pub(crate) async fn font_license() -> Response {
-    static_asset_response(crate::web_assets::FONT_LICENSE, "text/plain; charset=utf-8")
+pub(crate) async fn font_asset(Path(name): Path<String>) -> Response {
+    let path = format!("share/web/assets/{name}");
+    let Some((_, contents)) = crate::web_assets::RELEASE_FILES
+        .iter()
+        .find(|(candidate, _)| *candidate == path)
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let content_type = if name.ends_with(".woff2") {
+        "font/woff2"
+    } else if name.ends_with(".txt") {
+        "text/plain; charset=utf-8"
+    } else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    static_asset_response(contents, content_type)
 }
 
 fn static_asset_response(contents: &'static [u8], content_type: &'static str) -> Response {
@@ -348,21 +357,28 @@ fn static_asset_response(contents: &'static [u8], content_type: &'static str) ->
 mod tests {
     use super::*;
 
+    #[test]
+    fn instance_name_policy_counts_unicode_characters() {
+        for character in ["a", "中", "あ", "😀"] {
+            assert!(validate_policy(&character.repeat(32), "blobs/test", 0).is_ok());
+            assert!(validate_policy(&character.repeat(33), "blobs/test", 0).is_err());
+        }
+        assert!(validate_policy("bad\nname", "blobs/test", 0).is_err());
+    }
+
     #[tokio::test]
     async fn embedded_fonts_and_license_are_the_verified_release_bytes() {
-        for (response, bytes, content_type) in [
-            (font().await, crate::web_assets::FONT, "font/woff2"),
-            (
-                italic_font().await,
-                crate::web_assets::ITALIC_FONT,
-                "font/woff2",
-            ),
-            (
-                font_license().await,
-                crate::web_assets::FONT_LICENSE,
-                "text/plain; charset=utf-8",
-            ),
-        ] {
+        for (path, bytes) in crate::web_assets::RELEASE_FILES {
+            if !path.ends_with(".woff2") && !path.ends_with(".txt") {
+                continue;
+            }
+            let name = path.strip_prefix("share/web/assets/").unwrap();
+            let response = font_asset(Path(name.to_owned())).await;
+            let content_type = if path.ends_with(".woff2") {
+                "font/woff2"
+            } else {
+                "text/plain; charset=utf-8"
+            };
             assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(response.headers()[header::CONTENT_TYPE], content_type);
             assert_eq!(
@@ -372,13 +388,26 @@ mod tests {
             let body = axum::body::to_bytes(response.into_body(), 512 * 1024)
                 .await
                 .unwrap();
-            assert_eq!(body.as_ref(), bytes);
+            assert_eq!(body.as_ref(), *bytes);
+            if path.ends_with(".woff2") {
+                assert!(bytes.starts_with(b"wOF2"));
+            } else {
+                assert!(std::str::from_utf8(bytes)
+                    .unwrap()
+                    .contains("SIL OPEN FONT LICENSE"));
+            }
         }
-        assert!(crate::web_assets::FONT.starts_with(b"wOF2"));
-        assert!(crate::web_assets::ITALIC_FONT.starts_with(b"wOF2"));
-        assert!(std::str::from_utf8(crate::web_assets::FONT_LICENSE)
-            .unwrap()
-            .contains("SIL OPEN FONT LICENSE"));
+        for name in [
+            "../index.html",
+            "missing.woff2",
+            "MapleMono.woff2",
+            "admin.js",
+        ] {
+            assert_eq!(
+                font_asset(Path(name.to_owned())).await.status(),
+                StatusCode::NOT_FOUND
+            );
+        }
     }
 
     #[tokio::test]

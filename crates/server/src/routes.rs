@@ -1,3 +1,6 @@
+#[path = "../../../foundation/platform_router.rs"]
+mod foundation_platform;
+
 use axum::{
     body::Body,
     extract::{ConnectInfo, DefaultBodyLimit, Extension, Path, State},
@@ -188,12 +191,7 @@ pub fn router(
         .route("/admin/", get(admin::page))
         .route("/admin/assets/admin.js", get(admin::script))
         .route("/admin/assets/admin.css", get(admin::styles))
-        .route("/admin/assets/MapleMono.woff2", get(admin::font))
-        .route(
-            "/admin/assets/MapleMono-Italic.woff2",
-            get(admin::italic_font),
-        )
-        .route("/admin/assets/MapleMono-OFL.txt", get(admin::font_license))
+        .route("/admin/assets/{name}", get(admin::font_asset))
         .nest(API_BASE_PATH, mobile_api)
         .merge(admin_protected)
         .route_layer(middleware::from_fn_with_state(
@@ -201,7 +199,7 @@ pub fn router(
             require_secure_transport,
         ));
 
-    let platform = sarmg_server_runtime::platform_router(
+    let platform = foundation_platform::platform_router(
         runtime,
         "media-backup",
         state.administrator_origin,

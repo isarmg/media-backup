@@ -4,7 +4,7 @@ set -euo pipefail
 readonly archive_arg="${1:-${MEDIA_BACKUP_RELEASE_ARCHIVE:-}}"
 readonly package="media-backup-server-0.2.0-x86_64-unknown-linux-gnu"
 readonly version="0.2.0"
-readonly contract="6b292b0d8819cb71b829bd6760ad0af71b348ec740818bb1563038177b660e99"
+readonly contract="03f61fc96906f74b7ec98723485f54ffbbfc414a06f50cf0fb759e97d362d694"
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly project_dir
 
@@ -82,7 +82,7 @@ assert identity["storage_encoding"] == "plain-v1"
 assert identity["server_schema_revision"] == 2
 assert identity["server_schema_sha256"] == "6415edde88228d508f1c0c7582f119c8fe869d2d78fd85129f359a5d748cbbc2"
 assert identity["mobile_ffi_epoch"] == "media-backup-mobile-v0.2-r1"
-assert identity["release_contract_sha256"] == "6b292b0d8819cb71b829bd6760ad0af71b348ec740818bb1563038177b660e99"
+assert identity["release_contract_sha256"] == "03f61fc96906f74b7ec98723485f54ffbbfc414a06f50cf0fb759e97d362d694"
 PY
 source_revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_revision"])' "$identity_file")"
 verification="$($real_binary release-verify "$release_root")"
@@ -101,7 +101,8 @@ cmp --silent "$release_root/share/web/assets/admin.css" "$project_dir/clients/we
   fail "archive omits or changes the real admin CSS"
 cmp --silent "$release_root/share/web/assets/admin.js" "$project_dir/clients/web/dist/assets/admin.js" ||
   fail "archive omits or changes the real admin JavaScript"
-for asset in MapleMono.woff2 MapleMono-Italic.woff2 MapleMono-OFL.txt; do
+for asset_path in "$project_dir"/clients/web/dist/assets/*; do
+  asset="${asset_path##*/}"
   cmp --silent "$release_root/share/web/assets/$asset" "$project_dir/clients/web/dist/assets/$asset" ||
     fail "archive omits or changes the Foundation font asset: $asset"
 done
@@ -231,7 +232,8 @@ done
 curl --silent --fail "http://127.0.0.1:$smoke_port/admin" >"$test_root/served-admin.html"
 cmp --silent "$test_root/served-admin.html" "$release_root/share/web/index.html" ||
   fail "served admin asset differs from the verified release copy"
-for asset in admin.js admin.css MapleMono.woff2 MapleMono-Italic.woff2 MapleMono-OFL.txt; do
+for asset_path in "$project_dir"/clients/web/dist/assets/*; do
+  asset="${asset_path##*/}"
   curl --silent --fail --dump-header "$test_root/asset-headers" \
     "http://127.0.0.1:$smoke_port/admin/assets/$asset" >"$test_root/served-asset"
   cmp --silent "$test_root/served-asset" "$release_root/share/web/assets/$asset" ||
@@ -293,12 +295,12 @@ rm "$negative_root/share/web/assets/admin.css"
 expect_invalid_source missing-file "$negative_root"
 
 fresh_negative
-printf '\ntampered\n' >>"$negative_root/share/web/assets/MapleMono.woff2"
+printf '\ntampered\n' >>"$negative_root/share/web/assets/MapleMonoNormalNL-Regular.woff2"
 expect_invalid_source tampered-font "$negative_root"
 
 # A self-consistent replacement manifest cannot authorize bytes absent from the binary.
 fresh_negative
-printf '\ntampered\n' >>"$negative_root/share/web/assets/MapleMono-Italic.woff2"
+printf '\ntampered\n' >>"$negative_root/share/web/assets/MapleMonoNormalNL-Regular.woff2"
 rm "$negative_root/release-manifest.json"
 python3 "$project_dir/scripts/write-release-manifest.py" "$negative_root" "$source_revision"
 expect_invalid_source rehashed-font "$negative_root"

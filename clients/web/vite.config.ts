@@ -7,6 +7,7 @@ export default mergeConfig(createSarmgReactViteConfig({ base: "/admin/" }), {
     name: "media-font-license",
     generateBundle() {
       this.emitFile({ type: "asset", fileName: "assets/MapleMono-OFL.txt", source: readFileSync(new URL(import.meta.resolve("@sarmg/web-fonts/OFL.txt"))) });
+      this.emitFile({ type: "asset", fileName: "assets/CJK-LICENSE.txt", source: readFileSync(new URL("./fonts/CJK-LICENSE.txt", import.meta.url)) });
     },
   } satisfies Plugin],
   build: {

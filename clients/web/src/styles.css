@@ -2,7 +2,7 @@
 .media-business { min-width: 0; }
 .media-sections { display: grid; gap: 2rem; margin-top: 1.5rem; }
 .media-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1rem; }
-.media-card { min-width: 0; padding: 1rem; border: 1px solid color-mix(in srgb, var(--sarmg-text-primary) 30%, transparent); border-radius: var(--sarmg-radius-md); background: var(--sarmg-bg-panel); overflow-wrap: anywhere; }
+.media-card { min-width: 0; overflow-wrap: anywhere; }
 .media-card dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .5rem 1rem; }
 .media-card dd { margin: 0; }
 .media-card progress { width: 100%; }

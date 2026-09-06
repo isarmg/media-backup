@@ -1,4 +1,7 @@
+import "../shell/verify.mjs";
 import assert from "node:assert/strict";
+import "../fonts/verify.mjs";
+import "../appearance/verify.mjs";
 import { readFileSync } from "node:fs";
 
 import { assertSarmgWebToolchain } from "@sarmg/web-toolchain";
