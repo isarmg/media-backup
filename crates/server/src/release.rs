@@ -726,11 +726,11 @@ mod tests {
         );
         assert_eq!(
             identity.web_assets_sha256,
-            "1c318e69ef09c4bba7dd0669fcfc3340c17dcffdce005ef0052f8daf2135c0f3"
+            "877175ba85db854c0710f71972073703707531ea46a600ca257832b4cc270e97"
         );
         assert_eq!(
             identity.release_contract_sha256,
-            "2eb582c887bce3309668fd1564fe6350dbd268ea1b9f4989d884c8bc45cfb79a"
+            "0f01fb2fe084a2eb7422e13ace7a3a045c1d4e9a14b9a691ab565b9a76a9a829"
         );
     }
 
