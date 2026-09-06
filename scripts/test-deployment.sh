@@ -86,7 +86,7 @@ assert identity["release_contract_sha256"] == "2eb582c887bce3309668fd1564fe6350d
 PY
 source_revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_revision"])' "$identity_file")"
 verification="$($real_binary release-verify "$release_root")"
-[[ "$verification" == MEDIA_BACKUP_RELEASE_VERIFIED_V1$'\tmedia-backup-server\t0.2.0\t'"$source_revision"$'\tx86_64-unknown-linux-gnu\t'"$contract" ]] ||
+[[ "$verification" == MEDIA_BACKUP_RELEASE_VERIFIED_V1$'\tmedia-backup-server\t'"$version"$'\t'"$source_revision"$'\tx86_64-unknown-linux-gnu\t'"$contract" ]] ||
   fail "real binary did not verify the extracted archive identity"
 archive_digest="$(sha256sum "$archive" | awk '{print $1}')"
 if "$project_dir/scripts/build-server-release.sh" "$real_binary" "$source_revision" \
